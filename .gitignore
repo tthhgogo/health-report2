@@ -1,0 +1,60 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.kotlin
+
+### IntelliJ IDEA ###
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### 本项目补充 ###
+# IntelliJ 的本地工作区状态，含窗口布局与本地路径，不应共享
+.idea/workspace.xml
+.idea/misc.xml
+.idea/encodings.xml
+.idea/usage.statistics.xml
+.idea/shelf/
+
+# 文档备份
+*.bak
+
+# 体检报告样本与任何真实报告文件，绝不入库
+samples/
+*.pdf
+*.ofd
+*.jpg
+*.jpeg
+*.png
+*.doc
+*.docx
