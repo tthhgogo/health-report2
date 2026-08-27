@@ -8,6 +8,7 @@ import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -24,6 +25,7 @@ import java.util.List;
  * 不缓存、不落盘、不进日志——一份 20MB 的原文件乘上并发任务数就是堆。</p>
  */
 @Service
+@Slf4j
 public class TaskParseService {
 
     private final CtHealthReportFileService fileService;
@@ -55,15 +57,20 @@ public class TaskParseService {
             }
         });
 
+        log.info("任务原文件读取与解析开始，taskId={}，文件数={}", taskId, orderedList.size());
         List<ParsedFile> parsedFileList = new ArrayList<ParsedFile>(orderedList.size());
         for (CtHealthReportFileEntity fileEntity : orderedList) {
             byte[] contentBytes = fileStorage.read(fileEntity.getCloudFileKey());
+            log.info("任务原文件对象读取完成，taskId={}，fileIndex={}，字节数={}",
+                    taskId, fileEntity.getFileIndex(), contentBytes.length);
             parsedFileList.add(fileParseService.parse(
                     fileEntity.getFileIndex().intValue(),
                     contentTypeOf(fileEntity),
                     contentBytes,
                     fileEntity.getPrecheckPages().intValue()));
         }
+        log.info("任务原文件读取与解析完成，taskId={}，文件数={}",
+                taskId, parsedFileList.size());
         return parsedFileList;
     }
 

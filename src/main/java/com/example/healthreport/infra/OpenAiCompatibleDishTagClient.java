@@ -76,6 +76,7 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
         headers.setBearerAuth(connectionProperties.getApiKey());
         long startMillis = System.currentTimeMillis();
+        log.info("LLM-B 调用开始，请求体字节={}", bodyBytes.length);
         try {
             String rawResponse = restTemplate.execute(
                     connectionProperties.getBaseUrl() + connectionProperties.getChatCompletionsPath(),

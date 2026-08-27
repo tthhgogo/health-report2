@@ -7,6 +7,7 @@ import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import com.example.healthreport.support.OwnershipException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 /**
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Service;
  * <p>结果读取先由 MySQL 判断可见性，未成功任务绝不访问 Redis。</p>
  */
 @Service
+@Slf4j
 public class TaskQueryService {
 
     private final TaskOwnershipGuard ownershipGuard;
@@ -45,6 +47,7 @@ public class TaskQueryService {
         if (result == null) {
             throw new OwnershipException();
         }
+        log.info("分析结果读取成功，taskId={}", taskId);
         return result;
     }
 }

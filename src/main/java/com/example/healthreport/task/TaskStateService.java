@@ -53,7 +53,8 @@ public class TaskStateService {
         LocalDateTime currentTime = LocalDateTime.now(clock);
         boolean claimed = taskService.claim(taskId, currentTime, currentTime.plusMinutes(10L)) == 1;
         if (claimed) {
-            log.info("任务已领取并进入解析阶段，taskId={}", taskId);
+            log.info("任务领取 CAS 成功，taskId={}，原状态={}，新状态={}，stage={}，progress={}",
+                    taskId, TaskStatus.QUEUED, TaskStatus.PARSING, TaskStage.PARSING, 10);
         }
         return claimed;
     }
@@ -88,8 +89,8 @@ public class TaskStateService {
                 || failCode == FailCode.EXECUTION_TIMEOUT;
         int affectedRows = taskService.failActive(taskId, failCode.name(), reanalyzable);
         if (affectedRows == 1) {
-            log.info("任务进入失败终态，taskId={}，failCode={}，可重新解析={}",
-                    taskId, failCode, reanalyzable);
+            log.info("任务进入失败终态，taskId={}，status={}，failCode={}，可重新解析={}",
+                    taskId, TaskStatus.FAILED, failCode, reanalyzable);
             if (!reanalyzable && resourceCleanupService != null) {
                 try {
                     resourceCleanupService.deleteFiles(taskId);
@@ -110,7 +111,12 @@ public class TaskStateService {
         if (accumulator == null || !accumulator.partial() || accumulator.primaryReason() == null) {
             throw new IllegalArgumentException("部分结果累加器必须至少包含一个原因");
         }
-        return taskService.markPartial(taskId, accumulator.primaryReason().name()) == 1;
+        int affectedRows = taskService.markPartial(taskId, accumulator.primaryReason().name());
+        if (affectedRows == 1) {
+            log.info("任务部分结果标记完成，taskId={}，partialReason={}",
+                    taskId, accumulator.primaryReason());
+        }
+        return affectedRows == 1;
     }
 
     /**
@@ -123,6 +129,7 @@ public class TaskStateService {
             throw new IllegalArgumentException("分析结果不能为空");
         }
         resultCache.write(taskId, result);
+        log.info("分析结果草稿写入缓存完成，taskId={}", taskId);
         LocalDateTime currentTime = LocalDateTime.now(clock);
         final int affectedRows;
         try {
@@ -132,7 +139,7 @@ public class TaskStateService {
             throw exception;
         }
         if (affectedRows == 1) {
-            log.info("任务成功提交，taskId={}", taskId);
+            log.info("任务进入成功终态，taskId={}，status={}", taskId, TaskStatus.SUCCEEDED);
             return true;
         }
 
@@ -140,6 +147,7 @@ public class TaskStateService {
         int timeoutRows;
         try {
             resultCache.delete(taskId);
+            log.info("任务成功提交未生效，结果草稿已清理，taskId={}", taskId);
         } finally {
             // Redis 删除异常也不能阻止数据库把已过硬截止的 ASSEMBLING 任务收敛为超时。
             timeoutRows = taskService.failExpiredAssembling(taskId, currentTime);
@@ -173,8 +181,8 @@ public class TaskStateService {
         int affectedRows = taskService.transition(taskId, expectedStatus.name(), nextStatus.name(),
                 stage.name(), progress);
         if (affectedRows == 1) {
-            log.info("任务阶段迁移完成，taskId={}，status={}，stage={}，progress={}",
-                    taskId, nextStatus, stage, progress);
+            log.info("任务状态迁移完成，taskId={}，原状态={}，新状态={}，stage={}，progress={}",
+                    taskId, expectedStatus, nextStatus, stage, progress);
         }
         return affectedRows == 1;
     }

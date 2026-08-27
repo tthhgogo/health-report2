@@ -96,6 +96,8 @@ public class PaddleOcrVlClient implements PaddleOcrClient {
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
         headers.setBearerAuth(connectionProperties.getApiKey());
         long startMillis = System.currentTimeMillis();
+        log.info("OCR 调用开始，请求图片字节={}，请求体字节={}",
+                encodedImageBytes.length, bodyBytes.length);
         try {
             String rawResponse = restTemplate.execute(
                     connectionProperties.getBaseUrl() + connectionProperties.getChatCompletionsPath(),

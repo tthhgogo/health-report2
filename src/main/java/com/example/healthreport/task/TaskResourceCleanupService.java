@@ -94,7 +94,8 @@ public class TaskResourceCleanupService {
     /** 删除 Redis 结果；异常时返回 false，清理任务会保留任务行供后续生命周期巡检处理。 */
     public boolean deleteResult(String taskId) {
         try {
-            resultCache.delete(taskId);
+            boolean existed = resultCache.delete(taskId);
+            log.info("分析结果缓存清理完成，taskId={}，清理前是否存在={}", taskId, existed);
             return true;
         } catch (RuntimeException exception) {
             logCleanupFailure("分析结果缓存清理失败", exception);

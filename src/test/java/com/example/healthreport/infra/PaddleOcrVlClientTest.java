@@ -89,6 +89,7 @@ class PaddleOcrVlClientTest {
                 .isEqualTo(PaddleOcrVlClient.TRANSCRIBE_INSTRUCTION);
         assertThat(result.getBlockList()).extracting(OcrBlock::getRawText)
                 .containsExactly("血脂检查", "甘油三酯 1.85");
+        assertThat(renderedLog()).contains("OCR 调用开始", "OCR 调用完成");
     }
 
     @Test

@@ -32,6 +32,9 @@ public class AnalysisTaskExecutionService {
      * 事务提交后投递任务；拒绝或运行池异常时立即把 QUEUED 任务判为 SERVER_ERROR。
      */
     public void submit(final String taskId) {
+        // 本方法的调用契约是事务提交后执行；先独立记录“创建”，确保线程池拒绝时
+        // 仍然能从日志确认数据库里确实产生过这个任务。
+        log.info("任务创建成功，taskId={}", taskId);
         try {
             analysisExecutor.execute(new Runnable() {
                 @Override
@@ -39,10 +42,7 @@ public class AnalysisTaskExecutionService {
                     taskWorker.run(taskId);
                 }
             });
-            // §9.2 要求记「任务创建」。记在这里而不是 createInTransaction 里面，
-            // 是因为那个方法还在事务内——事务回滚时那条日志留不下来也删不掉，
-            // 会留下一个数据库里根本不存在的 taskId。到这里事务已经提交，taskId 一定真实存在。
-            log.info("任务创建成功并已入队，taskId={}", taskId);
+            log.info("任务投递成功并已入队，taskId={}", taskId);
         } catch (RuntimeException exception) {
             // 拒绝是有界队列打满的正常反压，不是缺陷；但任务已经建出来了，必须留痕。
             // 【不查线程池状态】拒绝本身就意味着「队列已满且 W 个线程都在忙」，

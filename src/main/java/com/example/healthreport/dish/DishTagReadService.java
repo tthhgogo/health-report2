@@ -6,6 +6,7 @@ import com.example.healthreport.constants.TagRuleVersion;
 import com.example.healthreport.llm.dishtag.DishTagProperties;
 import com.example.healthreport.persistence.CtDishTagEntity;
 import com.example.healthreport.persistence.CtDishTagService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -20,6 +21,7 @@ import java.util.Set;
 
 /** 在线标签读取：Redis 未命中必须回源 MySQL，仍缺失才产生 TAG_MISSING。 */
 @Service
+@Slf4j
 public class DishTagReadService {
 
     private final TagHashCalculator tagHashCalculator;
@@ -85,6 +87,10 @@ public class DishTagReadService {
         List<CtDishTagEntity> databaseEntityList = missingList.isEmpty()
                 ? Collections.<CtDishTagEntity>emptyList()
                 : persistenceService.findCandidates(dishIdSet, tagHashSet, effectiveEnumKeySet);
+        if (!missingList.isEmpty()) {
+            log.info("菜品标签缓存未完全命中，数据库回源完成，待回源标签数={}，数据库命中行数={}",
+                    missingList.size(), databaseEntityList.size());
+        }
         Map<String, CtDishTagEntity> databaseByTripleMap = new HashMap<String, CtDishTagEntity>();
         for (CtDishTagEntity entity : databaseEntityList) {
             databaseByTripleMap.put(triple(entity.getEnumKey(), entity.getDishId(),

@@ -1,11 +1,16 @@
 package com.example.healthreport.dish;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.cache.DishTagCache;
 import com.example.healthreport.llm.dishtag.DishTagProperties;
 import com.example.healthreport.persistence.CtDishTagEntity;
 import com.example.healthreport.persistence.CtDishTagService;
 import com.example.healthreport.parse.segment.TextNormalizer;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDate;
 import java.util.Arrays;
@@ -55,13 +60,28 @@ class DishTagReadServiceTest {
         when(offlineService.toTagValue(databaseEntity)).thenReturn(TagValue.of(TagState.NEUTRAL));
         DishTagReadService service = new DishTagReadService(calculator, properties, cache,
                 persistence, offlineService);
+        Logger logger = (Logger) LoggerFactory.getLogger(DishTagReadService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
 
-        Map<String, Map<Long, TagValue>> result = service.read(date, Arrays.asList(first, second),
-                new LinkedHashSet<String>(Collections.singletonList("LOW_FAT")));
+        try {
+            Map<String, Map<Long, TagValue>> result = service.read(date, Arrays.asList(first, second),
+                    new LinkedHashSet<String>(Collections.singletonList("LOW_FAT")));
 
-        assertThat(result.get("LOW_FAT").get(1L).getState()).isEqualTo(TagState.NEUTRAL);
-        assertThat(result.get("LOW_FAT").get(2L).getState()).isEqualTo(TagState.TAG_MISSING);
-        verify(persistence).findCandidates(anySet(), anySet(), anySet());
+            assertThat(result.get("LOW_FAT").get(1L).getState()).isEqualTo(TagState.NEUTRAL);
+            assertThat(result.get("LOW_FAT").get(2L).getState()).isEqualTo(TagState.TAG_MISSING);
+            verify(persistence).findCandidates(anySet(), anySet(), anySet());
+            assertThat(appender.list).anySatisfy(event -> assertThat(event.getFormattedMessage())
+                    .contains("数据库回源完成", "待回源标签数=2", "数据库命中行数=1")
+                    .doesNotContain("LOW_FAT"));
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
     }
 
     private Dish dish(long id) {

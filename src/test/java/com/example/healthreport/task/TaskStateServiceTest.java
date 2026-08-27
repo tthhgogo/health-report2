@@ -1,5 +1,9 @@
 package com.example.healthreport.task;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.AnalysisResult;
 import com.example.healthreport.cache.TaskResultCache;
@@ -8,6 +12,7 @@ import com.example.healthreport.support.FailCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDateTime;
 
@@ -120,6 +125,58 @@ class TaskStateServiceTest {
 
         verify(taskService).markPartial(TASK_ID,
                 com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name());
+    }
+
+    @Test
+    void successfulLifecycleShouldLogEveryStateAndCrossStoreCheckpoint() {
+        when(taskService.claim(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(1);
+        when(taskService.transition(TASK_ID, TaskStatus.PARSING.name(),
+                TaskStatus.EXTRACTING.name(), TaskStage.PARSING.name(), 30)).thenReturn(1);
+        when(taskService.transition(TASK_ID, TaskStatus.EXTRACTING.name(),
+                TaskStatus.ASSEMBLING.name(), TaskStage.ASSEMBLING.name(), 80)).thenReturn(1);
+        DegradeAccumulator accumulator = new DegradeAccumulator();
+        accumulator.recordPageTruncated();
+        when(taskService.markPartial(TASK_ID,
+                com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name())).thenReturn(1);
+        when(taskService.succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(1);
+
+        Logger logger = (Logger) LoggerFactory.getLogger(TaskStateService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        try {
+            assertThat(stateService.claim(TASK_ID)).isTrue();
+            assertThat(stateService.enterExtracting(TASK_ID)).isTrue();
+            assertThat(stateService.enterAssembling(TASK_ID)).isTrue();
+            assertThat(stateService.markPartial(TASK_ID, accumulator)).isTrue();
+            assertThat(stateService.markSucceeded(TASK_ID, emptyResult())).isTrue();
+
+            String renderedLog = renderedLog(appender);
+            assertThat(renderedLog)
+                    .contains("任务领取 CAS 成功", "原状态=QUEUED，新状态=PARSING")
+                    .contains("原状态=PARSING，新状态=EXTRACTING")
+                    .contains("原状态=EXTRACTING，新状态=ASSEMBLING")
+                    .contains("partialReason=PAGE_TRUNCATED")
+                    .contains("分析结果草稿写入缓存完成")
+                    .contains("status=SUCCEEDED")
+                    .contains(TASK_ID);
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
+    }
+
+    private String renderedLog(ListAppender<ILoggingEvent> appender) {
+        StringBuilder renderedLog = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            renderedLog.append(event.getFormattedMessage()).append('\n');
+        }
+        return renderedLog.toString();
     }
 
     private AnalysisResult emptyResult() {

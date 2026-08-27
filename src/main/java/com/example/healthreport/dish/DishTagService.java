@@ -148,6 +148,8 @@ public class DishTagService {
 			int toIndex = Math.min(fromIndex + BATCH_SIZE, missingDishList.size());
 			List<Dish> batchDishList = new ArrayList<Dish>(missingDishList.subList(fromIndex, toIndex));
 			try {
+				log.info("LLM-B 批次打标开始，维度={}，批次菜品数={}",
+						dimension.enumKey, batchDishList.size());
 				DishTagOutput output = llmBClient.tag(dimension.input(batchDishList));
 				List<CtDishTagEntity> newEntityList = entities(output, dimension.enumKey, bizDate, hashByDishIdMap,
 						dishByIdMap);

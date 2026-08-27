@@ -64,31 +64,47 @@ public class AnalysisTaskWorker {
         long startMillis = System.currentTimeMillis();
         try {
             if (!taskStateService.claim(taskId)) {
+                log.info("任务领取 CAS 未生效，工作线程结束，taskId={}", taskId);
                 return;
             }
             startMillis = System.currentTimeMillis();
             heartbeatFuture = scheduleHeartbeat(taskId);
+            log.info("任务执行开始，taskId={}", taskId);
 
             // PARSING：解析、OCR、页数预算与零 segment 裁决，全部在任何模型调用之前完成。
+            long stageStartMillis = System.currentTimeMillis();
             DegradeAccumulator accumulator = new DegradeAccumulator();
             List<ParsedFile> parsedFileList = taskParseService.parseFiles(taskId);
             ParsePlan parsePlan = parseOrchestrator.prepare(parsedFileList, accumulator);
+            log.info("任务解析阶段处理完成，taskId={}，输入文件数={}，处理页数={}，总页数={}，耗时={}ms",
+                    taskId, parsedFileList.size(), parsePlan.getProcessedPages(),
+                    parsePlan.getTotalPages(), System.currentTimeMillis() - stageStartMillis);
 
             if (!taskStateService.enterExtracting(taskId)) {
+                log.info("任务进入抽取阶段未生效，工作线程结束，taskId={}", taskId);
                 return;
             }
             // EXTRACTING：分批、并发调用、Schema 与来源校验、多批与多文件合并。
+            stageStartMillis = System.currentTimeMillis();
             ValidatedExtractionOutput extractionOutput =
                     extractionStageService.extract(parsePlan, accumulator);
+            log.info("任务抽取阶段处理完成，taskId={}，耗时={}ms",
+                    taskId, System.currentTimeMillis() - stageStartMillis);
 
             if (!taskStateService.enterAssembling(taskId)) {
+                log.info("任务进入组装阶段未生效，工作线程结束，taskId={}", taskId);
                 return;
             }
             // ASSEMBLING：四个模块纯 Java 组装，只读离线打标，不再调用任何模型。
+            stageStartMillis = System.currentTimeMillis();
             AnalysisModules modules = analysisAssembleService.assemble(extractionOutput,
                     parsePlan.getReadableFileList().size(), accumulator);
+            log.info("任务组装阶段处理完成，taskId={}，耗时={}ms",
+                    taskId, System.currentTimeMillis() - stageStartMillis);
 
             if (accumulator.partial() && !taskStateService.markPartial(taskId, accumulator)) {
+                log.info("任务部分结果标记未生效，工作线程结束，taskId={}，partialReason={}",
+                        taskId, accumulator.primaryReason());
                 return;
             }
             AnalysisResult result = AnalysisResult.create(accumulator,
@@ -101,13 +117,15 @@ public class AnalysisTaskWorker {
                         parsePlan.getTotalPages(), System.currentTimeMillis() - startMillis);
                 // 成功后立即删原文件与 file 行；结果本身继续保留两小时。
                 resourceCleanupService.deleteFiles(taskId);
+            } else {
+                log.info("任务成功提交未生效，工作线程结束，taskId={}", taskId);
             }
         } catch (HealthReportException exception) {
             markFailure(taskId, exception.getFailCode());
-            logWorkerFailure(exception);
+            logWorkerFailure(taskId, exception);
         } catch (RuntimeException exception) {
             markFailure(taskId, FailCode.SERVER_ERROR);
-            logWorkerFailure(exception);
+            logWorkerFailure(taskId, exception);
         } finally {
             if (heartbeatFuture != null) {
                 // 这里只停止独立心跳调度；从未保存或取消分析 Worker 自身的 Future。
@@ -124,7 +142,7 @@ public class AnalysisTaskWorker {
                 try {
                     taskStateService.heartbeat(taskId);
                 } catch (RuntimeException exception) {
-                    logWorkerFailure(exception);
+                    logWorkerFailure(taskId, exception);
                 }
             }
         }, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
@@ -133,17 +151,19 @@ public class AnalysisTaskWorker {
     /** 业务异常保留其确定性失败码；未知运行时异常才由调用方映射为服务端失败。 */
     private void markFailure(String taskId, FailCode failCode) {
         try {
-            taskStateService.markFailed(taskId, failCode);
+            if (!taskStateService.markFailed(taskId, failCode)) {
+                log.info("任务失败终态写入未生效，taskId={}，failCode={}", taskId, failCode);
+            }
         } catch (RuntimeException stateException) {
-            logWorkerFailure(stateException);
+            logWorkerFailure(taskId, stateException);
         }
     }
 
-    private void logWorkerFailure(RuntimeException exception) {
+    private void logWorkerFailure(String taskId, RuntimeException exception) {
         // 外部异常消息可能带响应正文；脱敏副本保留不含业务数据的原始调用栈用于定位。
         IllegalStateException sanitizedException = new IllegalStateException(
                 "执行异常类型:" + exception.getClass().getName());
         sanitizedException.setStackTrace(exception.getStackTrace());
-        log.error("分析任务执行异常", sanitizedException);
+        log.error("分析任务执行异常，taskId={}", taskId, sanitizedException);
     }
 }

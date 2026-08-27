@@ -1,5 +1,6 @@
 package com.example.healthreport.task;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.ThrowableProxyUtil;
@@ -98,12 +99,35 @@ class AnalysisTaskWorkerTest {
         AnalysisExecutorProperties properties = new AnalysisExecutorProperties();
         AnalysisTaskWorker worker = new AnalysisTaskWorker(stateService, cleanupService, parseService,
                 orchestrator, extractionStage, assembleService, scheduler, properties);
+        Logger logger = (Logger) LoggerFactory.getLogger(AnalysisTaskWorker.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
 
-        worker.run(taskId);
+        try {
+            worker.run(taskId);
 
-        verify(cleanupService).deleteFiles(taskId);
-        verify(heartbeatFuture).cancel(false);
-        verify(stateService, never()).markFailed(taskId, com.example.healthreport.support.FailCode.SERVER_ERROR);
+            verify(cleanupService).deleteFiles(taskId);
+            verify(heartbeatFuture).cancel(false);
+            verify(stateService, never()).markFailed(taskId,
+                    com.example.healthreport.support.FailCode.SERVER_ERROR);
+            StringBuilder renderedLog = new StringBuilder();
+            for (ILoggingEvent event : appender.list) {
+                renderedLog.append(event.getFormattedMessage()).append('\n');
+            }
+            assertThat(renderedLog.toString())
+                    .contains("任务执行开始，taskId=" + taskId)
+                    .contains("任务解析阶段处理完成，taskId=" + taskId)
+                    .contains("任务抽取阶段处理完成，taskId=" + taskId)
+                    .contains("任务组装阶段处理完成，taskId=" + taskId)
+                    .contains("任务分析全部完成，taskId=" + taskId);
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
     }
 
     @Test
@@ -189,11 +213,14 @@ class AnalysisTaskWorkerTest {
                     assertThat(event.getFormattedMessage()).doesNotContain(prohibitedMarker);
                     assertThat(throwableText).doesNotContain(prohibitedMarker);
                 }
-                assertThat(event.getThrowableProxy()).isNotNull();
-                assertThat(event.getThrowableProxy().getStackTraceElementProxyArray())
-                        .extracting(proxy -> proxy.getStackTraceElement().getClassName())
-                        .contains(AnalysisTaskWorkerTest.class.getName());
+                if (event.getThrowableProxy() != null) {
+                    assertThat(event.getThrowableProxy().getStackTraceElementProxyArray())
+                            .extracting(proxy -> proxy.getStackTraceElement().getClassName())
+                            .contains(AnalysisTaskWorkerTest.class.getName());
+                }
             });
+            assertThat(appender.list).anySatisfy(event ->
+                    assertThat(event.getThrowableProxy()).isNotNull());
         } finally {
             logger.detachAppender(appender);
             appender.stop();

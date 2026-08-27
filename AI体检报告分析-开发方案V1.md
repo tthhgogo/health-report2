@@ -59,7 +59,8 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
    除此之外不得出现 ConclusionLabelWords / NormalStatementWords / AllergenSectionWords
    的任何生产代码引用（§11.1-R1 用 ArchUnit 断言）
 
-③ MySQL 不存报告正文、OCR 文本和结构化健康结论；这些不进日志
+③ MySQL 不存报告正文、OCR 文本和结构化健康结论；这些不进普通应用日志，
+   排障期仅可进入 §9.2 规定的独立敏感 DEBUG logger
    —— 注意措辞：**不是「MySQL 不含任何敏感信息」**，`origin_name` 就是已登记的例外
    姓名 / 性别 / 完整 OCR 文本：只在工作线程内存，从不写 Redis
    四模块要展示的原文片段：随结果写 Redis，TTL 2h
@@ -411,7 +412,7 @@ support.IdCanonicalizer
 > ```
 > 本版口径：承认它是【敏感元数据】，按四条约束
 >     ① 仅用于前端回显"你上传了哪些文件"，不参与任何业务判定
->     ② 【禁止进日志】—— 并入 §9.2 的白名单红线，与姓名同级
+>     ② 【禁止进入普通应用日志】—— 排障期仅可进入 §9.2 默认关闭的独立敏感 DEBUG logger
 >     ③ 【禁止传给任何外部系统】—— 不进模型请求、不进 Dify 请求、不进 OCR 请求、不进对象存储元数据
 >     ④ 随 file 行一起删除（§4.5 清理矩阵），不单独延长留存
 >
@@ -3468,13 +3469,15 @@ diff 会认为标签已存在，永远不会重算——**而且这个 bug 是�
 按 `AGENTS.md` §6：Lombok `@Slf4j`、中文消息、异常对象作最后一个参数、
 禁 `System.out` / `printStackTrace`。
 
-**日志内容白名单（红线）：**
+**普通日志内容白名单（红线）：**
 
 ```
-绝不记录：报告原文、证据文本、OCR 文本、姓名、原始过敏或医嘱文本、健康数据、
-         凭证、模型完整请求响应、**`origin_name` 原始文件名**（§3.2，它常含姓名）
-taskId / userId 可用于关联，但【不得与上述内容出现在同一条日志事件中】
-也不得进 URL 查询串或分享链接
+普通应用 logger 绝不记录：报告原文、证据文本、OCR 文本、姓名、原始过敏或医嘱文本、
+                           健康数据、模型完整请求响应、`origin_name` 原始文件名
+唯一例外：上述体检隐私内容可进入 HEALTH_REPORT_SENSITIVE 独立 logger 的 DEBUG 事件；
+         该 logger 默认 OFF，仅限排障期临时开启，且不得在同一事件携带 taskId / userId
+永久禁止：凭证、Authorization 头、图片字节在任何 logger、任何级别都不得记录
+taskId / userId 仅用于普通日志关联，也不得进 URL 查询串或分享链接
 ```
 
 **必须记录的生命周期事件**（只带 ID 与枚举，不带内容）：
@@ -4417,7 +4420,8 @@ llm.dishtag.DishTagStartupValidator    启动自检
 `StatusOnlyErrorHandler`（只看状态码、绝不读错误 body）、
 `BoundedResponseExtractor`、`CappedByteArrayOutputStream`、零重试策略。
 
-**不复用**：日志策略。LLM-A 与 OCR 的请求响应含健康数据，正文一个字都不进日志；
+**不复用**：日志策略。LLM-A 与 OCR 的请求响应含健康数据，正文一个字都不进普通应用日志；
+排障期仅可进入 §9.2 默认关闭的独立敏感 DEBUG logger；
 **LLM-B 允许记录完整请求与响应**（§13.2.0）。这是全案唯一的例外，
 写实现时要显式注释出来，避免有人照着 LLM-A 的写法把排障能力一起抄掉。
 
