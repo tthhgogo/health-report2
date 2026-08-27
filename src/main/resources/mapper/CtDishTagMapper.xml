@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.healthreport.persistence.CtDishTagMapper">
+
+    <!-- LIMIT 无法通过 MyBatis-Plus 条件构造器安全表达，因此集中保留在 XML。 -->
+    <delete id="deleteExpiredBatch">
+        DELETE FROM ct_dish_tag
+        WHERE last_seen_date &lt; #{cutoffDate}
+        LIMIT 5000
+    </delete>
+
+</mapper>

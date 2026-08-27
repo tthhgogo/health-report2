@@ -1,0 +1,817 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://health-report/schema/extraction_output.schema.json",
+  "title": "体检报告结构化抽取输出",
+  "description": "体检报告抽取的批次输出。模型负责【识别到的内容 + 它属于哪些块 + 它属于哪个章节】；解析器只给原子块与坐标，版面关系由模型看图判断，Java 只做字符串包含与排序。定位一律用【批内块号 blockRef】（输入里标在每块前面的 [n]），不是 segmentId——后端收到响应后查映射表展开，模型看不到也用不着 segmentId。章节归属【由模型返回】——sections 数组 + 逐条目 sectionIndex。sectionIndex 是【批内局部序号】，模型不生成全局序号；跨批对齐靠 sections[].sectionBlockRef 展开后的 segmentId。Java 不得从扁平序列反推章节归属。一个批次的全部页必须来自同一个文件。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fileIndex",
+    "batchIndex",
+    "batchCount",
+    "batchStatus",
+    "patient",
+    "reportOverview",
+    "sections",
+    "allergenSectionBlockRefs",
+    "allergenDataBlockRefs",
+    "indicators",
+    "textualFindings",
+    "summaryConclusions",
+    "allergens",
+    "nutritionSupplements",
+    "dietRequirements"
+  ],
+  "properties": {
+    "fileIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4,
+      "description": "本批所属文件下标，原样回填输入值。批次不跨文件，Java 断言与请求一致，不一致则整任务失败。"
+    },
+    "batchIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7,
+      "description": "本批序号，原样回填输入值。"
+    },
+    "batchCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "本任务总批数，原样回填输入值。上限 8（5 文件各自向上取整）。"
+    },
+    "batchStatus": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "NO_REPORT_FEATURE",
+        "UNREADABLE"
+      ],
+      "description": "NO_REPORT_FEATURE=读得清但无体检报告特征；UNREADABLE=读不清。两者不可互换"
+    },
+    "patient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "nameBlockRefs",
+        "gender",
+        "genderBlockRefs"
+      ],
+      "description": "仅用于跨批同一性校验，用完即丢、从不展示。但【不展示不是免校验理由】——姓名性别能把整个任务判成 IDENTITY_MISMATCH，所以与展示字段用同一套来源约束。非空值必须带证据数组并通过包含性校验，校验不过的字段降为 null 且不参与冲突判断。",
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 32
+        },
+        "nameBlockRefs": {
+          "$ref": "#/$defs/evidenceBlockRefs",
+          "description": "印着姓名的那些段。name 为 null 时必须是空数组，非 null 时至少一个元素。"
+        },
+        "gender": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "男",
+            "女",
+            null
+          ]
+        },
+        "genderBlockRefs": {
+          "$ref": "#/$defs/evidenceBlockRefs",
+          "description": "印着性别的那些段。规则同 nameBlockRefs。"
+        }
+      }
+    },
+    "reportOverview": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "totalCount",
+        "abnormalCount",
+        "blockRefs"
+      ],
+      "description": "报告自带的汇总数字。报告没印就返回 null，不许自己算。必须给 blockRefs，指向印着这行字的那些块。Java 会核对【两个十进制数字都真的出现在这些块里】，不只是核对 blockRefs 非空——给了个不相干的段同样不算证据；核对不过整个 reportOverview 降为 null，回退到本模块卡片计数。",
+      "properties": {
+        "totalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "abnormalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "blockRefs": {
+          "$ref": "#/$defs/blockRefs"
+        }
+      }
+    },
+    "indicators": {
+      "type": "array",
+      "maxItems": 500,
+      "description": "有数值 + 有结论。正常项也必须提。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "value",
+          "unit",
+          "refRange",
+          "conclusionText",
+          "status",
+          "statusJudgedByModel",
+          "includeInHealthProblems",
+          "problemName",
+          "sectionIndex",
+          "orderInSection",
+          "itemIndex",
+          "blockRefs"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 32
+          },
+          "refRange": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "conclusionText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "status": {
+            "$ref": "#/$defs/indicatorStatus"
+          },
+          "statusJudgedByModel": {
+            "type": "boolean",
+            "description": "false=报告写了明确方向标记，照抄词表口径；true=非方向性结论，由模型结合该指标临床含义判断。Java 侧【不做任何 status 校验】——原先的词表比对告警已整体下线，方向词口径落在本提示词与离线评测集。"
+          },
+          "includeInHealthProblems": {
+            "type": "boolean",
+            "description": "健康问题模块准入，由模型判定。【不是 status != NORMAL 的同义词】：临界偏离而报告未作提示的可判 false，数值正常但报告写了提示的可判 true。Java 不得从 status 反推。"
+          },
+          "problemName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64,
+            "description": "健康问题模块展示名，只能是报告原文里的自然语言问题表述（「甘油三酯偏高」），且必须能在本条目 blockRefs 所指的块里找到。报告只有指标名加符号、没有成句表述时【必须给 null】，由 Java 拼 name + conclusionText 两段原文——不许模型自造说法，也不许 Java 补归一化结论词。"
+          },
+          "sectionIndex": {
+            "$ref": "#/$defs/sectionIndex"
+          },
+          "orderInSection": {
+            "$ref": "#/$defs/orderInSection"
+          },
+          "itemIndex": {
+            "$ref": "#/$defs/itemIndex"
+          },
+          "blockRefs": {
+            "$ref": "#/$defs/blockRefs"
+          }
+        }
+      }
+    },
+    "textualFindings": {
+      "type": "array",
+      "maxItems": 200,
+      "description": "无数值 + 有结论。含正常项（如「肝胆B超：未见明显异常」），靠 status 区分。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "conclusionText",
+          "status",
+          "includeInHealthProblems",
+          "sectionIndex",
+          "orderInSection",
+          "itemIndex",
+          "blockRefs"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "conclusionText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "NORMAL",
+              "ABNORMAL"
+            ]
+          },
+          "includeInHealthProblems": {
+            "type": "boolean",
+            "description": "status=NORMAL 的条目必须为 false。Java 【不做任何检查】——既不覆写也不扫词表告警，准入判定权完全在模型。"
+          },
+          "sectionIndex": {
+            "$ref": "#/$defs/sectionIndex"
+          },
+          "orderInSection": {
+            "$ref": "#/$defs/orderInSection"
+          },
+          "itemIndex": {
+            "$ref": "#/$defs/itemIndex"
+          },
+          "blockRefs": {
+            "$ref": "#/$defs/blockRefs"
+          }
+        }
+      }
+    },
+    "summaryConclusions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceOrder",
+          "itemNo",
+          "categories",
+          "includeInHealthProblems",
+          "sectionIndex",
+          "itemIndex",
+          "blockRefs"
+        ],
+        "properties": {
+          "sourceOrder": {
+            "$ref": "#/$defs/sourceOrder"
+          },
+          "itemNo": {
+            "$ref": "#/$defs/itemNo"
+          },
+          "categories": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/summaryCategory"
+            }
+          },
+          "includeInHealthProblems": {
+            "type": "boolean",
+            "description": "只有 categories 含 HEALTH_PROBLEM 或 DIET_ADVICE 时才可为 true。Java 不覆写、也不扫词表告警。"
+          },
+          "sectionIndex": {
+            "$ref": "#/$defs/sectionIndex"
+          },
+          "itemIndex": {
+            "$ref": "#/$defs/itemIndex"
+          },
+          "blockRefs": {
+            "$ref": "#/$defs/blockRefs"
+          }
+        }
+      }
+    },
+    "allergens": {
+      "type": "array",
+      "maxItems": 100,
+      "description": "筛查表全部项目都要列出，含阴性。省略阴性会让 Java 无法核对是否漏抽阳性。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enumKey",
+          "isFoodBorne",
+          "rawName",
+          "rawResult",
+          "resultStatus",
+          "sectionIndex",
+          "sourceOrder",
+          "itemIndex",
+          "blockRefs"
+        ],
+        "properties": {
+          "enumKey": {
+            "$ref": "#/$defs/allergenKey"
+          },
+          "isFoodBorne": {
+            "type": "boolean",
+            "description": "正式枚举（13 食入性 + 5 非食物）的该属性由 Java 查 AllergenGroups 常量表得出，模型返回值直接丢弃、不比对不计数；只有 enumKey=OTHER 时采信模型。Java 词表不得把 true 改成 false——那会关掉菜品拦截。"
+          },
+          "rawName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "rawResult": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "resultStatus": {
+            "description": "仅转写报告结果状态，不作临床诊断。BORDERLINE 表示报告写弱阳性、可疑、临界或±；后端会将其作为保守安全信号处理。",
+            "type": "string",
+            "enum": [
+              "POSITIVE",
+              "NEGATIVE",
+              "BORDERLINE",
+              "UNKNOWN"
+            ]
+          },
+          "sectionIndex": {
+            "$ref": "#/$defs/sectionIndex"
+          },
+          "sourceOrder": {
+            "$ref": "#/$defs/sourceOrder"
+          },
+          "itemIndex": {
+            "$ref": "#/$defs/itemIndex"
+          },
+          "blockRefs": {
+            "$ref": "#/$defs/blockRefs"
+          }
+        }
+      }
+    },
+    "nutritionSupplements": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/nutritionSupplementItem"
+      }
+    },
+    "dietRequirements": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "一条原文含多个要求时拆多条，共享同一块，各自给不同的 itemIndex。",
+      "items": {
+        "$ref": "#/$defs/dietRequirementItem"
+      }
+    },
+    "sections": {
+      "type": "array",
+      "maxItems": 200,
+      "description": "本批出现的章节。sectionIndex 是批内局部序号，每批从 0 起；跨批的同一章节【不会两批返回同一个 ID】——批次不重叠，后一批看不到前一批的标题块；它靠 sectionRelation=CONTINUATION 由后端机械继承前一批末章节来合并。批次边界的情况必须用 sectionRelation 显式表态，不能只给 null 让后端猜——null 至少压着五种互不相同的情况（承接上文 / 本就无章节 / 上一章已结束 / 标题被裁在切分线上 / 没识别出来），后端无差别继承等于又在替模型决定章节归属。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sectionName",
+          "sectionIndex",
+          "sectionRelation",
+          "sectionBlockRef"
+        ],
+        "properties": {
+          "sectionName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "章节标题原文，不改写。CURRENT：必须能在 sectionBlockRef 所指的块里逐字找到。UNSECTIONED：本字段会上分组标题，同样要有来源——必须能在【该组覆盖的全部块的合并文本】里逐字找到（封面上真印着「检查须知」就留得住，模型自己概括的「其他内容」留不住，降为固定文案）。CONTINUATION：给被承接章节的同名标题。UNKNOWN：后端不采信本字段、一律固定文案。任何一态都不许编造看起来像报告原文的标题。"
+          },
+          "sectionIndex": {
+            "$ref": "#/$defs/sectionIndex"
+          },
+          "sectionRelation": {
+            "type": "string",
+            "enum": [
+              "CURRENT",
+              "CONTINUATION",
+              "UNSECTIONED",
+              "UNKNOWN"
+            ],
+            "description": "CURRENT=标题就在本批内；CONTINUATION=承接上一批未结束的章节（跨页续表）；UNSECTIONED=这部分内容本就不属于任何章节（封面、须知、附录、页末声明）；UNKNOWN=没看清或不确定。后端【只在 CONTINUATION 时继承】上一批末章节；UNSECTIONED/UNKNOWN 单独成组，不并入任何章节。拿不准一律 UNKNOWN——不归组是安全的，误报 CONTINUATION 会把封面文字挂到检查章节下。"
+          },
+          "sectionBlockRef": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/blockRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "印着该章节标题的块（批内块号）。sectionRelation=CURRENT 时必填；另外三态必须为 null。"
+          }
+        }
+      }
+    },
+    "allergenSectionBlockRefs": {
+      "type": "array",
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/blockRef"
+      },
+      "description": "过敏筛查章节的【全部】块，包括未能抽出条目的数据行。这是过敏漏抽覆盖检查的输入，漏圈等于关掉最后一道防线。无过敏章节时为空数组。"
+    },
+    "allergenDataBlockRefs": {
+      "type": "array",
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/blockRef"
+      },
+      "description": "allergenSectionSegmentIds 的子集：其中【确认读到了过敏原检测数据行】的那些段。标题行、表头行、空行不进本数组；读到了但看不懂结果的行要进（对应条目 resultStatus=UNKNOWN）。Java 靠它区分「读全了全是阴性」和「一行都没读出来」——缺它会把最常见的全阴性面板误判成漏抽。"
+    }
+  },
+  "$defs": {
+    "blockRef": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4095,
+      "description": "【批内块号】，不是 segmentId。输入里每个文本块前面标着 [n]，n 从 0 起、按块的自然顺序连续编号，模型只能原样回填。后端拿它查本批的映射表展开成 segmentId。上界 4095 = 400 块/页 × 8 页 + 余量；超界说明解析阶段的密度闸没生效。"
+    },
+    "fileIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4
+    },
+    "indicatorStatus": {
+      "type": "string",
+      "enum": [
+        "NORMAL",
+        "HIGH",
+        "LOW",
+        "ABNORMAL"
+      ]
+    },
+    "summaryCategory": {
+      "type": "string",
+      "enum": [
+        "HEALTH_PROBLEM",
+        "DIET_ADVICE",
+        "LIFESTYLE",
+        "ROUTINE",
+        "NORMAL_STATEMENT"
+      ]
+    },
+    "allergenKey": {
+      "type": "string",
+      "enum": [
+        "SHRIMP_CRAB",
+        "FISH",
+        "MILK",
+        "EGG",
+        "PEANUT",
+        "SOY",
+        "WHEAT",
+        "NUTS",
+        "MANGO",
+        "BEEF",
+        "MUTTON",
+        "MOLLUSK",
+        "SESAME",
+        "DUST_MITE",
+        "POLLEN",
+        "ANIMAL_DANDER",
+        "MOLD",
+        "COCKROACH",
+        "OTHER"
+      ],
+      "description": "食入性 13 组 + 非食物 5 组，唯一真源是 Java 常量类 AllergenGroups（无 CSV、无生成器）。非食物 5 组只展示，不参与菜品匹配。表里没有的一律 OTHER。"
+    },
+    "nutritionKey": {
+      "type": "string",
+      "enum": [
+        "IRON",
+        "CALCIUM",
+        "PROTEIN",
+        "VITAMIN_D",
+        "VITAMIN_B12",
+        "FOLATE",
+        "DIETARY_FIBER",
+        "ZINC",
+        "POTASSIUM",
+        "OTHER"
+      ]
+    },
+    "dietRequirementKey": {
+      "type": "string",
+      "enum": [
+        "LOW_FAT",
+        "LOW_SODIUM",
+        "LOW_ADDED_SUGAR",
+        "LOW_PURINE",
+        "LOW_CHOLESTEROL",
+        "LOW_CALORIE",
+        "HIGH_FIBER",
+        "LIMIT_ALCOHOL",
+        "LIGHT_DIET",
+        "OTHER"
+      ]
+    },
+    "sectionIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 199,
+      "description": "【批内局部序号】，指向本批 sections 数组的下标。跨批不唯一，Java 不得直接拿它做分组键。Schema 只能约束取值范围，【引用完整性由 Java 校验】：sections[].sectionIndex 必须唯一且等于其数组下标，各条目的 sectionIndex 必须落在该集合内。"
+    },
+    "sourceOrder": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 999,
+      "description": "该条在所属章节内的【批内连续序号】，从 0 起，按报告上的先后顺序。饮食建议模块来源标注与 summaryConclusions 的排序真源。注意它不是报告上印的编号——那是 itemNo。"
+    },
+    "itemNo": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "maximum": 999,
+      "description": "报告原文【印着】的条目编号，没印就给 null，不许自己编。仅用于来源标注文案（「总检结论第3条」）。为 null 时前端不写条号，后端也不得拿 sourceOrder 顶替——那个数字报告上没有，显示出来就是编造。"
+    },
+    "orderInSection": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 999,
+      "description": "该条目在【本批所属章节内】的阅读顺序，从 0 起。批内序号，跨批不唯一——Java 排序时先按 page 收敛再用它。"
+    },
+    "itemIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 99,
+      "description": "同一块内第几个条目，0 起。展开后的 segmentId + itemIndex 构成稳定条目标识，用于去重——注意去重用的是展开后的 segmentId，不是批内块号，因为块号跨批不唯一。"
+    },
+    "nutritionSupplementItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "来源三字段 sectionIndex / sourceOrder / itemNo 是饮食建议模块来源标注的唯一依据。缺了它们，Java 只能靠 blockRefs 找相邻章节或与 summaryConclusions 做文本关联——都是版面/语义推断，属抽取模型的职责；或者写死「总检结论」，而抽取范围含「专家建议」「健康指导」，会标错来源。一条原文拆出多个枚举时，这三个字段必须完全相同。",
+      "required": [
+        "enumKey",
+        "sectionIndex",
+        "sourceOrder",
+        "itemNo",
+        "itemIndex",
+        "blockRefs"
+      ],
+      "properties": {
+        "enumKey": {
+          "$ref": "#/$defs/nutritionKey"
+        },
+        "sectionIndex": {
+          "$ref": "#/$defs/sectionIndex"
+        },
+        "sourceOrder": {
+          "$ref": "#/$defs/sourceOrder"
+        },
+        "itemNo": {
+          "$ref": "#/$defs/itemNo"
+        },
+        "itemIndex": {
+          "$ref": "#/$defs/itemIndex"
+        },
+        "blockRefs": {
+          "$ref": "#/$defs/blockRefs"
+        }
+      }
+    },
+    "dietRequirementItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "来源三字段 sectionIndex / sourceOrder / itemNo 是饮食建议模块来源标注的唯一依据。缺了它们，Java 只能靠 blockRefs 找相邻章节或与 summaryConclusions 做文本关联——都是版面/语义推断，属抽取模型的职责；或者写死「总检结论」，而抽取范围含「专家建议」「健康指导」，会标错来源。一条原文拆出多个枚举时，这三个字段必须完全相同。",
+      "required": [
+        "enumKey",
+        "sectionIndex",
+        "sourceOrder",
+        "itemNo",
+        "itemIndex",
+        "blockRefs"
+      ],
+      "properties": {
+        "enumKey": {
+          "$ref": "#/$defs/dietRequirementKey"
+        },
+        "sectionIndex": {
+          "$ref": "#/$defs/sectionIndex"
+        },
+        "sourceOrder": {
+          "$ref": "#/$defs/sourceOrder"
+        },
+        "itemNo": {
+          "$ref": "#/$defs/itemNo"
+        },
+        "itemIndex": {
+          "$ref": "#/$defs/itemIndex"
+        },
+        "blockRefs": {
+          "$ref": "#/$defs/blockRefs"
+        }
+      }
+    },
+    "blockRefs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/blockRef"
+      },
+      "description": "该条目引用的全部块（批内块号）。解析器给的是原子文本块（PDF 是一次 Tj/TJ 绘制单元），一行表格指标正常跨 5~12 个块，所以上限放到 32：绘制单元被 kerning 拆碎时留一倍余量。仍然超 32 说明模型在乱引，或该文件是逐字形绘制形态——后者应在解析阶段被密度闸拦掉并改走 OCR，不该走到这里。后端展开成 segmentId 后合并文本再做包含性校验。"
+    },
+    "evidenceBlockRefs": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/blockRef"
+      },
+      "description": "证据引用，与 blockRefs 同义，但允许空数组——用于「字段本身可以为 null」的场景（patient）。字段非空时不得为空数组。"
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "patient 字段非空时必须带至少一条证据；为 null 时证据数组必须为空。防止「给了名字但没有出处」和「没给名字却带一堆段」。",
+      "properties": {
+        "patient": {
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "nameBlockRefs": {
+                    "minItems": 1
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "nameBlockRefs": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "gender": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "gender"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "genderBlockRefs": {
+                    "minItems": 1
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "genderBlockRefs": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "$comment": "sectionRelation 与 sectionBlockRef 的联动：CURRENT 必填，另三态必须为 null。",
+      "properties": {
+        "sections": {
+          "items": {
+            "if": {
+              "properties": {
+                "sectionRelation": {
+                  "const": "CURRENT"
+                }
+              },
+              "required": [
+                "sectionRelation"
+              ]
+            },
+            "then": {
+              "properties": {
+                "sectionBlockRef": {
+                  "type": "integer"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "sectionBlockRef": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "batchStatus": {
+            "not": {
+              "const": "OK"
+            }
+          }
+        },
+        "required": [
+          "batchStatus"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sections": {
+            "maxItems": 0
+          },
+          "indicators": {
+            "maxItems": 0
+          },
+          "textualFindings": {
+            "maxItems": 0
+          },
+          "summaryConclusions": {
+            "maxItems": 0
+          },
+          "allergens": {
+            "maxItems": 0
+          },
+          "nutritionSupplements": {
+            "maxItems": 0
+          },
+          "dietRequirements": {
+            "maxItems": 0
+          },
+          "reportOverview": {
+            "type": "null"
+          },
+          "allergenSectionBlockRefs": {
+            "maxItems": 0
+          },
+          "allergenDataBlockRefs": {
+            "maxItems": 0
+          },
+          "patient": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "null"
+              },
+              "nameBlockRefs": {
+                "maxItems": 0
+              },
+              "gender": {
+                "type": "null"
+              },
+              "genderBlockRefs": {
+                "maxItems": 0
+              }
+            },
+            "description": "batchStatus != OK 时姓名与性别必须为 null。非 OK 批次里模型猜出来的姓名会和有效批次冲突，把一份完全有效的报告判成 IDENTITY_MISMATCH。"
+          }
+        }
+      }
+    }
+  ]
+}

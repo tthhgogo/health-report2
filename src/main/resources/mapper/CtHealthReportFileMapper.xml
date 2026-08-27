@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.healthreport.persistence.CtHealthReportFileMapper">
+
+    <!-- 文件绑定只读取容量预检与归属判断需要的最小字段。 -->
+    <sql id="fileBindingColumns">
+        f.file_id,
+        f.user_id,
+        f.task_id,
+        f.status,
+        f.size_bytes,
+        f.precheck_pages,
+        f.expire_at,
+        t.status AS bound_task_status,
+        t.reanalyzable AS bound_task_reanalyzable,
+        t.deleted_at AS bound_task_deleted_at
+    </sql>
+
+    <!-- 联表结果显式映射，避免依赖全局下划线转驼峰配置。 -->
+    <resultMap id="fileBindingRecordMap"
+               type="com.example.healthreport.persistence.FileBindingRecord">
+        <id column="file_id" property="fileId"/>
+        <result column="user_id" property="userId"/>
+        <result column="task_id" property="taskId"/>
+        <result column="status" property="status"/>
+        <result column="size_bytes" property="sizeBytes"/>
+        <result column="precheck_pages" property="precheckPages"/>
+        <result column="expire_at" property="expireAt"/>
+        <result column="bound_task_status" property="boundTaskStatus"/>
+        <result column="bound_task_reanalyzable" property="boundTaskReanalyzable"/>
+        <result column="bound_task_deleted_at" property="boundTaskDeletedAt"/>
+    </resultMap>
+
+    <!-- 事务外预检需要关联旧任务状态，属于 MyBatis-Plus 无法表达的联表查询。 -->
+    <select id="selectForPrecheck" resultMap="fileBindingRecordMap">
+        SELECT
+        <include refid="fileBindingColumns"/>
+        FROM ct_health_report_file f
+        LEFT JOIN ct_health_report_task t ON t.task_id = f.task_id
+        WHERE f.file_id IN
+        <foreach collection="fileIdList" item="fileId" open="(" separator="," close=")">
+            #{fileId}
+        </foreach>
+        AND f.user_id = #{userId}
+    </select>
+
+    <!-- OF f 保证只锁文件行，避免绑定旧任务时扩大锁范围。 -->
+    <select id="selectForUpdate" resultMap="fileBindingRecordMap">
+        SELECT
+        <include refid="fileBindingColumns"/>
+        FROM ct_health_report_file f
+        LEFT JOIN ct_health_report_task t ON t.task_id = f.task_id
+        WHERE f.file_id IN
+        <foreach collection="fileIdList" item="fileId" open="(" separator="," close=")">
+            #{fileId}
+        </foreach>
+        AND f.user_id = #{userId}
+        FOR UPDATE OF f
+    </select>
+
+    <!-- LIMIT 由清理配置控制，MyBatis-Plus Wrapper 不直接拼接 SQL 尾部。 -->
+    <select id="selectExpiredOrphans"
+            resultType="com.example.healthreport.persistence.CtHealthReportFileEntity">
+        SELECT *
+        FROM ct_health_report_file
+        WHERE task_id IS NULL
+          AND expire_at &lt;= #{currentTime}
+        ORDER BY expire_at, file_id
+        LIMIT #{batchSize}
+    </select>
+
+</mapper>

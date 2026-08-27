@@ -7,13 +7,14 @@
 
 | 类 | 内容 |
 |---|---|
-| `AllergenGroups` | 16 组 + 73 词条。展示与 Layer 1 硬匹配共用同一份数据 |
-| `AllergenExceptions` | 13 条误杀例外，`sourceField` 只支持菜名 |
+| `AllergenGroups` | 18 组（13 个食入性）+ 126 词条。123 条 `REVIEWED`、3 条 `REJECTED` |
+| `AllergenExceptions` | 16 条误杀例外，12 条 `REVIEWED`、4 条 `REJECTED`；`sourceField` 只支持菜名 |
 | `NutritionContents` | 9 个营养维度，含可推荐 / 仅展示两个食材列表 |
 | `DietRequirementContents` | 9 个饮食注意维度，**结构上没有可推荐字段** |
-| `TagRuleVersion` / `DisplayContentVersion` | 两个版本号，前者进 `tagPolicyVersion` |
+| `TagRuleVersion` / `DisplayContentVersion` | 两个版本号，前者进 `tagHash`（打标输入哈希），后者不进 |
 
-列语义、待医务裁决的问题、契约测试清单见 `内容常量说明V3.md`。
+列语义、裁决结论、契约测试清单见 `内容常量说明V3.md`；逐条来源与版本见
+`内容常量证据审核台账V1.md`。台账中的证据复核不替代组织要求的具名执业人员签字。
 
 ## 三条最容易写错的
 

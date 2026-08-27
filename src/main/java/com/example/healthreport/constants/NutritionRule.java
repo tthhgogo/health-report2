@@ -7,7 +7,7 @@ import java.util.List;
 
 /**
  * 一个营养补充维度的内容。
- * <p><b>只有 {@code recommendableFoodList} 参与自动推荐</b>（§9.2 的主料交集，
+ * <p><b>只有 {@code recommendableFoodList} 参与自动推荐</b>（与菜品主料取交集，
  * 匹配方式 CANONICAL_EXACT）。{@code displayOnlyFoodList} 只出现在模块三，
  * 绝不进入交集计算，也绝不注入模型提示词。</p>
  * <p>拆两个字段是为了让医务能把某个食材写进科普清单、同时拒绝让它触发自动推荐

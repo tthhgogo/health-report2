@@ -49,6 +49,9 @@ build/
 # 文档备份
 *.bak
 
+# Claude Code + Codex 自动协作的本地运行记录
+.ai-collab/
+
 # 体检报告样本与任何真实报告文件，绝不入库
 samples/
 *.pdf
@@ -58,3 +61,4 @@ samples/
 *.png
 *.doc
 *.docx
+.idea/vcs.xml

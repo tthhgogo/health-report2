@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://health-report/schema/dish_tag_output.schema.json",
+  "title": "菜品维度打标输出（紧凑格式）",
+  "description": "菜品打标的批次输出。一次调用处理一个 enumKey × 一批菜品（≤40 道）。只用于食入性过敏原与饮食注意两类维度共 22 个，不产生 RECOMMEND；营养补充 9 个维度由 Java 确定性交集匹配，不调本模型。结论三态：REJECT（有成分依据）/ UNKNOWN（数据不足判不出）/ NEUTRAL（能确认不含）。【食材表不含调味料，所以过敏维度的 NEUTRAL 应当罕见——判不出就是 UNKNOWN，不要写成 NEUTRAL】。NEUTRAL 与 UNKNOWN 只回 ID，但 neutralDishIds ∪ unknownDishIds ∪ hitList 必须精确等于本批全部输入 dishId，且三者两两不相交——【这条覆盖与互斥断言 JSON Schema 表达不了】（输入的 dishId 集合不在文档里），由 Java 在写库前断言，不满足则整批作废、不写库、不重试。 本 Schema 与 Java 常量类（com.example.healthreport.constants）手工保持一致，由契约测试拦截漂移——没有生成器、没有 CSV。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enumKey",
+    "neutralDishIds",
+    "unknownDishIds",
+    "hitList"
+  ],
+  "properties": {
+    "enumKey": {
+      "type": "string",
+      "description": "本批打标维度，必须与请求一致",
+      "enum": [
+        "SHRIMP_CRAB",
+        "FISH",
+        "MILK",
+        "EGG",
+        "PEANUT",
+        "SOY",
+        "WHEAT",
+        "NUTS",
+        "MANGO",
+        "BEEF",
+        "MUTTON",
+        "MOLLUSK",
+        "SESAME",
+        "LOW_FAT",
+        "LOW_SODIUM",
+        "LOW_ADDED_SUGAR",
+        "LOW_PURINE",
+        "LOW_CHOLESTEROL",
+        "LOW_CALORIE",
+        "HIGH_FIBER",
+        "LIMIT_ALCOHOL",
+        "LIGHT_DIET"
+      ]
+    },
+    "neutralDishIds": {
+      "type": "array",
+      "maxItems": 40,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "已核验且【能确认不含 / 不违反】的菜品 ID。食材表不含调味料时这一类应当罕见——没看出含的理由不等于确认不含，那是 unknownDishIds。不得包含未核验的菜：漏返回的菜由 Java 判为整批无效，不会被静默补成 NEUTRAL。"
+    },
+    "unknownDishIds": {
+      "type": "array",
+      "maxItems": 40,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "已核验但【数据不足、判不出】的菜品 ID：食材表没有调味料、菜名也看不出、通常做法不确定。这是当前数据条件下过敏维度的常见结果。Java 把它与 TAG_MISSING 同样处理——该菜不进推荐列表，也不进不推荐列表。不要为了让结果好看而把它写进 neutralDishIds。"
+    },
+    "hitList": {
+      "type": "array",
+      "maxItems": 40,
+      "description": "只放 REJECT 的菜品，因为只有 REJECT 需要携带证据。NEUTRAL 进 neutralDishIds，UNKNOWN 进 unknownDishIds。任何维度都不产生 RECOMMEND，见 verdict 说明。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dishId",
+          "verdict",
+          "evidenceType",
+          "matchedIngredients",
+          "reason"
+        ],
+        "properties": {
+          "dishId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "REJECT"
+            ],
+            "description": "22 个打标维度【一条 RECOMMEND 规则都没有】：DietRequirementRule 结构上没有可推荐字段，营养维度的可推荐食材在 NutritionContents 且由 Java 确定性交集计算，不走本模型。因此本枚举是 REJECT-only，这是类型保证而非约定。若将来给 DietRequirementRule 加上可推荐字段，维度枚举与规则字段的契约测试会立即失败，提醒同步放开本枚举。"
+          },
+          "evidenceType": {
+            "type": "string",
+            "enum": [
+              "INGREDIENT",
+              "DISH_NAME",
+              "COOKING"
+            ],
+            "description": "INGREDIENT 要求 matchedIngredients 非空且属于该菜食材表；DISH_NAME/COOKING 允许为空但 reason 必须非空。"
+          },
+          "matchedIngredients": {
+            "type": "array",
+            "maxItems": 10,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            }
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "仅供排障与人工抽查，不直接展示给用户；展示文案由 Java 拼接"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "evidenceType": {
+                  "const": "INGREDIENT"
+                }
+              },
+              "required": [
+                "evidenceType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "matchedIngredients": {
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "evidenceType": {
+                  "enum": [
+                    "DISH_NAME",
+                    "COOKING"
+                  ]
+                }
+              },
+              "required": [
+                "evidenceType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "reason": {
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 测试构建同样禁止第三方 HTTP 栈输出请求体或响应体。 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{48} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="org.springframework.web.client" level="WARN"/>
+    <logger name="org.apache.http" level="WARN"/>
+    <logger name="org.apache.http.wire" level="OFF"/>
+    <logger name="org.apache.http.headers" level="OFF"/>
+    <logger name="org.eclipse.jetty" level="WARN"/>
+    <logger name="jdk.internal.httpclient" level="WARN"/>
+
+    <root level="WARN">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

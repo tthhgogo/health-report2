@@ -1,6 +1,9 @@
 # AI 体检报告分析与菜品推荐 — 精简设计方案 V1
 
-> 技术栈：Java 8 / Spring Boot 2.7.x / MyBatis-Plus / PDFBox / Apache POI / ofdrw / TinyPinyin / **MySQL 8.0** / Redis / xxl-job / OCR / Dify
+> 技术栈：Java 8 / Spring Boot 2.7.x / MyBatis-Plus / PDFBox / Apache POI / ofdrw / TinyPinyin / **MySQL 8.0** / Redis / xxl-job / OCR
+>
+> **两个模型都直连模型 API，不经过 Dify**（LLM-A 2026-08-25 定，LLM-B 2026-08-27 定）。
+> 同一个网关、同一套 OpenAI 兼容 `/chat/completions` 协议，只是模型标识不同。
 >
 > 对应需求：《体检报告分析需求.md》
 > 本文档只描述当前设计，不含版本历史与废止内容。任何一句话都是现行有效的。
@@ -9,13 +12,41 @@
 
 ## 0. 设计原则
 
-1. **原文即事实。** 展示层严格复刻报告原文，模型负责"定位与分类"，不负责"生成与推断"。
-2. **能程序判定的不交给模型**，程序判不了的也不伪装成已判定。
-3. **不确定性只在写入时消费一次。** 菜品打标在离线批处理完成并落库，模型波动不影响每次读取。
-4. **模型没返回 ≠ 报告里没有。** Schema 强制必填，缺字段走重试或失败，不得折叠成空值。
+1. **原文即事实。** 展示层严格复刻报告原文。LLM-A 可以为结构化汇总进行版面理解、
+   语义分类和准入判断，但**不得生成报告中不存在的事实、诊断、医嘱或展示文案**。
+2. **三层职责边界，全文任何一节都不得越界。**
+
+   | 层 | 负责 | 不负责 |
+   |---|---|---|
+   | OCR / 解析 | 还原文本与版面坐标，切 segment | 任何判断 |
+   | **LLM-A** | 输出**经过原文引用约束的结构化总结**：版面理解、章节归属、语义分类、健康问题准入、枚举归一化 | 生成原文里没有的内容 |
+   | **Java** | Schema 校验、来源引用校验、简单安全兜底、集合运算、数值计算、排序 | **新增或改写医疗语义** |
+
+   **Java 的词表在生产链路里只有一种合法用法：往安全方向降级或拦截。**
+   凡是把模型给出的语义结论替换成另一个语义结论的（改 `status`、改 `isFoodBorne`、
+   改 `includeInHealthProblems`、改 `enumKey`），一律不允许。
+
+   > **"只告警计数"曾经是第二种合法用法，2026-08-25 已取消**（§4.4-③）。
+   > 它不影响输出，但代码长得跟"Java 在判断医疗语义"一模一样，留在生产里迟早被改回覆写；
+   > 而且同样的信息评测集里有、还更准。**发现不一致的正确做法是跑评测集、改提示词、走发版，
+   > 不是在每一次用户请求里扫一遍词表。**
+3. **确定性规则不交给模型。** 但"确定性"指的是**不含医疗语义**的计算——重量占比、集合交集、
+   排序、哈希、字符串包含。**"这条结论是正常还是异常"不是确定性规则**，
+   不能因为写得出词表就把它收回 Java。
+4. **不确定性只在写入时消费一次。** 菜品打标在离线批处理完成并落库，模型波动不影响每次读取。
+5. **模型没返回 ≠ 报告里没有。** Schema 强制必填，缺字段走重试或失败，不得折叠成空值。
    但**"Schema 通过"也不等于"报告已完整识别"**——模型返回 `"allergens": []` 结构上完全合法，
    所以高风险内容另有关键词交叉扫描兜一层（§4.4）。
-5. **过敏是唯一安全红线**，误判代价不对称：漏标可能造成过敏反应，误标只是少一个选择。因此过敏一律偏向高召回。
+6. **安全红线有两条，处理方向相反，不要混用。**
+
+   | | 红线内容 | 误判代价 | 因此偏向 |
+   |---|---|---|---|
+   | **一级** | **过敏** | 漏标可能造成过敏反应；误标只是少一个菜 | **高召回**：宁可多拦（§8.5 关键词并集、§4.4-② 交叉扫描） |
+   | **二级** | **方向性饮食禁忌**：低蛋白/限蛋白、低钾、低磷、低碘、孕期哺乳期儿童 | 归一化把「限制」映射成「补充」，会直接推荐反向菜品 | **不猜**：判不准就不输出（§7.3 安全闸） |
+
+   两条的共同点是代价不对称，区别是**过敏偏向多拦，禁忌偏向不猜**。
+   原则里原先写「过敏是唯一安全红线」，与 §7.3 的存在直接矛盾——照那句话，
+   §7.3 那道闸门根本没有合法性依据。现在两条都写明，实现时按各自方向处理。
 
 ---
 
@@ -25,10 +56,10 @@
 ① 用户逐份上传文件（每份只返回 fileId，不创建任务）
         │
         ▼
-② 点击「生成体检报告」，提交有序 fileIds → 创建 taskId、绑定文件、入队
+② 点击「生成体检报告」，提交有序 fileIds → 创建 taskId、绑定文件、提交本机线程池异步执行
         │
         ▼
-③ Worker：文件解析 → LLM-A 抽取 → 同一性校验 → Java 校验与归一化
+③ 工作线程：文件解析 → LLM-A 抽取 → 同一性校验 → Java 契约与来源校验、安全降级
         │
         ▼
 ④ 组装四模块（纯 Java + 读离线打标，不再调用任何模型）
@@ -36,7 +67,7 @@
         ▼
 ⑤ 前端轮询 taskId 取结果
 
-离线：每日凌晨 LLM-B 对当日在架菜品按 20 个维度打标 → MySQL ct_dish_tag（真源）+ Redis（读缓存）
+离线：每日凌晨 LLM-B 对当日在架菜品按 22 个维度打标 → MySQL ct_dish_tag（真源）+ Redis（读缓存）
       营养补充 9 个维度不打标，在线由 Java 确定性交集匹配（§8.7）
 ```
 
@@ -81,7 +112,11 @@ file.taskId   IS NULL
 `taskId` 层面的鉴权**弥补不了**创建阶段的缺失：攻击者若能把他人的 `fileId` 绑到自己的
 `taskId` 上，后续所有归属校验都会正常通过。
 
-**其余校验：** `fileIds` 数量 1~5、累计大小 ≤ 60MB（§12-4）、累计页数（§3.3）、队列深度。
+**其余校验：** `fileIds` 数量 1~5、累计大小 ≤ 60MB（§12-4）、累计容量预检页数（§3.3）。
+PDF / OFD / 图片的预检页数是精确值；Word 因内嵌图片尚未 OCR，创建时只能使用上传阶段
+保存的原生 segment 页数下界。Word 的精确容量由工作线程在调用 LLM-A 前裁决（§3.3.1）。
+**没有队列深度校验**——背压由线程池的有界队列 + `AbortPolicy` 承担，
+在 §2.3.3 的第 ⑤ 步一次性表达，不在这里预先查一遍（那会有"查时没满、提交时满了"的竞态）。
 
 **绑定规则：一个文件同时只能属于一个「活着的」任务。**
 
@@ -130,7 +165,8 @@ UPDATE ct_health_report_file
 ### 2.3 任务状态机与持久化
 
 **任务状态的真源是 MySQL，不是 Redis。** 创建任务、文件绑定、状态 CAS、心跳
-全部走 MySQL 事务与条件更新；Redis 只承载队列消息和四模块结果（§9.1）。
+全部走 MySQL 事务与条件更新；**Redis 不参与任务调度**，只承载四模块结果（§9.1）
+和菜品打标读缓存（§8.3.1）。
 
 #### 2.3.1 状态与删除标志是两个正交的东西
 
@@ -148,7 +184,7 @@ deleted_at  正交标志，任何状态下都可置，一旦置上不可撤销
 这样：
 
 - 不需要 `attempt_no` 来区分第几次执行
-- 旧任务的残留队列消息天然失效——它的 `status` 已是 `FAILED`，§2.3.4 的 CAS 直接挡下
+- 不存在"旧任务的残留投递"——本机线程池里没有排队的旧消息（§2.3.3）
 - 状态机没有回边，可穷举、可画图、可单测
 
 **删除不是状态迁移**，用 `deleted_at` 标志表达。
@@ -160,57 +196,60 @@ deleted_at  正交标志，任何状态下都可置，一旦置上不可撤销
 
 ```sql
 CREATE TABLE ct_health_report_task (
-  task_id        VARCHAR(36)  NOT NULL COMMENT '任务ID，使用UUID',
-  user_id        VARCHAR(64)  NOT NULL COMMENT '归属用户ID，用于鉴权',
-  status         VARCHAR(16)  NOT NULL COMMENT '任务状态：QUEUED/PARSING/EXTRACTING/ASSEMBLING/SUCCEEDED/FAILED',
-  stage          VARCHAR(16)  NULL COMMENT '前端进度阶段，见§2.4',
+  task_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '任务ID，使用UUID',
+  user_id        VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属用户ID，用于鉴权',
+  status         VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '任务状态：QUEUED/PARSING/EXTRACTING/ASSEMBLING/SUCCEEDED/FAILED',
+  stage          VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '前端进度阶段，见§2.4',
   progress       TINYINT      NOT NULL DEFAULT 0 COMMENT '任务进度百分比，取值0至100',
-  fail_code      VARCHAR(32)  NULL COMMENT '任务失败错误码，成功或未失败时为NULL',
+  fail_code      VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '任务失败错误码，成功或未失败时为NULL',
   reanalyzable   TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否允许重新解析，同时是§2.2的文件解绑条件',
   partial        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否为部分结果，命中时模块三四降级',
-  partial_reason VARCHAR(32)  NULL COMMENT '降级原因：PAGE_TRUNCATED/BATCH_UNREADABLE/ALLERGEN_SUSPECT_MISS',
+  partial_reason VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '降级原因：PAGE_TRUNCATED/BATCH_UNREADABLE/ALLERGEN_SUSPECT_MISS',
   heartbeat_at   DATETIME     NULL COMMENT 'Worker最近心跳时间',
   deadline_at    DATETIME     NULL COMMENT '任务执行硬截止时间',
   expire_at      DATETIME     NOT NULL COMMENT '任务及关联数据过期时间',
   deleted_at     DATETIME     NULL COMMENT '用户删除任务的时间，未删除时为NULL',
   version        INT          NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
   create_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间，由数据库维护',
-  create_by      VARCHAR(50)  NULL COMMENT '创建人标识',
+  create_by      VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '创建人标识',
   update_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护',
-  update_by      VARCHAR(50)  NULL COMMENT '更新人标识',
+  update_by      VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '更新人标识',
   PRIMARY KEY (task_id),
   KEY idx_user (user_id),
   KEY idx_sweep (status, heartbeat_at),
+  KEY idx_deadline (status, deadline_at),
   KEY idx_expire (expire_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='体检报告分析任务';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='体检报告分析任务';
 
 CREATE TABLE ct_health_report_file (
-  file_id        VARCHAR(36)  NOT NULL COMMENT '文件ID，使用UUID',
-  user_id        VARCHAR(64)  NOT NULL COMMENT '归属用户ID，用于鉴权',
-  task_id        VARCHAR(36)  NULL COMMENT '关联任务ID，未绑定任务时为NULL',
+  file_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '文件ID，使用UUID',
+  user_id        VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属用户ID，用于鉴权',
+  task_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '关联任务ID，未绑定任务时为NULL',
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始',
-  status         VARCHAR(16)  NOT NULL COMMENT '文件状态：UPLOADED',
-  origin_name    VARCHAR(255) NOT NULL COMMENT '用户上传时的原始文件名',
-  content_type   VARCHAR(64)  NOT NULL COMMENT '按§3.1判定的真实文件格式，非扩展名',
+  status         VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '文件状态：UPLOADED',
+  origin_name    VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '敏感元数据：用户上传的原始文件名，可能含姓名与体检属性如张三-2026体检报告.pdf。仅用于前端回显，禁止进日志与外部系统，随file行一起删除。是否改为安全生成的展示名待产品确认',
+  content_type   VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '按§3.1判定的真实文件格式，非扩展名',
   size_bytes     BIGINT       NOT NULL COMMENT '文件大小，单位字节',
-  content_hash   CHAR(64)     NOT NULL COMMENT '文件内容SHA-256哈希',
-  cloud_file_key VARCHAR(255) NOT NULL COMMENT '云存储文件键，用于定位原始文件',
+  precheck_pages INT          NOT NULL COMMENT '创建任务容量预检页数：PDF与OFD为真实页数，图片为1，Word为原生segment数除以40向上取整的下界且不含OCR块，图片型Word可为0',
+  content_hash   CHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci     NOT NULL COMMENT '文件内容SHA-256哈希',
+  cloud_file_key VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '云存储文件键，用于定位原始文件',
   expire_at      DATETIME     NOT NULL COMMENT '原始文件过期删除时间',
   create_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间，由数据库维护',
-  create_by      VARCHAR(50)  NULL COMMENT '创建人标识',
+  create_by      VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '创建人标识',
   update_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护',
-  update_by      VARCHAR(50)  NULL COMMENT '更新人标识',
+  update_by      VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '更新人标识',
   PRIMARY KEY (file_id),
   KEY idx_task (task_id),
   KEY idx_user (user_id),
   KEY idx_expire (expire_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='上传的体检报告文件';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='上传的体检报告文件';
 ```
 
 Bucket/容器名由 `S3FileStorage` 的部署配置提供，不逐文件落库；文件表只保存
 `cloud_file_key`，Java 实体字段固定为 `cloudFileKey`，不得保留 `s3_bucket` / `s3_key`。
 
-**没有 outbox 表，也没有 Dispatcher 线程。** 入队是创建事务的一部分（§2.3.3）。
+**没有消息队列，没有 outbox 表，也没有 Dispatcher 线程。**
+执行在创建事务**提交之后**提交给本进程线程池（§2.3.3）。
 
 **Worker 的 lease 不单独建表**，用 `heartbeat_at` + `deadline_at` 表达。
 
@@ -218,34 +257,112 @@ Bucket/容器名由 `S3FileStorage` 的部署配置提供，不逐文件落库�
 > 四个审计列 `create_time` / `create_by` / `update_time` / `update_by` 每张表都有；
 > **两个时间列由数据库默认值和 `ON UPDATE` 维护，代码永远不赋值。**
 
-#### 2.3.3 创建与入队：XADD 在事务内，失败就回滚
+#### 2.3.3 创建与执行：先提交事务，后提交线程池
+
+**没有消息队列。** 请求进来直接在本进程的线程池里异步跑。
 
 ```
 ① 开启事务
 ② INSERT ct_health_report_task (status = 'QUEUED', ...)
 ③ 绑定文件（§2.2 的两步）
-④ XADD q:analysis {taskId}          ← 在事务内执行
-     失败 → 抛异常，整个事务回滚 → 返回 SERVER_ERROR
-⑤ 提交事务
-⑥ 返回 taskId
+④ 提交事务                                ← 提交在前
+⑤ analysisExecutor.submit(taskId)         ← 提交在后，【事务之外】
+     被拒（队列满/池已关闭）→ 事务外把该任务 CAS 为 FAILED/SERVER_ERROR → 返回 SERVER_ERROR
+⑥ 返回 taskId，前端开始轮询（§2.4、§9.3）
 ```
 
-**两种失败路径都不会留下卡死的任务：**
+> **顺序不能反，理由和旧版 XADD 完全一样。** 先 submit 后提交事务的话，工作线程会
+> 在事务提交前就去读任务行——读不到，领取 CAS 影响 0 行，任务被当成"已删除/已失效"丢弃；
+> 事务随后提交，于是**任务行存在而没有任何人在跑它**。这不是并发 bug，
+> 是 InnoDB 可重复读下的正常可见性，线程池空闲时几乎必然复现。
+> 换成本机线程池只是把 Redis 换成了 `ExecutorService`，这个陷阱一模一样。
+
+**三条失败路径，都不会留下卡死的任务：**
 
 | 失败点 | 后果 |
 |---|---|
-| ④ XADD 失败 | 事务回滚，task 行不存在，文件仍未绑定。用户重点一次「生成体检报告」即可 |
-| ④ 成功但 ⑤ 提交失败 | 消息指向一个不存在的 task 行 → Worker 的 CAS 影响 0 行 → 直接丢弃（§2.3.4）。文件仍未绑定 |
+| 事务提交失败 | task 行不存在，文件仍未绑定，也没有任务被提交。用户重点一次即可 |
+| 提交成功、`submit` 被拒或抛异常 | 事务外把该任务 CAS 为 `FAILED/SERVER_ERROR`，前端立刻拿到错误 |
+| 提交成功、进程在 `submit` 前崩溃 | 任务停在 `QUEUED` 且没人跑 → `QueuedTimeoutSweepJob` 5 分钟后判 `FAILED` |
 
-XADD 与 MySQL 事务不是原子的，但**不一致的方向是安全的**：
-可能有孤儿消息（无害，被 CAS 丢弃），不可能有孤儿任务（有任务行但没消息 = 永久卡死）。
-顺序反过来就不成立了，所以 **XADD 必须在提交之前**。
+第三行的窗口从"两次网络往返"缩到了"两条相邻语句"，但它没有消失——进程正好死在这两行之间
+仍然可能，所以 `QueuedTimeoutSweepJob` 保留。
 
-> 早期设计用 outbox 表 + Dispatcher 退避重投来保证投递。按"服务端出错直接返回错误"的
-> 口径，那套机制连同 `ct_health_report_task_outbox` 表整个删除——一次 Redis 抖动
-> 现在是一次用户可见的失败，用户重点即可，不再由系统兜着悄悄重投。
+**必须是两个独立的线程池，不能共用一个。**
 
-#### 2.3.4 Worker 幂等与陈旧消息
+```
+analysisExecutor   任务池，W 个线程，每个线程跑完整的一个任务（§4.1.4 的 W）
+llmBatchExecutor   批次池，独立，供 §4.1.4 的批次并发使用
+```
+
+共用一个池会**直接死锁**，而且是必然复现的那种：
+
+```
+池大小 W，W 个任务各占一个线程
+每个任务要提交 4 个批次到【同一个池】，然后阻塞等待它们的结果
+→ 池里没有空闲线程了，4×W 个批次任务全部排在队列里
+→ 占着线程的 W 个任务在等永远轮不到执行的批次
+→ 线程饥饿死锁，进程活着、心跳正常、任务永不结束
+```
+
+心跳线程还在跑（§4.1.4 要求它独立），所以 §2.3.4 的心跳巡检**扫不出来**，
+只能靠 §2.3.4 的 `deadline_at` 超时兜底——10 分钟后一批任务集体 `EXECUTION_TIMEOUT`，
+而根因藏在线程池配置里，排障要绕很大一圈。
+
+`llmBatchExecutor` 的大小按 `W × 4` 配（§4.1.4），它是 `W` 之外的第二个旋钮，
+两者必须一起调；任务池满走 `AbortPolicy`（下面），批次池不应该出现排队。
+
+**任务线程池必须有界，拒绝策略必须是"直接失败"。**
+
+```java
+new ThreadPoolExecutor(
+    W, W,                                   // 固定 W 个线程，W 见 §4.1.4
+    0L, TimeUnit.MILLISECONDS,
+    new ArrayBlockingQueue<>(QUEUE_CAPACITY),   // ★ 有界
+    new ThreadPoolExecutor.AbortPolicy());      // ★ 满了直接抛，不排队等、不在调用线程跑
+```
+
+三个"不能"，每一个都对应一种线上事故：
+
+```
+不能用无界队列    突发流量下队列无限涨，用户排在 30 分钟后才被执行，
+                  而文件 expire_at 早就到了（§2.2）——排到了也没文件可读
+不能用 CallerRuns 拒绝时会在 Tomcat 请求线程里跑完整个分析（分钟级），
+                  一个请求线程被占死，压力大时整个 Web 层被拖垮
+不能静默丢弃      DiscardPolicy 会让任务永远停在 QUEUED，只能等 5 分钟巡检兜底，
+                  而这本来是可以立刻告诉用户的
+```
+
+**这就是原来的「队列深度校验」（§2.2）在新方案里的位置**——不再是创建前查一次 Redis 队列长度，
+而是线程池自己的有界队列 + `AbortPolicy`，一次拒绝直接变成一次用户可见的失败。
+两者作用相同，后者少一次网络往返，也不会出现"查的时候没满、提交的时候满了"的竞态。
+
+`QUEUE_CAPACITY` 按 §4.1.4 的 `W` 和单任务耗时倒推，**需实测校准（§11-14）**。
+
+> **删掉的东西：** `XADD` / `XACK` / `XDEL`、`q:analysis` 流、Consumer Group、
+> 创建前的队列深度查询、投递失败与孤儿消息处理，以及更早的 `ct_health_report_task_outbox`
+> 表和 Dispatcher 退避重投。**Redis 仍然在用**——四模块结果（§9.1）和菜品打标读缓存（§8.3.1）
+> 都没动，去掉的只是"用 Redis 当任务队列"这一件事。
+
+**明确接受的代价：应用重启时正在执行的任务直接失败，不自动恢复。**
+
+```
+重启/崩溃 → 该实例的工作线程全部消失 → 这些任务的 heartbeat_at 停止更新
+          → §2.3.4 的巡检在 15 分钟后置 FAILED / SERVER_ERROR，reanalyzable = 1
+          → 用户按 §2.5 用同一批 fileIds 重新发起
+```
+
+用户要干等最多 15 分钟才看到失败，这是本次简单版接受的代价。与「零重试」的口径一致：
+服务端出错就直接失败，由用户决定要不要重来（§2.5）。
+
+> **单实例部署可以把这 15 分钟缩到 0**：启动时把全部非终态任务一次性判 `FAILED`。
+> **多实例部署绝对不能这么做**——那会把别的实例正在跑的任务一起判死。
+> 多实例只能靠心跳巡检收敛，因为任务在哪个实例上跑没有落库，谁都不知道哪些是自己的。
+> 要精确到实例，得给任务表加 owner 列，那是恢复机制的开头，不在本次范围内。
+
+#### 2.3.4 领取 CAS 与心跳
+
+工作线程做的第一件事仍然是领取 CAS，**没有消息队列不等于不需要它**：
 
 ```sql
 UPDATE ct_health_report_task
@@ -253,16 +370,44 @@ UPDATE ct_health_report_task
  WHERE task_id = ? AND status = 'QUEUED' AND deleted_at IS NULL
 ```
 
-受影响行数为 0 时直接 `XACK + XDEL` 丢弃。四种情况被这一条覆盖：
+受影响行数为 0 时**直接结束该任务的执行，不做任何事、不写终态**。两种情况被它覆盖：
 
-- 消息重复投递
-- 任务已被删除（`deleted_at` 非空）
-- 旧任务失败后用户重新发起分析，而它的残留消息才刚到（旧任务已是 `FAILED`）
-- **孤儿消息**：XADD 成功但事务提交失败，task 行根本不存在（§2.3.3）
+- 任务已被删除（`deleted_at` 非空），包括提交线程池之后用户立刻删除（§2.6）
+- 状态已不是 `QUEUED`（重复提交、或被巡检提前判了失败）
 
-**心跳：** Worker 每 30s 更新 `heartbeat_at`。巡检任务扫 `status ∈ 执行中` 且
-`heartbeat_at < now - 15min` 的，强制置 `FAILED / SERVER_ERROR`（`reanalyzable = 1`），
-覆盖 Worker 进程崩溃。**客户端超时不写终态。**
+> **「陈旧消息」和「孤儿消息」两类问题随队列一起消失了。** 没有队列就没有重复投递，
+> 也不存在"消息还在、任务早已 FAILED"。留下的 CAS 只承担一件事：
+> **和删除操作抢同一行**——这件事和队列无关，去掉队列它照样存在（§2.6）。
+
+**心跳：** 工作线程每 30s 更新 `heartbeat_at`，由**独立的调度线程**执行（§4.1.4）。
+巡检任务扫 `status ∈ 执行中` 且 `heartbeat_at < now - 15min` 的，
+强制置 `FAILED / SERVER_ERROR`（`reanalyzable = 1`）。
+
+**`deadline_at` 必须真的被巡检执行，不能只写不判。**
+原设计只扫「心跳超过 15 分钟没更新」，而心跳是独立线程（§4.1.4）——
+**只要心跳线程还活着，一个卡死在模型调用上的任务可以跑一小时也不会被判超时。**
+巡检要两条件并列，命中任一即终结：
+
+```sql
+-- ① 进程死了：心跳停更
+UPDATE ct_health_report_task SET status='FAILED', fail_code='SERVER_ERROR', reanalyzable=1
+ WHERE status IN ('PARSING','EXTRACTING','ASSEMBLING') AND heartbeat_at < now() - INTERVAL 15 MINUTE;
+
+-- ② 进程活着但跑不完：超过硬截止
+UPDATE ct_health_report_task SET status='FAILED', fail_code='EXECUTION_TIMEOUT', reanalyzable=1
+ WHERE status IN ('PARSING','EXTRACTING','ASSEMBLING') AND now() > deadline_at;
+```
+
+两条的 `fail_code` 不同，因为它们是两种故障：①是"没人在跑了"，②是"在跑但跑不完"。
+合成一条会让排障时分不清该查进程还是该查模型延迟。
+`deadline_at` 在领取 CAS 时置为 `now() + 10min`（见上），**之后不再顺延**——
+心跳只更新 `heartbeat_at`，绝不碰 `deadline_at`，否则②这条永远不会命中。
+
+**心跳巡检在本方案里的分量变重了。** 用消息队列时，进程崩溃后消息还在，
+另一个 Worker 会重新领取；现在任务只存在于那个进程的线程池里，**进程没了任务就没了**。
+心跳巡检是唯一能把这些任务从"永远 `EXTRACTING`"里捞出来的机制（§2.3.3）。
+
+**客户端超时不写终态。**
 
 ### 2.4 进度（需求 §3-7）
 
@@ -287,7 +432,7 @@ UPDATE ct_health_report_task
 | `NOT_HEALTH_REPORT` | 用户传错文件 | 「未识别到体检报告内容，请确认文件是否为体检报告后重新上传」 | false |
 | `UNREADABLE` | 用户拍得糊 | 「报告内容识别不清，请上传更清晰的文件」 | false |
 | `IDENTITY_MISMATCH` | 用户混了别人的报告 | 「检测到上传的文件属于不同人员，请核对后重新上传」 | false |
-| `PAGE_LIMIT_EXCEEDED` | 文件太大 | 「报告页数过多，请分次上传」 | false |
+| `PAGE_LIMIT_EXCEEDED` | 文件容量超限；可在上传/创建时同步发现，也可在 Word OCR 后异步发现（§3.3） | 「报告页数过多，请分次上传」 | false |
 | `FILE_EXPIRED` | 超时未操作 | 「上传的文件已过期，请重新上传」 | false |
 | `SERVER_ERROR` | **我们自己的** | 「服务暂时不可用，请稍后重试」 | **true** |
 | `EXECUTION_TIMEOUT` | **我们自己的** | 同上 | **true** |
@@ -309,9 +454,10 @@ UPDATE ct_health_report_task
 
 **为什么不复用原 taskId：** 复用就要引入 `attempt_no` 来区分第几次执行，
 它会渗进 Worker CAS 和清理逻辑，还会给状态机加一条 `FAILED → QUEUED` 的回边。
-开新任务把这些全部消掉，而且旧任务的残留队列消息天然失效（§2.3.4）。
+开新任务把这些全部消掉。
 
-**次数不设上限。** 天然约束已经够了：文件 30 分钟过期、队列深度背压、每次都要用户主动点。
+**次数不设上限。** 天然约束已经够了：文件 30 分钟过期、线程池有界队列的背压（§2.3.3）、
+每次都要用户主动点。
 加一个计数器只是多一处状态。
 
 ### 2.6 删除（需求 §3-10）
@@ -327,17 +473,101 @@ UPDATE ct_health_report_task
      S3 原始文件
      MySQL ct_health_report_file 行（整行删除）
      Redis result:{taskId}（四模块结果）
-③ 队列中的消息不主动删除 —— Worker 取到后由 ④ 拦下
-④ Worker 每次 CAS、每次写结果都带 deleted_at IS NULL 条件；
-   置 SUCCEEDED 与写 Redis 结果必须在同一逻辑步骤内、且以该 CAS 成功为前提
+③ 【不中断】已经在跑的工作线程 —— 不做 Future.cancel、不发中断，由 ④ 拦下它的写回
+④ 工作线程每次 CAS、每次写结果都带 deleted_at IS NULL 条件；
+   置 SUCCEEDED 与写 Redis 结果按 §2.6.1 的固定顺序执行
 ```
+
+#### 2.6.1 成功写入的顺序：Redis 在前，MySQL CAS 定生死
+
+**MySQL 与 Redis 之间没有事务，"同一逻辑步骤内"是做不到的**，原文那句话是空话。
+能做到的是**定一个顺序，并让其中一方单独决定结果是否可见**：
+
+```
+① 写 Redis result:{taskId}，TTL 2h        ← 此时结果【尚不可见】，没有任何接口会读它
+② MySQL CAS：ASSEMBLING → SUCCEEDED
+        AND deleted_at IS NULL             ← 这一步是唯一的"提交点"
+        AND deadline_at >= now()           ← ★ 硬截止，见下
+③ CAS 影响 0 行 → 立刻 DEL Redis result，再按原因写终态：
+     超过 deadline → FAILED / EXECUTION_TIMEOUT
+     已被删除 / 已被巡检判失败 → 什么都不做（终态已经写过了）
+④ CAS 成功 → 同一条 UPDATE 里把 expire_at 顺延到 now() + 2h（见下）
+```
+
+**`AND deadline_at >= now()` 不能省，否则 10 分钟根本不是硬截止。**
+巡检是周期任务（每 5 分钟一轮），**超时之后、巡检跑到之前有一整个窗口**，
+一个跑了 12 分钟的任务在这个窗口里成功 CAS，结果就正常下发了：
+
+```
+第 0 分钟   领取，deadline_at = 第 10 分钟
+第 12 分钟  任务跑完，CAS 成功  ← 没有 deadline 条件的话，这里会成功
+第 13 分钟  巡检才跑到，看到状态已是 SUCCEEDED，不动它
+→ deadline_at 写了，但从来没有真正拦住过任何东西
+```
+
+加上这个条件之后，**超时判定不再依赖巡检的调度时机**——工作线程自己就撞在门上，
+巡检只负责收尾那些"根本没走到 CAS"的任务（进程死了、卡在模型调用上）。
+
+**可见性由 MySQL 单方面决定，Redis 只是存储。** 结果接口（§9.2）必须先查 MySQL：
+
+```
+task.status != SUCCEEDED  →  不读 Redis，按状态返回进行中 / 失败
+task 不存在 / 归属不符 / deleted_at 非空 / 已过期  →  404 RESULT_EXPIRED（§9.2 四种同码）
+task.status == SUCCEEDED  →  才去读 Redis；读不到也返回 RESULT_EXPIRED
+```
+
+这样两种中间态都是安全的：
+
+| 崩在哪 | 状态 | 用户看到 |
+|---|---|---|
+| ① 之后、② 之前 | Redis 有结果，MySQL 非 `SUCCEEDED` | 结果**不可见**；任务被 §2.3.4 巡检判 `FAILED`，Redis 那份随 TTL 自然过期 |
+| ② 之后、③ 之前 | CAS 已失败但 Redis 没删干净 | 结果**不可见**（MySQL 不是 `SUCCEEDED`），2 小时后自然消失 |
+
+**反过来做（先 CAS 再写 Redis）就有一个真实的坏窗口**：CAS 成功后进程崩溃，
+任务是 `SUCCEEDED` 而 Redis 没有结果，用户轮到"成功"却拿不到内容，还没法重试
+——状态机没有回边（§2.3.1）。
+
+#### 2.6.2 成功后必须把 `expire_at` 顺延到 2 小时
+
+`ct_health_report_task` 行原本保留到 `expire_at`（创建后 30 分钟），
+而结果的 Redis TTL 是 2 小时（§2.7）。**两者不一致的后果是结果的后 90 分钟根本读不到**：
+
+```
+第 30 分钟：任务行被清理任务物理删除
+第 31 分钟：用户刷新页面 → 结果接口查 MySQL → 任务不存在 → 404 RESULT_EXPIRED
+            而 Redis 里那份结果还好好地躺着，再躺 89 分钟然后过期
+```
+
+不是"少活一会儿"，是**归属校验没有依据了**——没有任务行就查不到 `user_id`，
+接口无法判断这份结果该不该给这个人看，只能拒绝（§9.2）。
+
+**所以 ②④ 的 CAS 必须同时顺延 `expire_at`：**
+
+```sql
+UPDATE ct_health_report_task
+   SET status = 'SUCCEEDED', progress = 100,
+       expire_at = now() + INTERVAL 2 HOUR,   -- ★ 与结果 TTL 对齐
+       version = version + 1
+ WHERE task_id = ?
+   AND status = 'ASSEMBLING'
+   AND deleted_at IS NULL
+   AND deadline_at >= now();                  -- ★ 硬截止（§2.6.1）
+```
+
+**只有成功才顺延。** `FAILED` 任务的 30 分钟不变——它的 30 分钟服务于
+「用户点重新解析时文件还在」（§2.7），跟结果可见期没有关系。
 
 **这一步防的是这个竞态：**
 
 ```
-用户删除 → 结果被删 → Worker 随后执行完成 → Worker 把结果又写回去
+用户删除 → 结果被删 → 工作线程随后执行完成 → 把结果又写回去
                                             → 健康数据在"已删除"之后重新出现
 ```
+
+**为什么不直接打断那个线程。** 与 §4.1.4「任一批失败时不取消其余批次」同一条理由：
+取消传播要引入 `Future.cancel` + 中断处理 + 半途响应的清理，换来的只是省几秒模型调用。
+让它跑完、在写回那一步被 `deleted_at IS NULL` 拦下，是更简单也更可靠的做法
+——**正确性靠写回条件保证，不靠"能不能及时停下来"。**
 
 `deleted_at` 在 MySQL 且不随 TTL 消失，比 Redis 墓碑可靠——墓碑 TTL 一过就失去保护。
 `ct_health_report_task` 行由 §2.7 的清理任务统一回收。
@@ -353,7 +583,7 @@ UPDATE ct_health_report_task
 | 任务状态 | 原始文件（S3） | `ct_health_report_file` 行 | `ct_health_report_task` 行 | Redis 结果 |
 |---|---|---|---|---|
 | 执行中 | 保留 | 保留 | 保留 | — |
-| `SUCCEEDED` | **立即删除** | **立即删除** | 保留至 `expire_at` | TTL 2h |
+| `SUCCEEDED` | **立即删除** | **立即删除** | 保留至 `expire_at`（**成功时顺延为 2h**，§2.6.2） | TTL 2h |
 | `FAILED` 且 `reanalyzable=1` | **保留至 `expire_at`** | 保留至 `expire_at` | 保留至 `expire_at` | 无 |
 | `FAILED` 且 `reanalyzable=0` | 立即删除 | 立即删除 | 保留至 `expire_at` | 无 |
 | `deleted_at` 非空 | 立即删除 | 立即删除 | 保留至 `expire_at` | 立即删除 |
@@ -365,7 +595,8 @@ UPDATE ct_health_report_task
 文件被重新绑定到新任务后，其 `task_id` 已指向新任务，清理按新任务的状态走，
 旧的 `FAILED` 任务行不再持有文件。
 
-`ct_health_report_task` 行保留至 `expire_at`（30 分钟）是为了让 `deleted_at` 在整个 Worker
+`ct_health_report_task` 行保留至 `expire_at`（创建时 30 分钟，**成功后顺延为 2 小时**
+以对齐结果 TTL，§2.6.2）是为了让 `deleted_at` 在整个 Worker
 生命周期内可查，到期后物理删除。该表不含任何健康数据。
 
 | 其他数据 | 生命周期 |
@@ -387,16 +618,23 @@ UPDATE ct_health_report_task
 |---|---|---|
 | PDF | `%PDF-` 头 | PDFBox 能打开、页数 ≥ 1 |
 | JPG/PNG | magic number + **实际解码** | 解码成功、宽高 ≥ 100px、总像素 ≤ 8000 万 |
-| DOCX | ZIP 容器 + 内含 `word/document.xml` | POI 能打开、正文非空 |
+| DOCX | ZIP 容器 + 内含 `word/document.xml` | POI 能打开，且**正文非空或含 ≥1 张合规内嵌图片** |
 | OFD | ZIP 容器 + 内含 `OFD.xml` | ofdrw 能打开、页数 ≥ 1 |
-| DOC | OLE2 复合文档头 `D0CF11E0` + WordDocument 流 | POI 能打开、正文非空 |
+| DOC | OLE2 复合文档头 `D0CF11E0` + WordDocument 流 | POI 能打开，且**正文非空或含 ≥1 张合规内嵌图片** |
 
 **ZIP 不是支持的上传格式**，用户传 `.zip` 在此处直接被拒。
 但 DOCX 与 OFD **自身就是 ZIP 容器**（OOXML 与 GB/T 33190 的规定，不是用户的选择），
 所以两者的 magic number 都是 `PK\x03\x04`，只判 magic number 会互相误认，
 必须解开查内部结构。DOC 是例外，它是老的二进制 OLE2 复合文档。
 
-Word 没有统一的"页数"概念，可读性判据是**正文非空**而不是页数。
+Word 没有统一的"页数"概念，可读性判据不是页数。
+
+**判据是「正文非空 **或** 至少有一张 ≥300×300px 的内嵌图片」，两者满足其一即可。**
+
+> **只判「正文非空」会把图片型 Word 在上传阶段就拒掉。**
+> 「扫描件贴进 Word」是本方案明确要支持的形态（§3.3.1「只抽正文会漏掉贴图形式的报告」），
+> 这类文件的正文恰恰是空的、`precheck_pages` 恰恰是 0——
+> 它们本该走工作线程的内嵌图片 OCR，却在 `FILE_UNREADABLE` 上被挡住，永远进不了 OCR。
 
 #### 3.1.1 解压炸弹防御（DOCX / OFD）
 
@@ -463,6 +701,9 @@ OFD   →  ofdrw 是否有等价机制需实际查证；没有则在交给它之
 
 **PDF 是否有文本层：** 抽取字符数 / 页数 ≥ 50 且非空白字符占比 ≥ 30%，任一不满足走 OCR。
 
+**PDF→OCR 还有第二道触发条件**：文本层存在但绘制单元退化到字形级时同样改走 OCR，
+判据与理由见 §3.2.1 的密度闸。它必须在解析之后才判得了，所以不在本节的路由表里。
+
 ### 3.2 Segment：回切原文的唯一凭据
 
 需求 §6-3 要展示「报告原文完整描述，便于用户与纸质报告核对」。要做到这点必须解决两件事：
@@ -470,17 +711,79 @@ OFD   →  ofdrw 是否有等价机制需实际查证；没有则在交给它之
 
 #### 3.2.1 解析器把每个文件切成不可变的 segment
 
-| 来源 | 一个 segment 是 |
-|---|---|
-| PDF 原生文本层 | 一个文本块；表格区为**一个单元格** |
-| OCR | 一个识别块（附 bbox） |
-| DOCX / DOC | 一个段落；表格区为**一个单元格** |
+| 来源 | 一个 segment 是 | 解析器**不做**的事 |
+|---|---|---|
+| PDF 原生文本层 | PDF 内容流原生的**单次文本绘制单元**（一次 `Tj` / `TJ` 显示操作） | 不按字体、基线、字符间距或坐标二次合并；不识别表格、不聚类行列、不判断单元格 |
+| OFD | ofdrw 抽出的一个**原子文本对象** | 同上 |
+| OCR | 一个识别块 | 不合并相邻块 |
+| DOCX / DOC | 一个段落；表格按 POI 给出的**显式**单元格切 | 不合并跨行/跨列单元格，不重排行列 |
+
+**PDF / OFD 不切"单元格"，因为解析器判不了。** PDFBox 只给字形和坐标，没有任何表格结构；
+要切出单元格必须做坐标聚类和行列推断——**那是版面理解，属于 LLM-A**（§0-2）。
+Java 在这一层做行列推断，双栏、跨行合并单元格、续页表头会各错一种，而且错得静默。
+
+**"同字体、同基线、字符距离足够近"也不是原子块定义。** 这些条件仍然需要坐标容差，
+本质上只是把版面聚类缩小到了字符级。PDF 解析器只能沿用文件内容流本身已经声明的绘制边界，
+不能靠阈值猜哪些字应该合并。
+
+**实现路径：覆写 `PDFStreamEngine` 的 `showTextString` / `showTextStrings`**，
+一次显示操作产出一个 segment。**不要用 `PDFTextStripper`**——它内部按行聚类，
+正是这里要避免的那种推断，用它等于把版面判断偷偷做回 Java（§11-19 需实机验证）。
+
+##### 拿不到绘制单元边界时，整文件改走 OCR，不退化为字形
+
+有些 PDF 生成器逐字发 `Tj`，此时绘制单元就是单个字形——**不是解析器的选择，是文件本身如此**。
+早先这里写「退化为单字形」，但那条路走不通，它会同时撞破三个硬约束：
+
+```
+① segmentIds 上限     一行「甘油三酯 2.8 mmol/L 0.56~1.70 ↑偏高」= 25 个字形
+                      > 上限 32 → Schema 拒绝 → §4.4-① 整任务 FAILED，且不重试
+                      不是降级，是这类 PDF 每次必失败
+② LLM-A 输入体积      每段前缀 segmentId（12~13 字符，§4.1）
+                      逐字形 ≈ 每个汉字 1 token 正文 + ~7 token 前缀
+                      8 页/批 × ~2000 字/页 → 12~13 万 token/批，另加 8 张页面图
+③ seq 容量            segmentId 的 `s` 段是 5 位（上限 99999）
+                      30 页密集表格逐字形能到 6~9 万，卡在边界上
+```
+
+**因此加一道密度闸，判据落在解析完成之后、送模型之前：**
+
+```
+某文件 PDF 原生文本层的 segment 数 / 等效页数 > MAX_SEGMENTS_PER_PAGE（暂定 400）
+    → 判定为「逐字形绘制」形态
+    → 【该文件整体改走 OCR 路径】，textSource 记为 OCR，包含性校验走放宽档（§3.2.3）
+    → 记 glyphLevelPdfCount
+```
+
+**兜底指向 OCR 而不是别的东西，是因为 OCR 识别块天然就是词/行粒度**，
+而且 §3.1 已经有 PDF→OCR 的路由，这里只是多一个触发条件，**不引入任何新的聚类逻辑**。
+代价是这类文件从"有原生文本层"降级成"按图识别"，精度略降——但它本来也拿不到有意义的结构。
+
+阈值 400 的量级依据：一页密集体检报告约 2000 字符，按字段/单元格发绘制操作时是
+200~400 个 segment，逐字形则是 2000+，两者差一个数量级，闸门放在中间。**需用真实样本校准（§11-7b）。**
+
+**DOC/DOCX 是例外，因为 OOXML 里的 `<w:tc>` 是文档自己声明的结构，不是推断出来的**
+——读一个已经写明的标签不构成版面判断。但仅限显式单元格：合并跨行跨列、还原逻辑表格
+同样不做。
+
+> **哪些块属于同一个单元格、同一行、同一个指标，一律由 LLM-A 判断**（§4.1 给它页面图像
+> 和每个 segment 的 `bbox`），它把判断结果表达为 `blockRefs` 数组（§4.1.5）——
+> 一个指标的五个字段落在四个原子块里就引用四个块号。
 
 ```
 segmentId = f{fileIndex}-p{page}-s{seq}     例：f0-p2-s17
 ```
 
-`page` 对 Word 是逻辑分块序号（§3.3.1）。`seq` 在文件内单调递增，**一经分配不再变化**。
+`page` 对 Word 是逻辑分块序号（§3.3.1）。`seq` 在文件内单调递增，一经分配不再变化。
+
+> **这是进程内的稳定主键，不是送给模型的编址方式。**
+> `segmentId` 的全局唯一性服务于跨批去重（§4.1.3）、跨文件不混淆和回切定位；
+> **它不落库**——§9.1 的持久化清单里没有 segment 表，segment 只活在任务执行期的内存里
+> （§2.7）。而**一次批内调用连全局唯一都不需要**——
+> 批次不跨文件，页是有序的，模型只需要区分"本批这几千块里的哪一块"。
+> 把主键直接当线上格式用，代价是每块多背 8 个 token 的全局唯一性，
+> 一批就是三万 token 的纯记账开销（§4.1.5）。**线上用批内块号 `blockRef`，
+> Java 收到响应后查表展开成 `segmentId`。**
 
 每个 segment 保存：
 
@@ -488,7 +791,7 @@ segmentId = f{fileIndex}-p{page}-s{seq}     例：f0-p2-s17
 |---|---|
 | `rawText` / `normalizedText` | 两份文本，见 §3.2.2 |
 | `textSource` | **`NATIVE`**（PDFBox / ofdrw / POI 抽出）或 **`OCR`**。决定 §3.2.3 的校验档位 |
-| `bbox` | 仅 OCR 场景，P2 用于原图高亮，V1 不用 |
+| `bbox` | **全来源保留**（PDF/OFD 取字形包围盒，OCR 取识别框，Word 无版面坐标时为 `null`），随批次输入给 LLM-A，用于把文本块对齐到页面图像。**"保留"= 任务执行期间留在内存里，任务结束即释放；不落库、不落盘、不进 Redis**（§2.7、§10「明确不做」） |
 
 #### 3.2.2 原文与规范化文本
 
@@ -505,7 +808,8 @@ segmentId = f{fileIndex}-p{page}-s{seq}     例：f0-p2-s17
 | `rawText` | 解析器抽出的**原始字符**，一个字都不动 | **展示、原文核对** |
 | `normalizedText` | NFKC → 部首映射表（U+2E80-2EFF，约 30 条）→ 全角转半角 | 送模型、关键词匹配、去重、字符串比对 |
 
-**模型只看到 `normalizedText`，且每段前缀 `segmentId`。** 模型返回定位时只返回 `segmentId`。
+**模型只看到 `normalizedText`，按批内块号编址**（§4.1.5）。模型返回定位时只返回块号，
+Java 展开成 `segmentId` 后再进入下游——**模型从头到尾看不到也用不着 `segmentId`。**
 
 #### 3.2.3 两种回切，粒度不同
 
@@ -514,9 +818,9 @@ segmentId = f{fileIndex}-p{page}-s{seq}     例：f0-p2-s17
   → 直接取该 segment 的整段 rawText，不做字段级切分
   → segmentId 不存在 → 该条整条丢弃
 
-指标卡片的五个短字段（name / value / unit / refRange / conclusionText）
+模型复述的短字段（指标五字段、problemName、title、rawName、rawResult、sectionName）
   → 用模型返回值展示，但必须通过包含性校验（档位见下）
-  → 任一字段校验不过 → 该指标整条丢弃
+  → 校验不过的处理逐字段不同，完整清单见 §4.2 末的表
 ```
 
 **包含性校验必须按 `textSource` 分档，不能一刀切严格匹配：**
@@ -543,8 +847,10 @@ segment.normalizedText  含「甘油三酯 2.6」    ← OCR 错了
 字段级 offset 需要维护 raw↔normalized 的逐字符映射表，实现和测试成本远高于收益。
 包含性校验已经能保证"这五个值确实出自这个 segment"，而这正是"不是幻觉"的判据。
 
-**一个 segment 含多个指标是正常的**（表格单元格粒度下少见，文本块粒度下常见），
-多条指标共享同一 `segmentId` 不冲突——包含性校验逐条独立执行。
+**一个 segment 含多个指标、一个指标横跨多个 segment，两种都正常**——
+原子块粒度下后者是常态（一行表格 = 名称、数值、单位、参考范围、结论五个独立块）。
+多条指标共享同一 `segmentId` 不冲突，一条指标引用多个 `segmentId` 也不冲突：
+包含性校验把引用块的 `normalizedText` **合并后**再查子串，逐条独立执行。
 
 菜品数据（可能来自 Excel/PDF 导入）同样走规范化，但只用于匹配，展示菜名用原始值。
 
@@ -555,7 +861,7 @@ segment.normalizedText  含「甘油三酯 2.6」    ← OCR 错了
 #### 3.3.1 Word 不按页计算（§15 评审）
 
 POI 拿不到 Word 渲染后的页数——分页由渲染引擎决定，与文档结构无关。
-因此 DOC/DOCX **不参与页数模型**，用独立规则：
+因此 DOC/DOCX **不使用物理页数**，用独立规则：
 
 ```
 逻辑分块：每 40 个 segment 记为 1 个"等效页"，用于统一容量核算与 LLM-A 分批
@@ -568,15 +874,51 @@ POI 拿不到 Word 渲染后的页数——分页由渲染引擎决定，与文�
 
 **只抽正文会漏掉贴图形式的报告**，所以内嵌图片必须提取并 OCR，这是 Word 路径的必做项。
 
+**判定分两段进行：**
+
+```
+上传阶段（不做 OCR）
+  nativeSegmentCount = 正文段落 + 表格单元格等原生 segment 数
+  embeddedImageCount = ≥300×300px 的内嵌图片数
+  nativeSegmentCount > 1200 或 embeddedImageCount > 30
+      → 立即 PAGE_LIMIT_EXCEEDED，不保存文件记录
+  否则保存 precheckPages = ceil(nativeSegmentCount / 40)，允许图片型 Word 在 OCR 前为 0
+      → 它是容量下界，不是 Word 的最终等效页数
+
+工作线程 PARSING 阶段
+  对内嵌图片做 OCR，OCR 块按图片在 Word 源码中的位置并入 segment 序列
+  exactSegmentCount = 原生 segment + OCR segment
+  exactSegmentCount > 1200
+      → FAILED / PAGE_LIMIT_EXCEEDED / reanalyzable=false，不调用 LLM-A
+  否则 exactWordPages = ceil(exactSegmentCount / 40)
+```
+
+Word 的 OCR 块数在上传时未知，因此本版接受一个明确例外：**由 OCR 块导致的 Word 文件超限，
+以及由此导致的任务累计超 60 页，在工作线程解析完成后异步失败**，不强求创建任务前拒绝。
+这是容量判定时机的让步，不是重试或降级；同一文件重新执行仍会超限，所以
+`reanalyzable=false`。OCR 服务本身失败仍按 `SERVER_ERROR / reanalyzable=true`，两者不得混用。
+
 #### 3.3.2 页数上限与降级
 
-单任务累计"等效页数"（PDF/OFD/图片按真实页数，Word 按 §3.3.1 折算）：
+单任务累计"精确等效页数"（PDF/OFD/图片按真实页数，Word 在 OCR 后按 §3.3.1 折算）：
+容量精确裁决与前 30 页保留都在 `PARSING` 阶段完成，通过后才能调用 LLM-A。
 
 ```
 ≤ 30 页   → 全部处理，四个模块正常输出
-31~60 页  → 只处理前 30 页，置 partial = true / partial_reason = PAGE_TRUNCATED
-> 60 页   → 创建任务时直接拒绝，failCode = PAGE_LIMIT_EXCEEDED
+31~60 页  → 按 fileIndex 与文件内顺序只处理前 30 等效页，
+             置 partial = true / partial_reason = PAGE_TRUNCATED
+> 60 页   → 无 Word 时创建任务前直接拒绝；含 Word 且仅 OCR 后才确认超限时，
+             工作线程置 FAILED / PAGE_LIMIT_EXCEEDED，不调用 LLM-A
 ```
+
+**单个 Word 文件不进入 31~60 档**：它超过 1200 segment（30 等效页）就直接失败。
+但 Word 仍参与**任务累计**截断。例如 PDF 20 页 + Word 800 segment（20 等效页）总计 40 页，
+应处理 PDF 20 页和 Word 前 400 个有序 segment，而不是把整份 Word 拒绝或全部丢弃。
+多个 Word 文件同理。Word 的逻辑页按 OCR 块并入后的 segment 源码顺序每 40 个切一页；
+这只是确定性计数与截断，不做版面或语义判断。
+
+创建任务时先用各文件的 `precheck_pages` 做下界预检：下界累计已大于 60 时直接拒绝；
+下界未超限只代表“尚未确定超限”，不代表 Word OCR 后的精确总量必然不超限。
 
 **`partial = true` 的后果按原因区分，见 §4.1.1 的降级矩阵。**
 页数截断这一类的后果是：**模块三与模块四整体不输出。**
@@ -594,16 +936,94 @@ POI 拿不到 Word 渲染后的页数——分页由渲染引擎决定，与文�
 
 ### 4.1 分批与批次裁决
 
-每批：该批 segment 的 `normalizedText`（每段前缀 `segmentId`）+ 对应页面图像。
+每批：该批 segment 的 `normalizedText`（**按批内块号编址**，见 §4.1.5）+ 对应页面图像。
 DOC/DOCX 只有文本，加上从内嵌图片 OCR 出来的 segment（§3.3.1）。
 
 ```
-每任务 LLM-A 调用次数 = ceil(等效页数 / 8)，上限 4 批
+一个批次的全部页必须来自【同一个文件】，批次绝不跨文件
+每任务 LLM-A 调用次数 = Σ ceil(各文件【截断后保留的】等效页数 / 8)，上限 8 批
+单任务内批次并发度仍为 4（8 批时分两轮跑）
 任一批调用失败（超时 / 429 / 5xx / 连接中断）→ 整任务立即 FAILED / SERVER_ERROR
 ```
 
+**批次不跨文件是文件级裁决的前提。** 响应只有一个 `batchStatus` 和一组 `patient`，
+跨文件批次下「某文件全部批次 `NO_REPORT_FEATURE`」这句话没有对应的数据可算。
+上限从 4 提到 8：5 个文件各自向上取整，最坏形态 9/9/9/2/1 页 = 2+2+2+1+1 = 8 批。
+
+> **章节归属由 LLM-A 给出，Java 不推导**（§0-2）。
+> 「这一行属于哪个章节」是版面理解——跨页续表、双栏排版、页脚标题、夹在两章之间的小结，
+> 只有看得见版面的模型分得清。Java 拿排序后的扁平序列反推「阅读顺序上最近的一个标题」
+> 会在上述每一种版面上归错，且错得静默。
+>
+> **序号的稳定性用批内局部序号 + Java 拼接解决，不用把职责搬走：**
+>
+> ```
+> sectionIndex     由 LLM-A 给出，【批内局部序号】，每批从 0 起
+> sectionSegmentId 由 LLM-A 给出，指向印着该章节标题的 segment  ← 跨批对齐的唯一凭据
+> sectionRelation  由 LLM-A 给出，四态，说明这个章节和上一批是什么关系  ← 见下
+> groupKey         = Java 按 sectionRelation 拼，纯字符串运算（§4.6）
+> ```
+>
+> 并行分批时模型确实生成不了**全局**序号，但它不需要生成——每批只报本批看到的章节，
+> 并用 `sectionBlockRef` 指出标题原文在哪。
+>
+> **「同一章节跨批出现时 ID 相同、天然合并」这句话原先是错的，已删。**
+> 批次不重叠（§4.1），**后一批根本看不到前一批的标题块**，不可能再返回同一个 ID。
+> 跨批的同一章节走的是另一条路：前一批报 `CURRENT`，后一批报 `CONTINUATION`，
+> 由 §4.6 机械继承前一批末章节的 `sectionSegmentId` 而合并。
+> 只有批次输入确有重叠时（§4.1.3 的去重前提）才会出现两批报同一个 ID，那属于顺带成立，
+> **不是合并机制的依据**。
+>
+> **批次边界必须由模型显式表态，不能靠 `null` 让 Java 猜。**
+> 早先的写法是「`sectionSegmentId = null` 时 Java 继承前一批末章节」，这条不成立——
+> `null` 至少压着五种互不相同的情况：
+>
+> ```
+> 承接上一批还没结束的章节（跨页续表）      → 该继承
+> 这部分内容本来就不属于任何章节（封面、
+>   须知、附录、页末独立声明）              → 【不该继承】，继承会把封面文字挂到「血脂检查」下
+> 上一章节已结束、本批开头还没出现新标题     → 【不该继承】
+> 标题被裁在批次切分线上，模型没看全         → 不知道，得单独表达
+> 模型就是没识别出来                        → 不知道，得单独表达
+> ```
+>
+> Java 无差别继承，等于又在替模型决定「这条内容属于哪个章节」——**换了个入口的同一处越界**。
+>
+> ```
+> sectionRelation = CURRENT       标题就在本批内   → sectionSegmentId 必填
+>                 | CONTINUATION  承接上一批的章节 → sectionSegmentId = null，Java 机械继承
+>                 | UNSECTIONED   本就不属于任何章节 → null，【不继承】，单独成组
+>                 | UNKNOWN       没看清 / 不确定    → null，【不继承】，记 sectionUnknownCount
+> ```
+>
+> **Java 只在 `CONTINUATION` 一种取值下继承，且只做继承、不做识别。**
+> `UNSECTIONED` 与 `UNKNOWN` 不并入任何章节，按 §4.6 单独成组，展示名分别取模型给的
+> `sectionName`（如「检查须知」，须过 §4.2 来源校验）和固定文案「未标注章节」。二者在展示上都不特殊处理，
+> 区别只在 `UNKNOWN` 要打点——它是"模型没看清"，是质量信号，不能和"确实没有章节"混在一起
+> （同 §4.1.1 把 `NO_REPORT_FEATURE` 和 `UNREADABLE` 分开的理由，§0-5）。
+>
+> 字段级契约以 `schema/extraction_output.schema.json` 为准（已同步：`sections` 数组 +
+> 逐条目 `sectionIndex`，旧的 `sectionTitleSegmentIds` 已删除）。开发方案凡出现
+> 「章节归属由 Java 按最近标题算出」的表述一律作废。模型给 `sectionSegmentId` 的准确率
+> 需用评测集验证（§11-17）。
+
 **不做批次级重试。** 服务端出错直接返回错误，由用户决定要不要重新解析（§2.5）。
 代价是瞬时抖动也会变成一次用户可见的失败，实际失败率需上线后观测（§11-13）。
+
+> **LLM-A 直连模型 API，不经过 Dify**（2026-08-25 变更）。
+> 直连解掉的是一个死结：Dify 的文件上传**没有删除接口**，
+> 每一页报告渲染图上传后会永久留在它的存储里，与 §2.7「原文件在任务成功后立即删除」
+> 无法调和。直连时图像内联在请求体里，**不在任何中间系统落地**。
+>
+> **LLM-B 也改为直连**（2026-08-27 变更）。它的理由与数据敏感度无关
+> ——LLM-B 的请求里只有菜名和食材，一条健康数据都没有，留在 Dify 不违反任何隐私约束。
+> 改直连是因为**提示词正文已经决定放在 Java 侧**（原 §13.2.2 的 D1）：
+> 提示词、`userMessage` 拼装、覆盖与互斥校验、条件约束全都在 Java，
+> Dify 工作流退化成「输入 → LLM → 输出」三个节点的转发，
+> 却仍要付出一份可漂移的 schema 副本、一处 `modelVersion` 双真源、
+> 两条只为锁 DSL 而存在的契约测试。**收益归零而成本仍在，就该去掉。**
+>
+> 详见开发方案 §13.2。
 
 **在线链路只使用 LLM-A**，但 LLM-A 本身分批，一份 22 页报告是 3 批
 ——"在线只有一次模型调用"的说法是错的，此处更正。
@@ -619,7 +1039,37 @@ DOC/DOCX 只有文本，加上从内嵌图片 OCR 出来的 segment（§3.3.1）
 | `UNREADABLE` | **读不清**，可能有内容但看不出来 |
 
 这两者必须分开。`NO_REPORT_FEATURE` 是"确定没有"，`UNREADABLE` 是"不知道有没有"
-——把后者当成前者，就是把"模型没看清"当成"报告里没有"，违反 §0-4。
+——把后者当成前者，就是把"模型没看清"当成"报告里没有"，违反 §0-5。
+
+**零 segment 是一种独立的失败，不能靠批次裁决兜住：**
+
+```
+解析全部完成后，某文件的 segment 数 == 0    → 该文件视为不可读
+全部文件的 segment 数之和 == 0             → 整任务 FAILED / UNREADABLE
+                                            【LLM-A 调用次数为 0】，一批都不发
+
+部分文件零 segment、其余正常                → 【不是静默忽略】：
+                                            partial = true
+                                            partial_reason = BATCH_UNREADABLE
+                                            → 模块三与模块四不输出（§4.1.1 降级矩阵）
+                                            其余文件照常抽取，模块一二正常展示
+```
+
+> **「一份读不出、另一份正常」必须降级，理由与 `BATCH_UNREADABLE` 完全一样**——
+> 读不出来的那一份**恰好可能就是含过敏原和医嘱的那一份**。
+> 直接忽略它，等于在"确定缺了一整个文件"的前提下继续输出饮食建议和菜品推荐，
+> 而页面上看不出任何异常。这是 §3.3.2 截断降级、§4.1.1 批次降级同一条论证的第三种形态。
+>
+> **复用 `BATCH_UNREADABLE` 而不新增枚举**：三者的后果完全相同（关模块三四），
+> 多一个枚举值只多一处要维护的分支；名字略偏但语义是对的——"有内容没读到"。
+
+> **为什么必须单列一条。** 下面的文件级/任务级裁决全部建立在「有批次」之上，
+> 而零 segment 时**批次数是 0**——「全部批次 UNREADABLE」这句话在空集上恒真也恒假，
+> 裁决逻辑根本不会被触发，任务会带着四个空模块走到 `SUCCEEDED`。
+>
+> 触发场景不是边角：**正文为空但有内嵌图片的 Word**（§3.1 允许它通过可读性校验）、
+> 纯图片上传、扫描版 PDF/OFD——只要 OCR 调用成功却一个文字块都没识别出来，就是这一条。
+> OCR 服务返回空结果与 OCR 服务报错是两回事，后者走 `SERVER_ERROR`，前者走这里。
 
 **文件级与任务级裁决：**
 
@@ -649,7 +1099,7 @@ DOC/DOCX 只有文本，加上从内嵌图片 OCR 出来的 segment（§3.3.1）
 
 | 项 | 规则 |
 |---|---|
-| 跨批章节排序 | 按 `fileIndex → page → 批内 sourceOrder`，不按批次号 |
+| 跨批排序 | 一律按 §4.6 的**排序总则**，不按批次号；本节不重复表述排序键 |
 | 跨批去重 | **只在批次输入确有重叠时执行**，判据是 `segmentId` 相同；见 §4.1.3 |
 | 姓名只在部分批出现 | 取所有非空值参与 §4.5 比对；全空视为该文件未识别出姓名 |
 
@@ -681,23 +1131,36 @@ DOC/DOCX 只有文本，加上从内嵌图片 OCR 出来的 segment（§3.3.1）
 ```
 
 批次结构上互相独立：每批拿自己的 segment 和图像，返回自己的抽取结果，
-没有哪一批需要另一批的输出。合并（§4.1.2）按 `fileIndex → page → sourceOrder` 排序，
+没有哪一批需要另一批的输出。合并（§4.1.2）按 **§4.6 的排序总则**排序，
 **不按批次完成顺序**，姓名合并、跨批去重、文件级裁决也都是拿到全部批结果之后才算，
 乱序返回天然无影响。
 
-**并发度的上界由模型服务的配额倒推：**
+**批次并发跑在独立的 `llmBatchExecutor` 上，不是任务池**（§2.3.3）——共用会线程饥饿死锁。
+
+**并发度的上界由模型服务的配额倒推。** `W` 就是 §2.3.3 那个**任务池**的固定线程数：
 
 ```
-峰值在飞 LLM-A 调用数 = Worker 并发任务数 W × 单任务批次并发度 4
+峰值在飞 LLM-A 调用数 = 实例数 N × 单实例线程池大小 W × 单任务批次并发度 4
 
-设模型服务允许的并发配额为 C，则   W = floor(C / 4)
+设模型服务允许的并发配额为 C，则   W = floor(C / (4 × N))
 ```
 
-**不设独立的全局信号量。** `W × 4` 已经是硬上界，再叠一层信号量就有两个旋钮要调，
-而且 `W` 本身还受队列深度背压（§2.2）约束。信号量的价值是"小任务多跑几个"提高利用率
+> **`N` 这一项是去掉消息队列之后新出现的，别漏。** 用 Redis 队列时，
+> 无论部署几个实例，全局在飞任务数由"总消费者数"统一约束；改成本机线程池后，
+> **每个实例都独立地跑满自己的 `W`**——两个实例就是 `2 × W × 4` 个在飞调用。
+> 按单实例算出来的 `W` 直接乘 2 部署，等于把配额超用一倍，而全案零重试，
+> 一个 429 就是一次用户可见失败（§2.5）。
+>
+> 配套约束：**`N` 变了必须重算 `W`**。扩容不是加机器就完事，它会直接改动模型侧的并发。
+
+**不设独立的全局信号量。** `N × W × 4` 已经是硬上界，再叠一层信号量就有两个旋钮要调，
+而且线程池的有界队列本身就是背压（§2.3.3）。信号量的价值是"小任务多跑几个"提高利用率
 ——但本系统每个用户一份报告只分析一次，吞吐压力极低，那点利用率不值得多一个组件。
 
-> 只有当实测发现 `W = floor(C/4)` 明显跑不满配额、且确实存在排队时，才回来加信号量。
+> 真要跨实例精确控住配额，得引入分布式信号量或把队列加回来——两者都超出本次简单版的范围。
+> **本次的口径是：靠部署纪律（`N` 固定、`W` 按 `N` 算）保证不超配额，不靠运行时机制。**
+
+> 只有当实测发现 `N × W × 4` 明显跑不满配额、且确实存在排队时，才回来加信号量。
 
 **这条尺寸现在是唯一的限流保护。** 全案零重试（§2.5），一个 429 就是一次用户可见失败，
 所以 `W` 必须卡在配额之下，宁小勿大。模型服务的并发配额 `C` 需向服务方确认（§11-15）。
@@ -715,6 +1178,11 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
 
 串行时同时只有 8 页，这个问题不明显；并发后是致命的。
 
+**去掉消息队列之后这条更要紧：分析和 Web 层现在共用同一个堆**（§2.3.3）。
+以前 Worker 至少有可能独立部署，OOM 只打掉分析；现在一次 OOM 会连 Tomcat 一起带走，
+影响的是全部在线请求，而不只是正在分析的那几个用户。
+堆的下限按 `W × 单任务峰值` 估，`W` 见上。
+
 **任一批失败时不取消其余批次**，让它们跑完再丢弃结果。取消传播要引入
 `Future.cancel` + 中断处理 + 半途响应的清理，换来的只是几秒的模型调用成本。
 整任务已经确定要 `FAILED`，早几秒晚几秒无差别。
@@ -722,9 +1190,105 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
 **心跳独立线程。** Worker 每 30s 更新 `heartbeat_at`（§2.3.4）必须由独立的调度线程执行，
 不能挂在批次处理的主流程里——批次并行等待期间主流程是阻塞的，心跳停了会被巡检误杀。
 
+#### 4.1.5 批次编址与输入预算
+
+**渲染格式：每页一个页眉，每块一个批内块号 `blockRef`，从 0 起。**
+
+```
+每行格式：[块号] (textSource, bbox=x,y,w,h) 文本
+
+=== 第 2 页 ===
+[0] (NATIVE, bbox=72,110,180,22)  血脂检查
+[1] (NATIVE, bbox=72,168,120,20)  甘油三酯
+[2] (NATIVE, bbox=200,168,40,20)  2.8
+[3] (NATIVE, bbox=250,168,60,20)  mmol/L
+[4] (NATIVE, bbox=320,168,90,20)  0.56~1.70
+[5] (NATIVE, bbox=420,168,60,20)  ↑偏高
+=== 第 3 页 ===
+[6] (NATIVE, bbox=72,110,180,22)  肝功能
+...
+```
+
+**`bbox` 必须逐块随文本一起给，不能只给页面图。** §3.2.1 保留 bbox 就是为了这一步：
+解析器不聚类行列（§3.2.1），模型要自己判断"这五个块是同一行"，
+而**只看渲染顺序是判不出来的**——双栏页面上左右两栏的块可能交替出现，
+表格页上块的顺序取决于绘制顺序。给了坐标，同一行的块 `y` 接近、`x` 递增，一眼可辨。
+
+坐标系原点在页面左上角、单位像素、基准是同批下发的那张渲染图，旋转已由后端归一化。
+Word 无版面坐标时 `bbox` 为空，此时只能按阅读顺序理解（§3.2.1）。
+
+```
+blockRef      批内块号，按【segment 的 seq 升序】渲染，0 起连续，模型只回它
+映射表        Java 在发出请求时就持有 blockRef → segmentId 的数组，收到响应立刻展开
+渲染顺序      是契约的一部分，不是实现细节 —— 序号的含义完全由它定义
+```
+
+**Java 做的是查表，不是推断**（§0-2）：映射表是它自己刚发出去的那一份，
+展开过程不含任何语义判断。越界或重复的 `blockRef` 按「引用了不存在的块」处理
+（§4.4-⑤ 丢弃 + `evidenceMissCount`），不是新的失败类型。
+
+**为什么不直接发 `segmentId`：**
+
+| 编址 | 前缀开销/批 | 合计/批 | 一份报告（8 批） |
+|---|---|---|---|
+| `f0-p12-s3456` 全局主键 | 30.4k | ≈65k | ≈521k |
+| `[147]` + 每页页眉 | 14.4k | **≈49k** | **≈394k** |
+
+（按 8 页/批、400 块/页上界、每页 2000 字、页面图缩到长边 1568px 估算，**待实测校准，§11-20**）
+
+全局唯一性在批内是纯浪费：`f` 恒定（批次不跨文件）、`p` 已经由页眉承载、
+`s` 只需要区分本批内部。省下的 24% 全部来自不再逐块重复这三段。
+
+> **页眉必须给真实页码。** `sectionRelation` 的 `CONTINUATION` 判断依赖模型知道
+> 自己在第几页、是不是接着上一批（§4.1），写成「本批第 1 页」会让它失去跨批位置感。
+
+**一个格式，不是两个。** 早先考虑过"输入简写、输出写全"，那会引入一类新的整任务失败
+——模型照抄简写、撞上 `segmentId` 的格式校验、整批作废（§4.4-①）。
+现在契约里 `blockRefs` 就是整数数组，模型没有"抄错格式"的余地。
+
+**每批输入预算 ≤ 60k token，硬约束。** 超出即说明 segment 数失控，应在解析阶段拦掉：
+
+```
+PDF 原生文本层   segment/页 ≤ 400   → §3.2.1 密度闸，超了整文件改走 OCR
+OCR 路径         识别块/页 ≤ 400   → 【整任务 FAILED / UNREADABLE】，不做局部截断
+Word             逻辑分块 = 40/等效页（§3.3.1 的折算系数），故 30 等效页 = 1200 segment
+                 上限直接写在 §3.3.1：segment ≤ 1200 且 内嵌图片 ≤ 30
+```
+
+OCR 路径原先没有上界，是个漏写：密度闸只看 PDF 原生文本层，
+而**被密度闸赶去 OCR 的恰恰是最碎的那类文件**，不给 OCR 侧设界等于闸门可以被绕过。
+
+**OCR 超限为什么是整任务失败，而不是丢掉那一页。**
+局部截断要新定义一整套东西：`partial_reason` 加一个 `OCR_BLOCK_OVERFLOW` 枚举、
+`processedPages` 怎么算、模块三四关不关、`PAGE_TRUNCATED` 的语义要不要扩宽
+（它现在只表示"超过 30 页"）。而这些定义完之后，**风险仍然在**：
+
+```
+被丢掉的那一页恰好是过敏原筛查页
+  → allergens 数组少了内容，但 §4.4-② 的关键词扫描也扫不到那页（它整页没进来）
+  → 系统认为"报告里没有过敏原"，模块四照常输出
+  → 用户拿到一份没有考虑过敏的推荐
+```
+
+这与 §4.1.1 「读不清的那一批恰好可能就是含过敏原和医嘱的那一批」是同一个论证。
+**一页都读不明白就说明这份文件的 OCR 质量不可信，整任务 `UNREADABLE` 是唯一诚实的结论**
+——用户重传一张更清楚的照片，比拿一份缺了一页的分析有用。
+不新增 `partial_reason` 枚举，不扩宽 `PAGE_TRUNCATED` 的语义。
+
+**页/批 与 8 批上限是绑死的，不能单独调。** 实测超预算时的直觉反应是降页数，但这条路堵着：
+
+```
+任务总等效页数上限 30（§3.3.2）
+8 页/批：最坏分布 9/9/9/2/1 → 2+2+2+1+1 =  8 批   ← 正好卡满上限
+4 页/批：同样分布            → 3+3+3+1+1 = 11 批   ← 超上限，且单个 30 页文件独占 8 批
+```
+
+所以「降页数换 token」必须连着动 §4.1 的 8 批上限和 §4.1.4 的并发度 `W = floor(C/4)`，
+三者是一组参数。**不要单独改其中一个。**
+
 ### 4.2 输出契约
 
-> **本节是可读示例，不是契约本身。** 正式契约是 `schema/llm_a_output.schema.json`，
+> **本节是可读示例，不是契约本身。** 正式契约是 `schema/extraction_output.schema.json`，
 > 需定义类型、`null` 规则、字符串长度上限、数组条数上限、枚举取值、
 > `additionalProperties: false`、各序号字段最小值、以及 `batchStatus != OK` 时各字段的取值要求。
 > **该文件是开发前置交付物，并纳入契约测试。**
@@ -733,13 +1297,27 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
 {
   "batchStatus": "OK | NO_REPORT_FEATURE | UNREADABLE",
 
-  // 仅用于同一性校验，Java 用完即丢，不入任何存储
-  "patient": { "name": "张三|null", "gender": "男|女|null" },
+  // ★ 所有 blockRef / blockRefs 都是【批内块号】（整数，§4.1.5），不是 segmentId。
+  //   Java 收到响应后按映射表展开成 segmentId，本文档其余各节讲的都是展开之后的东西。
+
+  // 仅用于同一性校验，Java 用完即丢，不入任何存储；非空值必须带原文证据
+  "patient": {
+    "name": "张三|null", "nameBlockRefs": [2],
+    "gender": "男|女|null", "genderBlockRefs": [3]
+  },
 
   // 报告自带的汇总数字，没有则为 null（不许模型自己算）
-  "reportOverview": { "totalCount": 0, "abnormalCount": 0 },
+  // blockRefs 必填，指向印着这行数字的原文块；只给两个数会被 Schema 拒绝
+  "reportOverview": { "totalCount": 87, "abnormalCount": 12, "blockRefs": [5] },
 
-  "sections": [{ "sectionName": "血脂检查", "fileIndex": 0, "sectionIndex": 2 }],
+  // 章节归属由 LLM-A 给出（§0-2、§4.1）。sectionIndex 是【批内局部序号】，每批从 0 起；
+  // 跨批对齐靠 sectionSegmentId，全局键由 Java 按 sectionRelation 拼
+  "sections": [{
+    "sectionName": "血脂检查",   // fileIndex 不在这里，批次不跨文件，取顶层的那个（§4.1）
+    "sectionIndex": 2,
+    "sectionRelation": "CURRENT | CONTINUATION | UNSECTIONED | UNKNOWN",  // ★ 批次边界必须显式表态
+    "sectionBlockRef": 10             // ★ 印着该章节标题的块；CURRENT 必填，另三态必须为 null
+  }],
 
   // 有数值 + 有结论 → 健康指标模块（正常项也要提）
   "indicators": [{
@@ -750,9 +1328,13 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
     "conclusionText": "↑偏高",
     "status": "NORMAL | HIGH | LOW | ABNORMAL",
     "statusJudgedByModel": false,
+    "includeInHealthProblems": true,  // ★ 模块二准入，由 LLM-A 判定，Java 不从 status 派生（§0-2、§6.1）
+    "problemName": "甘油三酯偏高",     // ★ 模块二展示名，取报告原文中的自然语言问题表述；
+                                      //   报告只有指标名和符号时为 null，由 §6.2 拼两段原文
     "sectionIndex": 2,
-    "orderInSection": 3,
-    "segmentIds": ["f0-p2-s17","f0-p2-s18"], "sectionSegmentId": "f0-p2-s15"          // ★ 唯一定位凭据，五个字段必须都能在该段内找到
+    "orderInSection": 3,              // ★ 批内序号，§6.3 排序要用
+    "itemIndex": 0,                   // ★ 同一块内第几条，展开后与 segmentId 一起构成去重键（§4.1.3）
+    "blockRefs": [17, 18, 19, 20, 21] // ★ 唯一定位凭据，上述原文字段必须都能在这些块的合并文本里找到
   }],
 
   // 无数值 + 有结论 → 候选健康问题
@@ -763,7 +1345,8 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
     "includeInHealthProblems": true,
     "sectionIndex": 5,
     "orderInSection": 1,              // ★ 补：§6.3 排序要用
-    "segmentIds": ["f0-p3-s4"], "sectionSegmentId": "f0-p3-s1"
+    "itemIndex": 0,
+    "blockRefs": [34]
   }],
 
   // 总检结论 / 医生建议，逐条
@@ -773,7 +1356,8 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
     "categories": ["HEALTH_PROBLEM", "DIET_ADVICE"],   // ★ 数组，一条可含多种语义
     "includeInHealthProblems": true,
     "sectionIndex": 9,
-    "segmentIds": ["f0-p5-s12"], "sectionSegmentId": "f0-p5-s10"
+    "itemIndex": 0,
+    "blockRefs": [112]
   }],
 
   "allergens": [{
@@ -783,31 +1367,91 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
     "rawResult": "阳性(+)",
     "resultStatus": "POSITIVE | NEGATIVE | BORDERLINE | UNKNOWN",
     "sectionIndex": 7,
-    "segmentIds": ["f0-p4-s9"], "sectionSegmentId": "f0-p4-s8"
+    "sourceOrder": 0,                 // ★ 在过敏章节内的批内顺序，§7.2 要求「按报告原文顺序混排」
+    "itemIndex": 0,
+    "blockRefs": [89]
   }],
 
-  // ★ 一条原文可拆成多个枚举条目，共享同一 segmentId，各自给不同 itemIndex
-  //   「建议低脂低盐饮食」→ 两条：LOW_FAT 与 LOW_SODIUM
+  // ★ 一条原文可拆成多个枚举条目，共享同一块，各自给不同 itemIndex
+  //   「建议低脂低盐饮食」→ 两条：LOW_FAT 与 LOW_SODIUM，来源字段完全相同
+  // ★ sectionIndex / sourceOrder / itemNo 三个字段是模块三来源标注的唯一依据（§7.6）
   "nutritionSupplements": [{
     "enumKey": "IRON | ... | OTHER",
+    "sectionIndex": 9,                // ★ 来源章节，指向 sections 的批内下标
+    "sourceOrder": 2,                 // ★ 该条在所属章节内的批内序号，【仅用于排序】
+                                      //   「第N条」只能用 itemNo，itemNo 为 null 就不写条号（§7.6）
+    "itemNo": 4,                      // ★ 报告原文印着的条目编号，没印则 null
     "itemIndex": 0,
-    "segmentIds": ["f0-p5-s14"], "sectionSegmentId": "f0-p5-s10"
+    "blockRefs": [114]
   }],
 
   "dietRequirements": [{
     "enumKey": "LOW_FAT | ... | OTHER",
+    "sectionIndex": 9,
+    "sourceOrder": 3,
+    "itemNo": 5,
     "itemIndex": 0,
-    "segmentIds": ["f0-p5-s15"], "sectionSegmentId": "f0-p5-s10"
+    "blockRefs": [115]
   }, {
     "enumKey": "LOW_SODIUM",
-    "itemIndex": 0,
-    "segmentIds": ["f0-p5-s15"], "sectionSegmentId": "f0-p5-s10"
-  }]
+    "sectionIndex": 9,
+    "sourceOrder": 3,                 // ★ 同一条原文拆出来的，来源三字段必须一模一样
+    "itemNo": 5,
+    "itemIndex": 1,
+    "blockRefs": [115]
+  }],
+
+  // ★ 过敏漏抽覆盖检查的输入（§4.4-②）。前者是过敏章节的【全部】块（含没抽出条目的数据行），
+  //   后者是其中【确认读到了检测数据行】的子集。Java 靠两者之差区分
+  //   「读全了全是阴性」和「一行都没读出来」——漏圈等于关掉最后一道防线。
+  "allergenSectionBlockRefs": [88, 89, 90, 91],
+  "allergenDataBlockRefs": [89, 90, 91]
 }
 ```
 
-**契约里没有任何"原文字符串"字段。** 展示用的原文一律由 Java 按 `segmentId`
-从 `rawText` 取整段（§3.2.3），模型只负责指路。
+**契约不允许模型返回不受来源约束的展示文案。** 凡是声明"来自报告原文"的字符串，
+都必须能在它自己的 `blockRefs`（或 `sectionBlockRef`）**展开后**对应的文本里找到，
+否则该条目不进入展示。
+
+> 下表及本文档其余各节一律按**展开后**的口径写（`segmentIds` / `sectionSegmentId`）。
+> 展开发生在 Schema 校验之后、任何业务校验之前（§4.4-①a），此后 `blockRef` 不再出现。
+
+> 早先这里写的是「契约里没有任何"原文字符串"字段」。**这句话不成立**——
+> `sectionName` / `name` / `conclusionText` / `problemName` / `title` / `rawName` /
+> `rawResult` 都是模型返回的原文串。写成"没有"的后果不是越界，而是**校验范围说不清**：
+> 实现时容易只校验被点名的那几个（原先只有指标五字段），剩下的裸奔。
+
+**受来源约束的字段与校验对象（档位一律按该 segment 的 `textSource` 分档，§3.2.3）：**
+
+| 字段 | 校验对象 | 校验不过的处理 |
+|---|---|---|
+| `indicators`：`name` `value` `unit` `refRange` `conclusionText` | 该条目 `segmentIds` 的合并文本 | 该指标**整条丢弃**，记 `evidenceMissCount` |
+| `indicators.problemName`（非 null 时） | 同上 | 降级为 `null`，走 §6.2 的拼接分支，不丢条目 |
+| `textualFindings`：`title` `conclusionText` | 该条目 `segmentIds` | 该条**整条丢弃** |
+| `allergens`：`rawName` `rawResult` | 该条目 `segmentIds` | 该条丢弃，**且触发 `ALLERGEN_SUSPECT_MISS`**（§4.4-⑤） |
+| `sections.sectionName`（`sectionRelation = CURRENT`） | 该章节的 `sectionSegmentId` | 该组 `displayName` 降为「未标注章节」，**不丢内容** |
+| `sections.sectionName`（`sectionRelation = UNSECTIONED`） | **该组覆盖的全部 segment 的合并文本**（它没有 `sectionSegmentId`，见下） | 同上，降为「未归入章节的内容」，**不丢内容** |
+| `reportOverview.totalCount` `abnormalCount` | `reportOverview` 的 `segmentIds` 合并文本；两个十进制数字都必须存在 | 整个 `reportOverview` 降为 `null`，回退到 §5.4 的 Java 计数 |
+| `summaryConclusions` | 无原文字符串字段，展示直接取整段 `rawText` | — |
+| `patient.name` / `gender`（非 null 时） | 各自的 `nameBlockRefs` / `genderBlockRefs` 展开后的文本 | 对应字段降为 `null`，不得参与 §4.5 的冲突判断 |
+
+`patient.name = null` 时 `nameBlockRefs` 必须为空数组，`gender` 同理；字段非空时对应证据数组
+至少有一个元素。**“不展示”不是免校验理由**——姓名和性别虽然不展示，却能把整个任务判成
+`IDENTITY_MISMATCH`，因此必须与展示字段使用同一套来源约束。
+
+**`UNSECTIONED` 的 `sectionName` 会展示，所以它同样要有来源。** 这一态按定义没有
+`sectionSegmentId`（没有印着标题），但它仍然是要显示在分组标题上的字符串——
+不校验就是一句模型自由生成的展示文案，与本节开头那条和 §0-1 直接冲突。
+校验对象放宽成**该组覆盖的 segment 合并文本**：封面上真印着「检查须知」四个字时留得住，
+模型自己概括的「其他内容」留不住，降为固定文案。`CONTINUATION` 用被继承章节的名字
+（已在 `CURRENT` 时校验过），`UNKNOWN` 一律固定文案、不采信模型（§4.6）。
+
+`nutritionSupplements` / `dietRequirements` 没有模型复述的原文串，展示原文由 Java 按
+`segmentId` 取整段（§3.2.3）；但它们**必须带 `sectionIndex` / `sourceOrder` / `itemNo`**
+——模块三的来源标注（§7.6）要靠这三个字段生成，缺了 Java 就只能猜。
+
+**展示层的长文本一律不用模型返回值。** 健康问题的 `rawText`、饮食建议的来源原文，
+都由 Java 按 `segmentId` 取整段 `rawText`，模型只负责指路——这一条没变。
 
 ### 4.3 提示词的硬约束
 
@@ -816,7 +1460,7 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
    有数值+无结论 → 全部丢弃；无数值+有结论 → `textualFindings`。
 3. **不许把"没找到"写成空数组。** 每个字段都必须出现；确实没有内容才给空数组，这是主动断言。
 4. **枚举归一化只做精确语义匹配，宁可给 `OTHER` 也不要就近映射。**
-   **一条原文含多个要求时拆成多条**，共享 `segmentId`，各自给不同的 `itemIndex`。
+   **一条原文含多个要求时拆成多条**，共享同一块，各自给不同的 `itemIndex`。
 5. **饮食相关表述的抽取范围：总检结论 + 医生建议章节**（含「专家建议」「健康指导」
    「医师建议」等同义章节名）。**排除各科小结、检查须知、科普段落、检查前准备**
    ——「胃镜检查前禁食」「检查前三天低脂饮食」是临时要求，不是长期饮食建议（§12-6）。
@@ -855,6 +1499,28 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
    绝大多数是阴性。**抽取时全部列出并如实标注结果**，由 Java 按 §4.4 过滤，
    不许模型自行省略阴性项——省略了 Java 就无法核对模型是不是漏抽了阳性项。
 
+10. **章节归属由模型给全，批次边界必须显式表态。** 每批返回本批出现的 `sections`，
+    `sectionIndex` 是**批内局部序号**，`sectionSegmentId` 指向印着该章节标题的 segment。
+    本批第一个条目之前没有标题时，**必须用 `sectionRelation` 说清是哪种情况**
+    （`CONTINUATION` / `UNSECTIONED` / `UNKNOWN`，§4.1），**不许一律给"承接上文"**——
+    封面和须知页被判成 `CONTINUATION` 会被挂到上一个检查章节下面。
+    看不清或拿不准一律 `UNKNOWN`，这不算失败，`UNKNOWN` 只是不归组。
+    每个 `indicators` / `textualFindings` / `summaryConclusions` / `allergens` 条目
+    都必须给出本批内的 `sectionIndex`。
+
+10a. **同一表格单元格 / 同一行的判断也归模型**（§3.2.1）。解析器只给原子文本块和 `bbox`，
+    不切单元格、不聚行列。一个指标的字段落在几个块里就引用几个 `blockRef`，
+    **绝不跨栏、跨行乱引**——Java 只会把它们拼起来查子串，它看不到版面。
+
+11. **`indicators.includeInHealthProblems` 由模型判定，不是 `status != NORMAL` 的同义词。**
+    「甘油三酯 3.5 ↑」进模块二；「白细胞 3.9，参考 4.0~10.0，↓」这类临界降低而报告未作提示的，
+    模型可以判 `false`。**准入是语义判断，Java 不从 `status` 反推**（§0-2、§6.1）。
+
+12. **`indicators.problemName` 只能是报告原文里的自然语言问题表述**
+    （「甘油三酯偏高」「血脂异常」），且必须能在该条目的 `blockRefs` 所指的块里找到。
+    报告只有指标名加符号、没有成句表述时，**必须给 `null`**——由 §6.2 拼两段原文，
+    **不许模型自己造一个说法**，也不许 Java 事后补一个归一化结论词。
+
 ### 4.4 Java 校验层
 
 **① Schema 校验。** 任一必填字段缺失 → **直接** `FAILED / SERVER_ERROR`，不重试。
@@ -865,6 +1531,19 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
 > **"Schema 通过"不等于"报告已完整识别"。** 模型返回 `"allergens": []` 结构上完全合法。
 > 字段必填只能区分"模型没返回这个字段"，区分不了"模型漏抽了内容"。
 
+**①a `blockRef` 展开（§4.1.5）。** Schema 通过后的**第一件事**，早于所有业务校验：
+
+```
+blockRefs / sectionBlockRef / nameBlockRefs / genderBlockRefs
+    → 查本批的 blockRef → segmentId 映射表，逐个展开
+    → 越界、重复、或映射不到 → 该引用视为「不存在的 segmentId」，按 ⑤ 处理
+    → 展开完成后 blockRef 不再出现在任何下游逻辑里
+```
+
+映射表是 Java 自己发请求时构造的，展开是查数组，不含任何判断（§0-2）。
+**下游全部按 `segmentId` 工作**——去重（§4.1.3）、跨批合并（§4.1.2）、分组（§4.6）
+都需要跨批唯一，而 `blockRef` 只在本批内有意义。
+
 **② 高风险内容交叉扫描，命中即安全降级（§7 评审）。**
 对全部 segment 的 `normalizedText` 做关键词扫描：
 
@@ -872,15 +1551,79 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
 |---|---|
 | 过敏原章节名（过敏原、变应原、IgE、致敏原） | **立即降级**，不定向重试 |
 | 阳性标记（阳性、(+)、＋）出现在过敏章节 segment 内 | 同上 |
-| 饮食医嘱词（低脂、低盐、低糖、低嘌呤、忌口、忌食） | 只记计数，不降级 |
 
 ```
-过敏类命中而数组为空 → partial = true, partial_reason = ALLERGEN_SUSPECT_MISS
-                       → 模块一二三照常，模块四整体不输出（§4.1.1）
-                       → 记 allergenSuspectMissCount
-饮食类命中而数组为空 → 只记 dietSuspectMissCount，不降级
-                       （饮食医嘱词误报率高，科普段落里也会出现"低脂饮食"四个字）
+过敏类命中而 allergens 为空 → partial = true, partial_reason = ALLERGEN_SUSPECT_MISS
+                              → 模块一二三照常，模块四整体不输出（§4.1.1）
+                              → 记 allergenSuspectMissCount
 ```
+
+> **饮食医嘱词扫描（低脂/低盐/低糖/低嘌呤/忌口/忌食）已删除，`dietSuspectMissCount` 不再存在**
+> （2026-08-25）。它只记计数、不影响任何输出，正是 §0-2 和 P0-0 明令取消的那一类
+> ——**不得为了"只告警"在生产链路里扫词表**。
+>
+> 它本来也不好用：误报率高（科普段落、检查须知里都会出现"低脂饮食"四个字），
+> 而且饮食建议漏抽的后果是模块三少一条，不是安全问题。
+> **想知道饮食建议抽得全不全，去跑评测集**（§11-10、§11-18），那里有人工标注的真值。
+>
+> 本节剩下的过敏类扫描**保留**——它触发安全降级，属 §0-2 唯一允许的那类词表用法。
+
+**①b 引用完整性校验（Schema 管不了的部分）。** 展开 `blockRef` 之后立刻做，
+全部是下标与集合包含判断，**不涉及任何版面或语义推断**（§0-2）：
+
+```
+sections 自洽
+    sections[i].sectionIndex 必须唯一，且 == i（数组下标）
+    → 不满足：FAILED / SERVER_ERROR，属模型契约违约
+
+条目引用有效
+    每个 indicators / textualFindings / summaryConclusions / allergens /
+        nutritionSupplements / dietRequirements 条目的 sectionIndex
+    必须 ∈ {sections[].sectionIndex}
+    → 不满足：该条目【整条丢弃】，记 sectionRefMissCount
+      （不整批失败——一条引错不该毁掉整批；但丢弃时若该条属于 allergens，
+        按 §4.4-⑤ 触发 ALLERGEN_SUSPECT_MISS）
+
+sourceOrder / orderInSection 连续性
+    只做【非负且不超上限】的范围检查，不要求连续
+    → 模型漏号不影响排序结果，不值得为此判失败
+```
+
+**Schema 只能约束"是个 0~199 的整数"**，约束不了"这个下标真的存在"。
+没有这一层，一个 `sectionIndex = 7` 而本批只有 3 个章节的条目会一路走到分组逻辑，
+在 §4.6 那里变成一个指向空气的 `groupKey`——分组标题空白，且**排查时看起来像是分组代码的 bug**。
+
+**②a `allergenSectionBlockRefs` / `allergenDataBlockRefs` 的集合规则。**
+这两个数组的用途是区分「读全了，全是阴性」和「有数据行，但一行都没读出来」
+——只看"抽出了几条阳性"这两者分不清。展开成 segmentId 后判定：
+
+```
+S = allergenSectionSegmentIds   过敏章节的全部段（含没抽出条目的数据行）
+D = allergenDataSegmentIds      其中【确认读到了检测数据行】的段
+A = allergens 各条目 segmentIds 的并集
+
+结构断言（不满足 → FAILED / SERVER_ERROR，属模型契约违约）
+    D ⊆ S            数据行必须是章节内的段
+    A ⊆ S            抽出的过敏原条目必须落在过敏章节里
+
+覆盖判定
+    S 非空 且 D 为空                → 有章节、一行数据都没读出来
+                                      → ALLERGEN_SUSPECT_MISS 降级
+    D \ A 非空                     → 有数据行没有对应条目 = 漏抽
+                                      → ALLERGEN_SUSPECT_MISS 降级，记漏抽段数
+    D 非空 且 D ⊆ A 且 A 全是 NEGATIVE → 「读全了全是阴性」，正常，不降级
+    S 为空                          → 报告没有过敏章节；此时以 ② 的关键词扫描为准
+```
+
+> **`D \ A 非空` 拦的是"模型读到了那一行，但没把它变成条目"**
+> ——这正是 §4.4-① 的 Schema 校验查不出来的那类漏抽：`allergens` 数组非空、
+> 结构完全合法，只是少了几条。
+>
+> **但它不是独立防线——`S`、`D`、`A` 全都来自同一次模型输出。**
+> 模型如果**同时**漏掉某个数据行和它对应的条目，那一行既不在 `D` 也不在 `A`，
+> `D \ A` 仍然为空，这一层什么都发现不了。**它只是模型输出的内部一致性检查**，
+> 拦得住"自相矛盾"，拦不住"一致地漏"。②b 补的正是这一块——
+> 它的候选段从原文独立找出，模型漏多少都不影响候选集大小。
 
 原设计在这里安排了一次"定向重试"来压低误报率。去掉之后，误报会直接变成一次
 模块四不输出——降级方向仍然安全，但触发频率会上升，需用评测集量化（§11-12）。
@@ -889,38 +1632,173 @@ BufferedImage 2000×2800 × 3 字节 ≈ 16MB / 页
 不把整份报告判失败，而是关掉唯一会导致用户实际吃错东西的模块——
 既躲开误拦正常报告，又不会在"可能漏了过敏原"的前提下继续推荐菜。
 
-**③ 状态一致性校验（`ConclusionLabelWords` 常量表）：**
+**③ 语义词表扫描已整体下线，不在生产链路里跑。**
+
+原设计在这里做三件事，现已全部移出在线链路（2026-08-25）：
+
+| 原检查 | 词表 | 去向 |
+|---|---|---|
+| `status` 与方向词比对 | `ConclusionLabelWords` | → 离线评测集（§11-18） |
+| `isFoodBorne` 与非食物词比对 | `AllergenSectionWords` | → 同上（原 §4.4-④ 的告警分支） |
+| 健康问题准入与正常语句比对 | `NormalStatementWords` | → 同上（原 §4.4-⑥ 的告警分支） |
+
+`statusConflictCount` / `foodBorneConflictCount` / `normalAdmitSuspectCount`
+**三个计数在生产环境不存在**，不要实现、不要打点、不要配告警。
+
+**为什么下线。** 它们已经不影响任何输出（本轮先把三处 Java 覆写改成了只告警），
+剩下的价值只有监控。而为了监控在**每一次用户请求**里跑三遍语义词表扫描，
+代价与收益不成比例：
 
 ```
-词表能命中方向词 conclusionText  →  模型 status 必须与词表一致
-                                    不一致：以词表为准，记 statusConflictCount
-词表命中不了                      →  采信模型 status，要求 statusJudgedByModel = true
+它是语义判断的形状      虽然只计数，代码长得跟"Java 在判断医疗语义"一模一样，
+                        下一个人很容易把它改回覆写——§0-2 的边界靠代码里没有这段来保证最牢
+它逼着词表进生产        三张词表要打包、要发版、要跟着模型版本维护，而它们不产出任何结果
+同样的信息评测集就有    评测集是人工标注的真值，比"词表和模型不一致"这种代理信号准得多
 ```
 
-词表是子串匹配，「轻度增高」含「增高」→ 直接命中 `HIGH`，不进模型判断路径。
-**「阴性」「阳性」不在方向词表内**（§4.3-6）。
+**替代方案是评测集，不是"没有监控"**（§11-18）：模型换版本、改提示词、报告形态变化时，
+跑一轮评测集，用**人工标注的真值**衡量，而不是用词表这个代理信号。
+代价写在下面，是明确接受的。
+
+> **明确接受的代价：生产环境没有模型漂移的实时信号。**
+> 模型静默变差时，要等到下一次跑评测集、或用户反馈，才会发现。
+> **发版前跑评测集因此从"建议"变成"必须"**（§11-18）。
+>
+> 缓解仍在展示层：§5.2 规定**标签文字永远是 `conclusionText` 原文**，
+> 模型把「甘油三酯 ↑偏高」判成 `NORMAL` 时，用户看到的仍是「↑偏高」三个字，
+> 只有标签颜色错了，不会被系统的措辞误导。
+
+**下面这些计数不受影响，它们不是词表扫描，是处理过程的副产品：**
+`schemaMissCount`、`evidenceMissCount`、`ocrFuzzyMatchCount`、
+`allergenSuspectMissCount`、`allergenPositiveUncoveredCount`、`adviceOtherCount`、
+`sectionRefMissCount`、`highRiskSuppressedCount`、`allergenUnknownCount`、
+`sectionUnknownCount`、`glyphLevelPdfCount`、`residualNonStandardCount`。
+
+**这份清单就是生产环境的全部计数，不在其上的一律不实现。** 新增计数前先问一句：
+它是处理过程本来就会产生的副产品，还是为了观察而额外扫一遍？后者按 §0-2 不允许。
+
+> **§4.4-② 的高风险交叉扫描不在下线之列。** 它也是词表，但它是**安全降级的触发条件**
+> （§0-6 一级红线），不是计数器——关掉它等于关掉"可能漏了过敏原"的最后一道检查。
+> 判据很简单：**影响输出的留下，只用于观察的下线。**
 
 **④ 过敏原准入过滤：**
 
 ```java
 // 仅以下两类进入过敏提醒区与菜品拦截链路：
 resultStatus == POSITIVE
-resultStatus == BORDERLINE      // 弱阳性/可疑/临界，按 §0-5 安全不对称从严（§12-7）
+resultStatus == BORDERLINE      // 弱阳性/可疑/临界进入产品安全过滤，但不等同临床确诊（§12-7）
 
-// 以下一律不进入，且不计入任何过敏计数：
+// 以下都不进入过敏提醒区与菜品拦截链路，但计数口径不同：
 resultStatus == NEGATIVE        // 阴性绝不能进 —— 一张 30 项的筛查表里 28 项是阴性
-resultStatus == UNKNOWN         // 不得自动当成阳性，也不得当成阴性；只记 allergenUnknownCount
+                                // 【不计数】：它是筛查表里的绝大多数，计了也没有信息量
+resultStatus == UNKNOWN         // 不得自动当成阳性，也不得当成阴性
+                                // 【单独计入 allergenUnknownCount】：见下
 ```
 
-`isFoodBorne` 判断错误会直接驱动高风险推荐，因此 Java 用 `AllergenSectionWords` 常量表
-对 `rawName` 反向校验：命中已知非食物词（螨、花粉、皮屑、霉、蟑螂、尘、屋尘）
-而模型给了 `isFoodBorne = true` → 以词表为准改为 `false` 并告警。
+**`UNKNOWN` 必须单独计数，`NEGATIVE` 不必。** 两者虽然都不进链路，但含义相反：
+`NEGATIVE` 是"读清楚了，是阴性"，`UNKNOWN` 是"这一行没读明白"。
+后者升高说明报告质量或识别质量在变差——而它恰恰**不会**触发任何降级
+（§4.4-② 只在 `allergens` 整个为空时才响），所以计数是唯一能看见它的地方。
+
+`isFoodBorne` **不由模型自由判定，也不由 Java 词表推翻——它由 `enumKey` 查表得到**（§0-2）：
+
+```
+enumKey 是正式枚举（13 食入性 + 5 非食物，§7.2）
+    → isFoodBorne 是该枚举的固有属性，Java 直接查 AllergenGroups 常量表
+    → 模型返回的 isFoodBorne 直接丢弃，不比对、不计数（§4.4-③ 已下线）
+enumKey == OTHER
+    → 采信模型的 isFoodBorne（枚举外过敏原只有模型判得了）
+    → Java 不做任何词表校验
+```
+
+查表不是医疗判断，是常量属性——`SHRIMP_CRAB` 是不是食物，在枚举表定义那一刻就定死了，
+运行时没有任何需要重新判断的余地。
+
+原设计让 Java 用「螨、花粉、皮屑、霉、蟑螂、尘、屋尘」子串把模型的 `true` 改成 `false`，
+有两处错：一是它在做语义判断；二是**方向不安全**——`isFoodBorne = false` 会让该过敏原
+整个退出菜品拦截链路（§7.2），而「霉」是子串，霉豆腐、霉干菜、腐乳都是食物。
+报告写「霉菌 / 食物霉变过敏原 阳性」时，这条规则会亲手关掉拦截，与 §0-6 完全相反。
+
+**②b 阳性行覆盖扫描——候选段的发现依据独立于模型，但只覆盖"名称与结果在同一块"的情况。**
+
+前面几层之间有一大片空白：② 只在 `allergens` **整个为空**时才响，②a 的三个集合又都来自模型。
+**模型抽出 3 条、而报告上有 5 条阳性**时——数组非空、结构合法、`S`/`D`/`A` 自洽——
+每一层都会放行。
+
+**"独立"指的是候选段怎么找出来的，不是整个检查都不碰模型输出。**
+这一层分两步，只有第一步独立：
+
+```
+① 发现候选阳性段   输入是【解析器产出的全部 segment】，与模型输出完全无关
+② 覆盖比较         把候选段与【模型抽出的 A】比对，看有没有漏
+```
+
+价值在第一步：候选段是从原文里独立找出来的，**模型漏抽多少都不会让候选段变少**
+——这正是 ②a 做不到的（那三个集合全来自模型，模型一致地漏时集合一起变小，比什么都发现不了）。
+第二步当然要用模型输出，否则无从谈"漏没漏"。
+
+具体规则：
+
+```
+候选阳性行 = { seg | seg.normalizedText 同时命中
+                     ① ADMITTED_RESULT_MARKS（阳性/弱阳性/可疑/临界/(+)/＋/± …，见内容常量）
+                     ② 任一已知过敏原名称（AllergenGroups 全部 displayName + matchWord） }
+
+每个候选阳性行必须 ∈ A（模型 allergens 条目展开后的 segmentIds 并集）
+    命中而不在 A → partial = true, partial_reason = ALLERGEN_SUSPECT_MISS
+                 → 模块四不输出，记 allergenPositiveUncoveredCount
+```
+
+**它不做版面推断，所以不越界**（§0-2）：不判断"过敏章节从哪到哪"，
+只在每一段内做两类关键词的共现匹配，再做集合包含判断。段的边界是解析器给的，不是推出来的。
+它属于 §0-2 唯一允许的那类词表用法——**往安全方向降级**，与 §4.4-② 同源。
+
+---
+
+##### ⚠️ 已知盲区：名称与结果被拆进不同 segment 时，本层命中不了
+
+**这不是边角情况，它取决于 `textSource`，而且在原生文本层是常态：**
+
+```
+OCR 路径        识别块 ≈ 一整行
+                [「牛奶        阳性(+)」]        ← 名称与结果同块 → 本层【能】命中
+
+PDF 原生文本层   绘制单元 ≈ 一个单元格（§3.2.1）
+                [牛奶] [阳性(+)]                 ← 分属两块 → 本层【命中不了】
+```
+
+也就是说：**②b 在扫描件/拍照件上基本有效，在电子版 PDF 上基本无效。**
+
+**不修，因为修不起。** 要把 `[牛奶]` 和 `[阳性(+)]` 配成一行，只有三条路：
+按 `bbox` 判同一基线、按 `seq` 取相邻块、或做表格行列还原——
+**三条全都是版面推断，全都是 §0-2 划给 LLM-A 的职责**（§3.2.1 已论证过 Java 在这一层
+做行列推断会在双栏、跨行合并单元格、续页表头上各错一种，而且错得静默）。
+为了补一个兜底层而把主职责边界破掉，是亏的。
+
+**因此本层的定位必须写清楚：它是"同块场景的有限兜底"，不是完整的阳性行覆盖检查。**
+文档任何地方都不得把它描述成"过敏漏抽已被堵死"。
+
+**这一层之外，过敏漏抽还剩这些缺口，全部列为已知接受：**
+
+| 缺口 | 谁能发现 |
+|---|---|
+| 名称与结果分属不同 segment（电子版 PDF 常态） | **无人**——只能靠 §11-12 的评测集事后量化 |
+| OCR 根本没读出那一行 | 无人；由 `UNREADABLE`（§4.1.1）与密度闸（§3.2.1）从上游拦 |
+| 模型一致地漏（数据行与条目一起漏）且名称结果同块 | **本层能发现** |
+| 模型自相矛盾（读到了数据行却没抽条目） | §4.4-②a 的 `D \ A` |
+| 模型整个没抽过敏原 | §4.4-② |
+
+**误报是设计内的，方向安全。**「乙肝表面抗原 阳性」不会命中——那个词不在 `AllergenGroups` 里；
+但「牛奶」这类词出现在别处又恰好同段有「阳性」会误报。误报的后果是模块四不输出，
+与 ② 的口径一致，**误报率并入 §11-12 一起量化**。
 
 **⑤ 原文回切（§3.2.3）。**
 
 ```
 展示原文类字段：segmentId 不存在 → 该条整条丢弃，记 evidenceMissCount
-指标五字段    ：包含性校验不过 → 该指标整条丢弃（档位按 textSource，§3.2.3）
+模型复述短字段：包含性校验不过 → 按 §4.2 末表逐字段处理（档位按 textSource，§3.2.3）
+                （指标五字段、textualFindings 两字段 → 整条丢弃；problemName → 降为 null；
+                  sectionName → 该组降为「未标注章节」；allergens 两字段 → 见下）
 
 ★ 被丢弃的条目属于 allergens 时 → 同 ② 的处理：
    partial = true, partial_reason = ALLERGEN_SUSPECT_MISS，模块四不输出
@@ -928,9 +1806,19 @@ resultStatus == UNKNOWN         // 不得自动当成阳性，也不得当成阴
 
 过敏原条目回切失败**不能简单丢弃后继续推荐**——丢掉的可能正是那条要命的。
 
-**⑥ 健康问题准入。** 只有 `includeInHealthProblems = true` 的条目进入模块二，
-且 Java 反向兜底：整段 `normalizedText` 命中 `NormalStatementWords`（未见异常、正常、
-阴性、未见明显异常、无异常）而模型给了 `true` → 强制改为 `false` 并告警。
+**⑥ 健康问题准入。** 只有 `includeInHealthProblems = true` 的条目进入模块二。
+**准入判定权完全在 LLM-A，Java 不做任何检查**（§0-2）——不覆写，也不扫词表告警
+（§4.4-③ 已整体下线）。
+
+原设计对**整段** `normalizedText` 做子串匹配并强制改 `false`，有三处错：
+
+- 健康问题准入本身就是 LLM-A 的职责（§0-2）；
+- 扫描范围是整段——「甲状腺结节 3mm，余各项未见异常」命中「未见异常」，**结节被删掉**；
+- 词表里带「阴性」，与 §4.3-6、§5.2、§10-21 刚论证完的「阴性 ≠ 正常」直接冲突。
+  「乙肝表面抗体 阴性，建议接种疫苗」会被这条规则踢出模块二。
+
+`NormalStatementWords` 现在只存在于离线评测集里（§11-18），生产代码不引用它。
+评测集内的词表同样**不含「阴性」**——「阴性 ≠ 正常」这条论证与它跑在哪里无关。
 
 ### 4.5 多文件同一性校验
 
@@ -939,8 +1827,9 @@ resultStatus == UNKNOWN         // 不得自动当成阳性，也不得当成阴
 > 文档不把它称为同一性证明。
 
 ```
-取所有 patient.name / patient.gender 非空的值比对
-姓名：规范化（去空格、繁简转换）后完全相等即通过
+取所有【通过 §4.2 来源校验后】的 patient.name / patient.gender 非空值比对
+姓名：规范化（去空格）后完全相等即通过
+> **【繁简转换不做】**（2026-08-26 产品确认）见开发方案 §6.6 同处说明。
 性别：同上
 任一不一致 → FAILED / IDENTITY_MISMATCH，不自动合并、不做确认弹窗
 ```
@@ -959,19 +1848,116 @@ resultStatus == UNKNOWN         // 不得自动当成阳性，也不得当成阴
 
 ### 4.6 多文件合并（§5.9 评审）
 
-**分组键用结构化 ID，不用章节名字符串：**
+**分组键用结构化 ID，不用章节名字符串，也不用批内局部序号：**
 
 ```
-groupKey     = fileIndex + "-" + sectionIndex        ← 唯一键，跨文件绝不合并
+groupKey     = fileIndex + "-" + 有效 sectionSegmentId   ← 唯一键，跨文件绝不合并
 displayName  = 单文件：sectionName
                多文件：「报告{fileIndex+1}-」+ sectionName
+groupOrder   = 该组第一次出现时的 (page, batchIndex, sectionIndex)   ← 见下
 ```
+
+#### 全案排序总则（其余各节一律引用本节，不再各自表述）
+
+```
+分组顺序   fileIndex → groupOrder
+组内顺序   groupOrder → page → orderInSection   （indicators / textualFindings）
+条目顺序   groupOrder → page → sourceOrder      （summaryConclusions / allergens /
+                                                  nutritionSupplements / dietRequirements）
+groupOrder = 该组第一次出现时的 (group.page, batchIndex, sectionIndex)
+```
+
+**三条硬约束：**
+
+```
+① 顺序字段一律由 LLM-A 给，Java 只比较和排序（§0-2）
+② 批内序号（sectionIndex / orderInSection / sourceOrder）跨批会撞号，
+   所以每条排序键都必须先用 page 收敛，再用批内序号
+③ 任何排序键都不得使用 segmentId 里的 seq —— 那是解析器产出顺序，不是阅读顺序
+```
+
+**`page` 从哪来：模型不给，Java 从 `segmentId` 算。**
+契约里没有 `page` 字段（模型不需要也不应该报它），但 `segmentId` 的格式是
+`f{fileIndex}-p{page}-s{seq}`（§3.2.1），页码就在里面。一个条目可能跨页引用，所以取最小值：
+
+```
+item.page  = min{ page(segmentId) | segmentId ∈ 该条目展开后的 segmentIds }
+group.page = min{ item.page       | item ∈ 该组全部条目 }
+```
+
+**取 `min` 不是随便定的**：一条跨页续表的指标，它"属于"的是它开始的那一页；
+取 `max` 会让跨页条目排到后面去，和相邻的同页条目分开。
+这一步是**从字符串里取数字再比大小**，不是版面推断——§4.6 总则第 ③ 条禁止的是拿 `seq` 排序，
+`page` 不在此列：**页码是报告的客观属性，`seq` 是解析器的实现细节。**
+
+**`sourceOrder` 的作用域是"章节内、批内"**（§4.2、Schema `$defs.sourceOrder`），
+不是全批唯一。所以它**只能在同章节内比较**，跨章节比较会撞号：
+
+```
+同一批、同一页、两个章节
+   总检结论   第 1 条 → sourceOrder = 0
+   专家建议   第 1 条 → sourceOrder = 0     ← 同页同批，两个 0
+```
+
+因此凡是用到它的排序键，前面必须先有把章节分开的项：
+
+```
+条目顺序   fileIndex → groupOrder → page → sourceOrder      ← groupOrder 已经把章节分开
+【错误】   fileIndex → page → sourceOrder                    ← 同页多章节会乱序
+```
+
+下面各节的排序键一律按前者写。
+
+**`groupOrder` 不用 `segmentId` 里的 `seq`。** `seq` 是**解析器产出顺序**——
+双栏页面上它可能先出完左栏再出右栏，表格页上可能按绘制顺序而非阅读顺序，
+拿它当章节先后就是把阅读顺序的判断偷偷交给了解析器（§0-2）。
+
+排序键改为三段，全部来自模型或批次元数据：
+
+```
+page          该组第一个条目所在页（页眉给的真实页码，§4.1.5）
+batchIndex    同页跨批时用它兜底（批次按页切分，批号与页序同向）
+sectionIndex  同批内模型给的章节顺序 ← 阅读顺序的真源
+```
+
+组内条目顺序同理用 `orderInSection`，不用 `seq`（§5.3、§6.3）。
+
+**「有效 `sectionSegmentId`」按 `sectionRelation` 四态分别取，Java 不做任何推断：**
+
+| `sectionRelation` | 有效 `sectionSegmentId` | `displayName` |
+|---|---|---|
+| `CURRENT` | 模型给的那个 | `sectionName` |
+| `CONTINUATION` | **继承**同文件内前一批末章节的 `sectionSegmentId` | 被继承章节的 `sectionName` |
+| `UNSECTIONED` | `"U-" + 最小 segmentId` | `sectionName`，**须过 §4.2 的来源校验**，不过则「未归入章节的内容」 |
+| `UNKNOWN` | `"X-" + 最小 segmentId` | 固定文案「未标注章节」 |
+
+后两态用组内最小 `segmentId` 做键，是为了**不让两处彼此无关的无章节内容并进同一组**
+（一份报告的封面和末页声明都是 `UNSECTIONED`，合并展示是错的）。Java 只拼接稳定键。
+
+> **这里用 `segmentId` 不违反总则的第 ③ 条。** 总则禁止的是拿 `seq` 当**顺序**，
+> 而这里只是拿它当**唯一键**——键要的是确定性和稳定性，不要求它反映阅读顺序。
+> 这两组的展示顺序仍由 `groupOrder` 决定。
+
+`UNKNOWN` 不采信模型给的 `sectionName`，用固定文案；`UNSECTIONED` 可保留模型给出的描述名，
+**但该名字必须能在这一组覆盖的原文里找到**（§4.2）——它是要上分组标题的，
+不能是模型概括出来的一句话。
+
+`CONTINUATION` 的继承在**同一文件内**按批次顺序进行；文件的第一批就报 `CONTINUATION`
+时没有可继承的对象，按 `UNKNOWN` 处理并记 `sectionUnknownCount`——**不向前跨文件继承**。
+
+`sectionIndex` 是**批内局部序号**（§4.1、§4.2），跨批不唯一，**不能进 `groupKey`**：
+一份 3 批的报告里会出现三个 `sectionIndex = 0`。
+
+**跨批的同一章节不会两批返回同一个 ID**——批次不重叠，后一批看不到前一批的标题块。
+它靠上表 `CONTINUATION` 那一行的机械继承来合并，没有别的路径（§4.1）。
 
 **去重只发生在同一个文件内**（同一文件跨批的重复条目，按 §4.1.3 的 `segmentId + itemIndex` 去重），
 **跨文件一律不去重、不合并**——两份报告都有「血脂检查」时展示为两个独立分组。
 
 `indicators` 合并后分配全局唯一 `indicatorId`，展示顺序不承担主键职责。
-`summaryConclusions` 按 `fileIndex → sourceOrder` 排序（`itemNo` 可能为 null，不能当排序键）。
+`summaryConclusions` 按 `fileIndex → groupOrder → page → sourceOrder` 排序
+——`groupOrder` 和 `page` 都不能漏：`sourceOrder` 的作用域是"章节内、批内"，
+跨章节和跨批都会撞号（见上文总则）。`itemNo` 可能为 null，不能当排序键。
 
 ## 5. 模块一：健康指标（需求 §5）
 
@@ -990,35 +1976,38 @@ displayName  = 单文件：sectionName
 > `textSource` 区分，原生文本层严格子串、OCR 放宽（§3.2.3）。
 > 任一字段校验不过，该指标**整条丢弃**。
 
-### 5.2 状态标签：模型判定 + 词表校验
+### 5.2 状态标签：完全由模型判定
 
 状态四态：`NORMAL` 正常（绿） / `HIGH` 偏高（红↑） / `LOW` 偏低（蓝↓） / `ABNORMAL` 异常（橙）。
 
 > 需求 §5-3 只定义了前三种。第四种（橙）是本方案新增的，用于承载「阳性(+)」「可疑」「临界」
 > 这类既不是偏高也不是偏低的结论，**需产品确认**（§12-1）。
 
-`status` 由 LLM-A 输出，但判定权分两级：
+**`status` 一律由 LLM-A 判定，Java 不覆盖**（§0-2）。判定的**依据**分两级，但两级都在模型侧：
 
-| 情况 | 判定方 | 说明 |
+| 情况 | 模型该怎么判 | `statusJudgedByModel` |
 |---|---|---|
-| 报告原文有**方向性**标记 | **词表（Java 为准）** | ↑↓、偏高/偏低、增高/降低、升高/减低、正常、未见异常、异常、H/L |
-| 报告只写了**非方向性**结论 | **LLM-A 判断** | 阳性(+)、**阴性(-)**、弱阳性、可疑、临界 |
+| 报告原文有**方向性**标记 | **照抄词表口径**：↑↓、偏高/偏低、增高/降低、升高/减低、正常、未见异常、异常、H/L | `false` |
+| 报告只写了**非方向性**结论 | 结合该指标的**临床含义**判断：阳性(+)、**阴性(-)**、弱阳性、可疑、临界 | `true` |
 
-> **词表是子串匹配，「轻度增高」含「增高」→ 直接命中 HIGH，不进模型判断路径**（§4.2 评审）。
-> 只有整条结论里一个方向词都没有的才交给模型。
+这两级写在提示词里（§4.3-6），不是写在 Java 里。
 
-**Java 一致性校验（`ConclusionLabelWords` 常量表）：**
+**Java 在线不做任何 `status` 校验**（§4.4-③，2026-08-25 下线）：
 
 ```
-词表能明确命中 conclusionText  →  模型给的 status 必须与词表一致
-                                  不一致：以词表为准，记 statusConflictCount 告警
-词表命中不了                    →  采信模型的 status
-                                  且要求 statusJudgedByModel = true，否则记计数
-模型漏给 status                 →  按 Schema 必填走重试（§4.4）
+模型给的 status  →  直接采用
+模型漏给 status  →  按 Schema 必填直接 FAILED（§4.4-①）
 ```
 
-> 护栏的目的不是不信任模型，而是堵住它在最简单的情况下抽风。「甘油三酯 ↑偏高」被判成正常，
-> 这种错误比「阳性」判错方向严重得多，而它恰恰是词表百分之百能拦住的。
+> **两步走到这里的。** 原设计是「词表命中即以词表为准」——那是 Java 改写医疗语义，违反 §0-2，
+> 而且词表本身也拦不住它声称能拦的东西：子串匹配读不懂「较上次升高，仍在正常范围内」里的
+> 「升高」不是结论方向；词表里同时有「异常」「未见异常」「正常」，一条「未见异常」同时命中三个词，
+> 优先级在子串匹配这层定义不了。先改成了"只告警不覆写"，随后连告警一并下线
+> ——**只用于观察的东西不该跑在每一次用户请求里**（§4.4-③）。
+>
+> 方向词的口径落在**提示词**（§4.3-6）和**评测集**（§11-18），不落在 Java。
+> 代价是模型抽风时不再有运行时信号，缓解在展示层：标签文字永远是原文（见下），
+> 用户看到的还是「↑偏高」三个字，只有颜色错。
 
 **为什么这一层要交给模型：** 「阳性」不等于异常，**「阴性」也不等于正常**。
 
@@ -1041,15 +2030,20 @@ displayName  = 单文件：sectionName
 
 即使模型判反了方向，用户看到的仍然是报告原文，不会被系统的措辞误导。
 
-**记录 `statusJudgedByModel = true` 的条数**，上线后抽查判断质量；异常集中在某几个指标名时，
-把该指标的确定性规则补进词表，走发版。
+**记录 `statusJudgedByModel = true` 的条数**——这是直接数模型返回的一个布尔字段，
+不是词表扫描，留在线上。它告诉你有多大比例的判定走了模型的临床含义判断路径，
+用于决定抽查样本量。错误集中在某几个指标名时，把该指标的判定口径补进**提示词与评测集**，
+走发版——**不是补进 Java 词表**（§0-2、§4.4-③）。
 
 ### 5.3 分组展示
 
-按 §4.6 的 `groupKey`（`fileIndex + sectionIndex`）分组，**不用 `sectionName` 做键**
-——多文件时两份报告都有「血脂检查」，用名字做键会把它们并进同一组。
+按 §4.6 的 `groupKey`（`fileIndex + sectionSegmentId`）分组，**不用 `sectionName` 做键**
+——多文件时两份报告都有「血脂检查」，用名字做键会把它们并进同一组；
+也**不用 `sectionIndex`**——它是批内局部序号，跨批会撞。
 
-分组标题用 `displayName`，分组顺序按 `fileIndex → sectionIndex`，组内按 `orderInSection`。
+分组标题用 `displayName`，分组顺序按 `fileIndex → groupOrder`（§4.6），
+组内按 `page → orderInSection`——**都不使用 `segmentId` 里的 `seq`**，它是解析器产出顺序，
+不是阅读顺序。
 **全部平铺展示，不折叠。**
 
 ### 5.4 总览条（需求 §5-5）
@@ -1095,6 +2089,7 @@ displayName  = 单文件：sectionName
 ### 6.1 三类来源与准入
 
 **只有 `includeInHealthProblems = true` 的条目进入本模块**（§4.4-⑥）。
+判定权完全在 LLM-A，**Java 既不覆写也不扫词表告警**（§4.4-③ 已下线）。
 这条准入是必须的——`textualFindings` 和 `summaryConclusions` 里都有正常项：
 
 ```
@@ -1110,7 +2105,7 @@ displayName  = 单文件：sectionName
 
 | 来源类型 | 数据来源 | 准入条件 | 携带 `indicatorId` |
 |---|---|---|---|
-| `INDICATOR_NUMERIC` | `indicators` | `status != NORMAL` | **是** |
+| `INDICATOR_NUMERIC` | `indicators` | `includeInHealthProblems = true` | **是** |
 | `INDICATOR_TEXTUAL` | `textualFindings` | `includeInHealthProblems = true` | **否** |
 | `SUMMARY` | `summaryConclusions` | `includeInHealthProblems = true` 且 `categories` 含 `HEALTH_PROBLEM` 或 `DIET_ADVICE` | **否** |
 
@@ -1121,26 +2116,47 @@ displayName  = 单文件：sectionName
 前端据此渲染：只有 `INDICATOR_NUMERIC` 显示跳转按钮，另两类不显示
 （符合需求 §6-3「若该问题来自总检结论且不直接对应某个指标，则不展示关联按钮」）。
 
+**三类来源的准入条件统一为 `includeInHealthProblems`，由 LLM-A 判定**（§0-2、§4.3-11）。
+原设计对 `INDICATOR_NUMERIC` 用 `status != NORMAL` 派生，两处不对：
+
+- 准入是语义判断，不是 `status` 的机械函数。「白细胞 3.9（参考 4.0~10.0）↓」这种
+  临界偏离、报告本身未作任何提示的，列进「健康问题」是系统自己加的诊断意味；
+  而「血糖 6.0 正常范围，但报告写了『建议控制饮食』」反过来该进。
+- 它把准入权转嫁给了 `status`，而 `status` 在原设计里又被 Java 词表覆盖（§5.2）
+  ——两条叠起来，模块二收哪些条目实际上由一张子串词表决定。两处都已改回 LLM-A。
+
 ### 6.2 条目字段
 
 | 字段 | 生成方式 |
 |---|---|
-| `displayName` | `INDICATOR_NUMERIC`：优先取报告原文中的自然语言问题名；报告只有指标名和符号时，拼接「指标名 + 归一化结论词」（如「甘油三酯偏高」）<br>`INDICATOR_TEXTUAL`：直接用 `title`<br>`SUMMARY`：直接用回切后的原文 |
-| `displayNameGenerated` | **布尔值**。`true` = 该名称由系统拼接而非报告原文（§4.4 评审、§12-10） |
+| `displayName` | `INDICATOR_NUMERIC`：`problemName` 非 null 时直接用它（LLM-A 从原文取的自然语言表述，§4.3-12）；为 null 时由 Java 拼 `name + " " + conclusionText`——**两段都是报告原文，Java 只做字符串连接**<br>`INDICATOR_TEXTUAL`：直接用 `title`<br>`SUMMARY`：直接用回切后的原文 |
+| `displayNameGenerated` | **布尔值**。`true` = 走了上面的拼接分支（`problemName == null`）（§12-10） |
 | `sourceLabel` | 来源标注。单文件「血脂检查–甘油三酯」「总检结论第3条」；多文件加报告前缀「报告2-专家建议第2条」。**章节名取 §4.6 的 `displayName`，不写死「总检结论」** |
 | `rawText` | 按 `segmentId` 取该 segment 的**整段原文**（§3.2.3）。segmentId 不存在则该条丢弃 |
 | `indicatorId` | 仅 `INDICATOR_NUMERIC` 下发 |
 
+**Java 不再拼「归一化结论词」**（§0-2）。原设计在 `problemName` 缺失时拼「指标名 + 归一化结论词」
+（`HIGH` → 「偏高」），那是拿模型的语义分类去生成一句报告里没有的医疗表述：报告写「↑」，
+系统写出「甘油三酯偏高」四个字并当成问题名展示。现在两个分支都只出报告原文——
+有成句表述就用模型摘出来的那句（必须能在 `segmentIds` 内找到），没有就把指标名和结论原文
+拼在一起（「甘油三酯 ↑」），**不翻译、不改写**。
+
 `displayNameGenerated` 是给产品和测试用的：需求 §6-2 要求「直接引用报告原文表述，不做改写」，
-而拼接严格说不是引用。有这个字段，验收时能数出有多少条是拼的，产品也能决定 UI 上要不要区别对待。
+而拼接严格说不是引用（虽然两段素材都是原文）。有这个字段，验收时能数出有多少条是拼的，
+产品也能决定 UI 上要不要区别对待。
 
 ### 6.3 排序（需求 §6-4）
 
 ```
-INDICATOR_NUMERIC + INDICATOR_TEXTUAL 在前，按 fileIndex → sectionIndex → orderInSection
-SUMMARY 在后，按 fileIndex → sourceOrder
+INDICATOR_NUMERIC + INDICATOR_TEXTUAL 在前，按 fileIndex → groupOrder → page → orderInSection
+SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 不做严重程度分级、不做风险排序
 ```
+
+`groupOrder` 见 §4.6 的排序总则：`(page, batchIndex, sectionIndex)`，
+**不是** `page → 最小 segmentId`（`seq` 是解析器产出顺序，不是阅读顺序）。
+`orderInSection` 与 `sourceOrder` 的作用域是"章节内、批内"，所以两条排序键都先用
+`groupOrder` 把章节分开、再用 `page` 收敛批次，与 §4.1.2 的合并规则一致（§4.6 排序总则）。
 
 `textualFindings` 的 `orderInSection` 是本轮补上的字段（§4.2）——原契约没有它，
 排序规则却在用，会导致同章节内的文字结论顺序不稳定。
@@ -1150,7 +2166,10 @@ SUMMARY 在后，按 fileIndex → sourceOrder
 
 三类来源全空时：
 
-> 本次体检各项指标均在正常范围内，请继续保持良好的生活习惯。
+> 本次报告未提取到明确的异常结论或健康提示。
+
+**空数组只能说明“本链路没有提取到”，不能证明“报告全部正常”。** 条目可能因为模型漏抽、
+原文回切失败或部分批次不可读而缺失；Java不得根据集合为空生成整体健康结论。
 
 底部声明：
 
@@ -1182,45 +2201,82 @@ SUMMARY 在后，按 fileIndex → sourceOrder
 这类报告的用户会看到后两个模块全空。**这是需求 §7-5 的明确选择，不是缺陷**，
 产品已确认按此实现（报告里空的就是空的），不做通用建议兜底。
 
-### 7.2 枚举清单（待评审确认）
+### 7.2 枚举清单（2026-08-27 证据审核快照）
 
 **食入性过敏原**（参与菜品匹配）
 
-**枚举与词表同源于 `allergen_display_split.csv`。**
-该文件是**参考基线，不是不可变真源**——当前 11 组 73 词覆盖不全，扩充见 §7.2.1。
-但任何增删都会改变 Layer 1 的拦截行为，**属安全变更，须走医务评审后更新 CSV**，
-不得在代码里绕过 CSV 直接加词。
+**枚举与词表的唯一真源是 Java 常量类 `AllergenGroups`**
+（`com.example.healthreport.constants`），**没有 CSV、没有生成器、没有运行时加载**。
+`allergen_display_split.csv` 曾是参考基线，现已删除，任何文档不得再把它写成数据来源。
+当前 13 个食入性组共有 126 个词条，其中 123 个 `REVIEWED` 生效、3 个 `REJECTED` 保留为负例；
+任何增删都会改变 Layer 1 的拦截行为，
+**属安全变更，须走医务评审后改常量类并发版**。
 
 | enumKey | 展示名 | avoid 词数 | hidden 词数 |
 |---|---|---|---|
-| `SHRIMP_CRAB` | 虾蟹类 | 10 | 9 |
-| `FISH` | 鱼类 | 3 | 3 |
-| `MILK` | 牛奶及乳制品 | 10 | 2 |
-| `EGG` | 鸡蛋 | 5 | 3 |
-| `PEANUT` | 花生 | 2 | 2 |
-| `SOY` | 大豆 | 5 | 1 |
-| `WHEAT` | 小麦麸质 | 3 | 2 |
-| `NUTS` | 坚果 | 6 | 0 |
+| `SHRIMP_CRAB` | 虾蟹类 | 10 | 6（另 3 条 `REJECTED`） |
+| `FISH` | 鱼类 | 3 | 5 |
+| `MILK` | 牛奶及乳制品 | 10 | 5 |
+| `EGG` | 蛋类及其制品 | 8 | 6 |
+| `PEANUT` | 花生 | 2 | 4 |
+| `SOY` | 大豆 | 5 | 6 |
+| `WHEAT` | 小麦麸质 | 3 | 9 |
+| `NUTS` | 坚果 | 9 | 0 |
 | `MANGO` | 芒果 | 1 | 0 |
 | `BEEF` | 牛肉 | 3 | 0 |
 | `MUTTON` | 羊肉 | 3 | 0 |
+| `MOLLUSK` | 软体动物及其制品 | 13 | 4 |
+| `SESAME` | 芝麻及其制品 | 3 | 5 |
 
-#### 7.2.1 待扩充的过敏原组
+#### 7.2.1 过敏原组扩充裁决
 
-当前 11 组是按常见八大类整理的，与国内体检机构实际的食入性筛查面板对不齐。
-**建议补充的组已在 `constants/内容常量草案.md` §1.1 起草成可直接并入 CSV 的词表**，
-医务评审通过后合并。
+原 11 组与实际食入性筛查及调味料风险不齐。2026-08-27 已完成证据裁决：
+`MOLLUSK`、`SESAME` 纳入正式契约；`PINEAPPLE`、`PORK`、`CHICKEN` 本次不纳入。
 
 | 优先级 | 组 | 缺失的后果 |
 |---|---|---|
-| **高** | `SHELLFISH` 贝类 | 蛤蜊、生蚝、扇贝、鲍鱼在筛查面板中常见；蚝油在中餐里无处不在，落 `OTHER` 只能字面匹配 |
-| **高** | `SESAME` 芝麻 | 麻酱、香油在凉菜、火锅蘸料、烧饼里极常见，且「香油」这个名字看不出是芝麻 |
-| 中 | `PINEAPPLE` 菠萝 | 面板常见项，咕咾肉等菜品含而名称不显 |
-| 待评估 | `PORK` 猪肉 / `CHICKEN` 鸡肉 | 面板有此项。中餐里「肉丝」「肉末」默认指猪肉，鸡精是通用调味料，收录会导致大面积拒绝 |
+| **已纳入** | `MOLLUSK` 软体动物 | 直接物种名与蚝油/蚝汁进入词表；`XO酱` 只作模型线索 |
+| **已纳入** | `SESAME` 芝麻 | 明确芝麻词硬匹配；麻酱、香油、麻油因复配/地区歧义只作模型线索 |
+| 本次不纳入 | `PINEAPPLE` 菠萝 | 缺少真实报告命中与可控词表；「菠萝油」还有明确非菠萝语义 |
+| 本次不纳入 | `PORK` 猪肉 / `CHICKEN` 鸡肉 | 泛词与调味料会造成不可控误杀，另立证据变更后才能加入 |
 
-> **扩充过敏原组会显著提高拒绝率。** 以 `SESAME` 为例，收录「香油」后，
-> 对芝麻过敏用户，食堂凉菜类会被大面积排除——这是**正确**行为（那些菜确实含芝麻油），
-> 但产品需要知道推荐列表会变得很短。这是 §0-5 安全不对称的直接代价。
+> **前两组已从「建议」升级为「必须」**，触发原因是 §8.1.1：食材表不含调味料，
+> 蚝油和香油在数据里根本不出现，不收进枚举就等于对这两类过敏原完全不设防。
+>
+> ---
+>
+> ### 契约升级已完成
+>
+> 当前契约数字为：
+>
+> ```
+> 食入性过敏原枚举        13 组
+> 过敏原枚举合计          18（13 食入 + 5 非食物）
+> LLM-B 打标维度          22（13 过敏 + 9 饮食注意）
+> 正式枚举合计            36
+> ```
+>
+> 新增维度现已能承载软体动物和芝麻结果：菜名明确出现蚝油/蚝汁时可落 `MOLLUSK REJECT`；
+> 芝麻、芝麻酱、芝麻油可硬匹配。香油、麻油、麻酱及只靠通常做法的场景不得猜成实际配方，
+> 统一保留为 `MODEL_ONLY` / `UNKNOWN`。
+>
+> **补齐的动作是一整套，不能只往常量类里加一行**（`constants/内容常量说明V3.md` §4.2）：
+>
+> ```
+> ① 医务评审通过（审核记录 3、5c）      ← 前置，不可跳过
+> ② AllergenGroups 常量类加两组词表
+> ③ LLM-A Schema 的 allergenKey 枚举加两个值
+> ④ LLM-B Schema 的 enumKey 枚举加两个值
+> ⑤ 两个提示词的枚举表同步
+> ⑥ 上面四个契约数字全部改：11→13、16→18、20→22、34→36
+> ⑦ bump tagRuleVersion → 全量重打标（§8.3.1）
+> ```
+>
+> ②~⑦ 已落地，逐条证据记录见 `constants/内容常量证据审核台账V1.md`。若组织发布制度要求
+> 具名医师或注册营养师签字，① 中的具名签字仍须独立完成，AI 证据复核不能代签。
+>
+> **扩充过敏原组会提高拒绝率。** 为避免把所有凉菜一刀切，只有明确“芝麻、芝麻酱、芝麻油”
+> 做 Java 硬匹配；“香油、麻油、麻酱”保持 `MODEL_ONLY`，实际配方不明时 LLM-B 返回 `UNKNOWN`。
 
 **吸入性/接触性过敏原**（只展示，**不参与菜品匹配**）
 
@@ -1229,7 +2285,9 @@ SUMMARY 在后，按 fileIndex → sourceOrder
 > 国内过敏原筛查普遍分吸入组和食入组，吸入组不是食物。
 
 **`isFoodBorne` 是纯内部字段，不影响展示分组。** 全部过敏原**统一放在过敏提醒区，
-按报告原文顺序混排**，不按食入性/非食物分组、不排序、不加分区标题。该字段只决定两件事：
+按报告原文顺序混排**（排序键 `groupOrder → page → sourceOrder`，见 §4.6 排序总则；
+`sourceOrder` 由 LLM-A 给，Java 不从 segment 顺序反推），
+不按食入性/非食物分组、不额外排序、不加分区标题。该字段只决定两件事：
 
 | | 列食材清单 | 参与菜品匹配 |
 |---|---|---|
@@ -1258,9 +2316,9 @@ SUMMARY 在后，按 fileIndex → sourceOrder
 `LOW_CHOLESTEROL` 低胆固醇 / `LOW_CALORIE` 控制体重 / `HIGH_FIBER` 高纤维 /
 `LIMIT_ALCOHOL` 限酒 / `LIGHT_DIET` 清淡饮食
 
-合计 **34 个正式枚举 + `OTHER`**（11 食入性过敏原 + 5 非食物过敏原 + 9 营养补充 + 9 饮食注意）。
+合计 **36 个正式枚举 + `OTHER`**（13 食入性过敏原 + 5 非食物过敏原 + 9 营养补充 + 9 饮食注意）。
 
-### 7.3 高危表述强制转 OTHER（Java 黑名单）
+### 7.3 高危表述退出结构化链路（Java 安全闸）
 
 模型归一化可能出现方向性错误——把「低蛋白饮食」映射到 `PROTEIN`（蛋白质补充）会直接导致肾病患者被推荐高蛋白菜品。
 因此 Java 在收到 LLM-A 输出后，对 `rawText` 做一次黑名单扫描：
@@ -1271,11 +2329,32 @@ SUMMARY 在后，按 fileIndex → sourceOrder
 妊娠 / 孕期 / 哺乳期 / 儿童
 ```
 
-命中即**强制改为 `OTHER`，无论模型给了什么枚举**。这是全案唯一一处 Java 推翻模型输出的归一化规则。
+命中即给该条打上 `structuredOutputSuppressed = true`，**该条按 §7.4 的 `OTHER` 路径处理**：
+只展示报告原文与来源，不生成食材清单、不参与菜品匹配、不进入打标维度。同时记
+`highRiskSuppressedCount`。
+
+**注意它改的是什么。** Java **不覆写 `enumKey`**——`enumKey` 是 LLM-A 的归一化结论，
+Java 改了它就是替模型下另一个结论（§0-2）。这里改的是「这条要不要走结构化输出」，
+是一个纯粹的**闸门**：命中只会让系统少输出内容，永远不会让它输出一个不同的医疗语义。
+模型原本给的 `enumKey` 原样保留在结构里，仅用于排障与 `highRiskSuppressedCount` 归因。
+
+这道闸门的合法性来自 **§0-6 的二级红线**（方向性饮食禁忌，偏向"判不准就不输出"），
+用法上属于 **§0-2 在生产链路里唯一允许的词表用法——往安全方向降级**。
+
+**生产链路里跑词表的地方现在只剩三处，全部属于这一类：**
+
+```
+§4.4-②   高风险内容交叉扫描  → ALLERGEN_SUSPECT_MISS 降级
+§7.3      高危表述安全闸      → 该条退出结构化链路
+§8.5      过敏关键词兜底      → 与模型结果取并集，只增不减 REJECT
+```
+
+**没有第二类。**「只告警计数」那一类已于 2026-08-25 整体下线（§4.4-③），
+任何"以词表为准改写模型语义字段"或"为观察而扫词表"的写法都不成立。
 
 ### 7.4 OTHER 的处理
 
-`enumKey = OTHER` 时：
+`enumKey = OTHER`（或 §7.3 的 `structuredOutputSuppressed = true`）时：
 
 - **照常展示**该条建议的报告原文与来源标注（需求 §7 要求展示报告里写的每一条）
 - **不加任何说明文字**（产品决策，§12-3）
@@ -1293,7 +2372,7 @@ SUMMARY 在后，按 fileIndex → sourceOrder
 改动随代码发版。字段按需求 §7-3 定义：
 
 ```java
-// 过敏提醒（食入性）—— 直接从 allergen_display_split.csv 加载，不手写
+// 过敏提醒（食入性）—— 真源是 Java 常量类 AllergenGroups，随代码发版
 class AllergenGroup {
     String key;                   // SHRIMP_CRAB
     String displayName;           // 虾蟹类
@@ -1331,9 +2410,35 @@ class DietRequirementContent {
 来源：总检结论–建议低脂低盐饮食
 ```
 
-来源标注中的原文同样按 `segmentId` 取整段 `rawText`（§3.2.3）。
+**来源标注完全由字段拼出来，Java 不做任何推断：**
+
+```
+来源标注 = 章节展示名 + "–" + 原文
+           章节展示名 = sectionIndex → §4.6 的 groupKey/displayName（多文件带「报告N-」前缀）
+           「第N条」   = itemNo 非 null 时用它；为 null 时【不写条号】，不拿 sourceOrder 顶替
+           原文       = blockRefs 展开后按 segmentId 取整段 rawText（§3.2.3）
+排序     = groupOrder → page → sourceOrder    ← 不能用批内 sectionIndex，跨批会撞（§4.6 总则）
+           page = min(该条目 segmentIds 的页码)
+```
+
+> **这三个字段是本轮补进契约的**（§4.2）。原契约里 `nutritionSupplements` /
+> `dietRequirements` 只有 `enumKey` / `itemIndex` / `blockRefs`，**没有任何来源信息**，
+> 而本节要求标注「总检结论–…」。那样实现时 Java 只剩三条路，每条都不成立：
+>
+> ```
+> 按 blockRefs 找相邻章节标题   → 版面推断，是 LLM-A 的职责（§0-2）
+> 与 summaryConclusions 做文本关联 → 语义关联，同样越界，而且两边不一定一一对应
+> 直接写死「总检结论」           → 抽取范围含「专家建议」「健康指导」（§4.3-5），会标错
+> ```
+>
+> 现在三个字段直接来自模型，Java 只查表和排序。
+>
+> **`itemNo` 为 null 时不许拿 `sourceOrder` 当条号显示**——`sourceOrder` 是我们自己数的批内序号，
+> 报告上没印这个数字，显示出来就是编造（同 §6.3 `SUMMARY` 不拿 `itemNo` 当排序键的理由，反过来）。
+
 一条原文拆出多个枚举时（「建议低脂低盐饮食」→ `LOW_FAT` + `LOW_SODIUM`），
-两张卡片各自独立展示，来源标注引用**同一段原文**，这不算合并（需求 §7-5 禁止的是合并建议本身）。
+两张卡片各自独立展示，**来源三字段完全相同**，引用**同一段原文**，
+这不算合并（需求 §7-5 禁止的是合并建议本身）。
 
 **三类来源之间不做交叉关联、不合并**（需求 §7-5）。
 
@@ -1341,15 +2446,15 @@ class DietRequirementContent {
 
 | 分区 | 无内容时的文案 |
 |---|---|
-| 过敏提醒 | 本次体检报告未涉及过敏原相关内容 |
-| 营养补充 | 本次体检报告未涉及营养补充相关内容 |
-| 饮食注意 | 本次体检报告未涉及饮食注意相关内容 |
+| 过敏提醒 | 本次报告未提取到明确的过敏原相关内容 |
+| 营养补充 | 本次报告未提取到明确的营养补充建议 |
+| 饮食注意 | 本次报告未提取到明确的饮食注意要求 |
 
 **全模块不出现任何提示、说明或警示文字**，只有报告原文、来源标注、已收录枚举的食材内容，
 以及上表的空态句和 §7.8 的底部声明（产品决策，§12-3）。
 
 > **已知接受的风险：** 报告压根没做过敏原筛查时，页面与"做了筛查但全阴性"完全一样，
-> 都显示「本次体检报告未涉及过敏原相关内容」。系统不会告知用户"推荐结果未考虑过敏因素"，
+> 都显示「本次报告未提取到明确的过敏原相关内容」。系统不会告知用户"推荐结果未考虑过敏因素"，
 > 而本版又没有用户自填过敏原的入口——即用户没有任何途径让系统知道他的过敏情况，
 > 也不会被提示这一点。此为产品明示决策，兜底仅靠 §7.8 与 §8.11 的模块声明。
 
@@ -1377,72 +2482,112 @@ ct_dish_ingredient  dish_id、ingredient_name、weight_g
 在线组装时按当前用户可见范围查当日在架菜品；主料标记、拼音、配料完整性全部运行时推导，
 **菜品库零改造**。
 
+#### 8.1.1 `ct_dish_ingredient` 里没有调味料（已确认）
+
+**食材表只记录主料与配料，油、盐、糖、酱油、醋、料酒、蚝油、香油、豆瓣酱、
+沙拉酱、XO 酱、鸡精、淀粉这些一概不入表**（菜品数据方确认，2026-08-25）。
+
+这不是"少几行数据"，它**直接拆掉了过敏拦截的一整条路径**：
+
+```
+酱油   → 大豆 + 小麦    仅菜名/配方明确出现酱油时成立；红烧、卤等做法词本身不成立
+蚝油   → 贝类          蚝油生菜、蚝油牛肉、大量炒青菜
+香油   → 芝麻线索       存在地区/复配歧义，只作 MODEL_ONLY
+豆瓣酱 → 配方线索       不能只凭菜系或做法推断具体大豆/小麦配方
+沙拉酱 → 配方线索       存在无蛋配方，未明确时 UNKNOWN
+XO 酱  → 配方线索       配方差异大，虾/干贝维度未明确时 UNKNOWN
+
+裁决依据见 `constants/内容常量说明V3.md` §4.3 与逐条证据台账。技术词、菜系常识和
+“通常会放”不足以产生 `REJECT`；缺少明确菜名、食材或配方证据时必须 `UNKNOWN`。
+```
+
+**这些过敏原真实存在于菜里，但在我们能读到的数据里完全不存在。**
+后果分三条，逐条落在下面各节：
+
+| 影响面 | 后果 | 处理 |
+|---|---|---|
+| §8.5 Java 关键词兜底 | 食材名里永远匹配不到调味料，**只剩菜名一条通路** | 词表覆盖明确调味料菜名；`MOLLUSK` / `SESAME` 已纳入（§7.2.1） |
+| §8.4 LLM-B 过敏打标 | 模型拿到的食材列表同样没有调味料，**不能靠列表判断有无** | 只有明确菜名/配方证据可 `REJECT`；只靠通常做法时输出 `UNKNOWN`（§8.4） |
+| §8.8 主料推导 | 「排除调味料」这一步成了空操作 | 删掉 `SEASONING` 常量（§8.8） |
+
+> **食材表为空 ≠ 这道菜没有这个过敏原。** 全案凡是"食材里没有 X 所以判 NEUTRAL"的推理
+> 一律不成立——只能推出"主料配料里没有 X"。这条要写进 LLM-B 的提示词，
+> 也要写进 Java 兜底的注释里，否则以后一定有人照着"数据里没有"下结论。
+
 **`dish_id` 全系统唯一已由菜品数据方确认**（2026-08-24），这是 §8.3 缓存 Key 不含租户/食堂维度的前提。
 
 ### 8.2 三个维度的判定方式
 
 | 维度 | 枚举数 | 判定方 | 需求依据 |
 |---|---|---|---|
-| 食入性过敏原 | 11 | **LLM-B 离线打标 + Java 关键词兜底取并集** | §8-2 主料或配料 |
+| 食入性过敏原 | 13 | **LLM-B 离线打标（`REJECT`/`UNKNOWN`/`NEUTRAL`，§8.4）+ Java 关键词兜底取并集** | §8-2 主料或配料 |
+| ↑ 注 | | 食材表不含调味料（§8.1.1），Java 兜底实际只覆盖明确菜名；缺少配方证据时 LLM-B 必须给 `UNKNOWN`，不得用常识补配方 | |
 | 营养补充 | 9 | **纯 Java 确定性匹配**，不调模型 | §8-2 菜品主料 |
 | 饮食注意 | 9 | **LLM-B 离线打标** | §8-2 符合/违反饮食要求 |
 | 吸入性过敏原 | 5 | **不参与** | 非食物 |
 
-**LLM-B 实际打标维度 = 11 + 9 = 20 个**（5 个吸入性不参与、9 个营养补充走 Java）。
+**LLM-B 实际打标维度 = 13 + 9 = 22 个**（5 个吸入性不参与、9 个营养补充走 Java）。
 
 ### 8.3 离线打标（每日凌晨，xxl-job）
 
 #### 8.3.1 缓存 Key 按维度组织，不按菜
 
-```
-tagPolicyVersion = hash(modelVersion + promptVersion + tagRuleVersion)
+> **2026-08-24 变更：`tagPolicyVersion` 已取消，合并进 `tagHash`。**
+> 本节以下凡写 `dishHash` + `tagPolicyVersion` 两个维度的地方，现在都是一个 `tagHash`。
 
-MySQL ct_dish_tag 唯一键   (dish_id, dish_hash, tag_policy_version, enum_key)      ← 真源
-Redis Key               dish:tag:{enumKey}:{tagPolicyVersion}:{bizDate}   Hash
-Redis Field             {dishId}:{dishHash}
+```
+tagHash = sha256(tagRuleVersion + "|" + promptVersion + "|" + modelVersion + "|"
+                 + normalize(菜名) + "|" + 食材串)
+
+MySQL ct_dish_tag 唯一键   (dish_id, tag_hash, enum_key)               ← 真源
+Redis Key               dish:tag:{enumKey}:{bizDate}   Hash
+Redis Field             {dishId}:{tagHash}
 Redis Value             {verdict, matchedIngredients}
 Redis TTL               3 天
 ```
 
 **Key 的形状必须匹配读取模式。** 在线要的是「这几个生效维度，全部菜分别什么标签」，
-不是「这一道菜，20 个维度分别什么标签」：
+不是「这一道菜，22 个维度分别什么标签」：
 
 ```
 生效维度 = 本次报告命中的食入性过敏原枚举 ∪ 命中的饮食注意枚举
-          典型 3~6 个，不是 20 个
-在线读取 = 每个生效维度一次 HMGET，一次带上全部 dishId:dishHash
+          典型 3~6 个，不是 22 个
+在线读取 = 每个生效维度一次 HMGET，一次带上全部 dishId:tagHash
           → 3~6 次 Redis 命令搞定
 ```
 
-早期设计是一菜一 Key（`dish:tag:{dishId}:{dishHash}:{policyVersion}`），200 道菜就是
-200 个 Key，且每次取回 20 个维度而只用其中 6 个。管道化能把 RTT 压下去，
+早期设计是一菜一 Key（`dish:tag:{dishId}:{tagHash}`），200 道菜就是
+200 个 Key，且每次取回 22 个维度而只用其中 6 个。管道化能把 RTT 压下去，
 但那是在用管道掩盖结构错配。
 
 **`bizDate` 让 Key 每天重建，不留垃圾字段。** Hash 没有字段级 TTL，
-不带日期的话每道菜改一次食材就在 20 个 Hash 里各留一个死字段，一年下来全是垃圾。
+不带日期的话每道菜改一次食材就在 22 个 Hash 里各留一个死字段，一年下来全是垃圾。
 
-**两个版本维度仍然缺一不可：**
+**两类失效仍然都要覆盖，但用同一个哈希表达：**
 
 | 变的是什么 | 谁失效 |
 |---|---|
-| 某道菜改了食材 | `dishHash` 变 → Field 变 → **只有它自己**读不到标签 |
-| 换模型 / 改提示词 / 改内容常量 | `tagPolicyVersion` 变 → Key 变 → 全部重打 |
+| 某道菜改了食材 | 食材串变 → `tagHash` 变 → Field 变 → **只有它自己**读不到标签 |
+| 换模型 / 改提示词 / 改内容常量 | 版本段变 → **全部菜**的 `tagHash` 变 → 全部重打 |
 
-**两者回答的是不同的问题：** `dishHash` 问"菜变了吗"，`tagPolicyVersion` 问"规则变了吗"。
+**两个问题的答案总是一起用，所以没必要分成两个字段。** 分开的代价是唯一键多一列、
+在线查询多一个等值条件、Redis Key 多一段、清理要维护「保留版本集合」、
+还要额外一张表才知道「前一版本」是什么；收益只有排障时能区分是菜变了还是规则变了，
+而那用 `model_version` / `prompt_version` / `tag_rule_version` 三个普通列就够了。
 
 **输出 Schema 的版本不参与。** 它只约束返回结构，不改变模型对「这道菜含不含虾」的判断；
 加字段属于数据迁移问题，不是标签失效问题。只有真正影响打标结果的三项进 hash。
 
-**bump 的代价很低：** 全量重打 = 200 道菜 × 20 维度 / 40 每批 ≈ 100 次调用，
+**bump 的代价很低：** 全量重打 = 200 道菜 × 22 维度 / 40 每批 ≈ 110 次调用，
 一个凌晨窗口跑得完。所以这里可以放心保守——宁可多重打一次，
 也不要让旧规则的标签留在线上。
 
-只有 `dishHash` 而没有 `tagPolicyVersion` 的话，**改了提示词或内容常量之后菜和食材都没变，
-diff 会认为标签已存在，永远不会重算**：
+**版本段不能从哈希里拿掉。** 只算菜名和食材的话，改了提示词或内容常量之后菜和食材都没变，
+diff 会认为标签已存在，永远不会重算：
 
 ```
 营养师往 LOW_FAT 的避免食材里加了「红油」「油炸」，bump tagRuleVersion
-凌晨 diff：(水煮牛肉, dishHash=abc, LOW_FAT) 在 ct_dish_tag 里有没有？ 有 → 跳过
+凌晨 diff：(水煮牛肉, tagHash=abc, LOW_FAT) 在 ct_dish_tag 里有没有？ 有 → 跳过
         → 这道菜永远不会用新规则重打
 ```
 
@@ -1451,15 +2596,17 @@ diff 会认为标签已存在，永远不会重算**：
 反过来，用「全部菜品集合」的整体 hash 也不行：任何一道菜改一克，整个版本号就变，
 预热完成前推荐模块整个空掉。
 
-#### 8.3.2 `dishHash` 必须规范化后再算
+#### 8.3.2 `tagHash` 必须规范化后再算
 
 ```
-dishHash = sha256(
+tagHash = sha256(
+    tagRuleVersion + "|" + promptVersion + "|" + modelVersion + "|" +
     normalize(dishName) + "|" +
     join(",", 食材列表按 normalize(name) 字典序排序后的 "name:weightG")
 )
-其中：weightG 统一换算为克并四舍五入到 1 位小数
+其中：weightG 统一换算为克并四舍五入到 1 位小数，未知编码为 null 而不是 0
       name 走 §3.2.2 的规范化
+完整规则见开发方案 §9.5.1
 ```
 
 不排序、不统一单位、不规范名称的话，**外部查询返回顺序变一下就会触发全量无意义重打标**。
@@ -1467,29 +2614,30 @@ dishHash = sha256(
 #### 8.3.3 打标任务
 
 ```
-① 取当日在架菜品全量，逐菜计算 dishHash，取当前 tagPolicyVersion
-② diff 出缺失的 (dishId, dishHash, tagPolicyVersion, enumKey) 组合
+① 取当日在架菜品全量，逐菜计算 tagHash
+② diff 出缺失的 (dishId, tagHash, enumKey) 组合
    —— diff 以 MySQL ct_dish_tag 为准，不看 Redis
+   —— diff【命中】的行必须把 last_seen_date 刷成今天，否则 30 天后会被清理误删
 ③ 分批调用 LLM-B（40 道/批，按 enumKey 分组）
-④ Java 校验通过的写入 MySQL ct_dish_tag（真源）
+④ Java 校验通过的写入 MySQL ct_dish_tag（真源），last_seen_date = 今天
 ⑤ 按 enumKey 聚合，HSET 写入当日 Redis Key，设 TTL 3 天
 ⑥ 上报 tag_target_total / tag_written_total，不等即告警
 ```
 
 **成本：** 200 道菜 × 20 维度 / 40 道每批 ≈ 100 次调用/天；稳态下只补新增和变更，远低于此。
-`tagPolicyVersion` 变更会触发一次全量重打，需在发版计划里预留窗口。
+改提示词 / 词表 / 模型会让全部 `tagHash` 变化，触发一次全量重打，需在发版计划里预留窗口。
 
 #### 8.3.4 在线读取路径
 
 ```
 ① MySQL  当前用户可见的当日在架菜品 + 食材            ~200 菜 / ~1600 行
-         （dishHash、主料推导、过敏 Java 兜底都要这份数据，绕不开）
-② Java   逐菜算 dishHash                            200 × sha256，<5ms
-③ Redis  每个生效维度一次 HMGET，Field 是全部 dishId:dishHash
+         （tagHash、主料推导、过敏 Java 兜底都要这份数据，绕不开）
+② Java   逐菜算 tagHash                             200 × sha256，<5ms
+③ Redis  每个生效维度一次 HMGET，Field 是全部 dishId:tagHash
                                                     3~6 次命令
 ④ MySQL  ③ 中返回 null 的 Field 回源查 ct_dish_tag       一次 IN 查询
-         WHERE tag_policy_version=? AND enum_key IN (...)
-           AND (dish_id, dish_hash) IN ((?,?), ...)
+         WHERE enum_key IN (...)
+           AND (dish_id, tag_hash) IN ((?,?), ...)
          MySQL 8.0.14+ 对行构造器 IN 支持索引区间扫描，走 idx_online；
          更早的版本会退化成全表扫，需确认实际部署版本
 ⑤ Java   仍然查不到 → TAG_MISSING（§8.9），不是 NEUTRAL
@@ -1504,57 +2652,147 @@ Redis 在这里只是加速器，MySQL `ct_dish_tag` 才是真源。
 ```sql
 CREATE TABLE ct_dish_tag (
   dish_id             BIGINT       NOT NULL COMMENT '食堂菜品ID',
-  dish_hash           CHAR(64)     NOT NULL COMMENT '菜名与食材的SHA-256内容哈希',
-  tag_policy_version  CHAR(64)     NOT NULL COMMENT '打标策略版本哈希',
-  enum_key            VARCHAR(32)  NOT NULL COMMENT '过敏原或饮食注意维度枚举键',
-  verdict             VARCHAR(12)  NOT NULL COMMENT '打标结论：RECOMMEND/REJECT/NEUTRAL',
-  matched_ingredients VARCHAR(512) NULL COMMENT '命中食材名称的JSON数组字符串',
-  reason              VARCHAR(256) NULL COMMENT '模型返回的判定理由',
-  model_version       VARCHAR(64)  NOT NULL COMMENT 'LLM-B模型版本',
-  prompt_version      VARCHAR(32)  NOT NULL COMMENT 'LLM-B提示词版本',
-  tag_rule_version     VARCHAR(32)  NOT NULL COMMENT '内容常量版本',
+  tag_hash            CHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci     NOT NULL COMMENT '打标输入哈希：规则版本+提示词版本+模型版本+菜名+食材',
+  enum_key            VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '过敏原或饮食注意维度枚举键',
+  verdict             VARCHAR(12) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '打标结论：REJECT含或可能含/UNKNOWN数据不足判不出/NEUTRAL确认不含。RECOMMEND仅由营养维度的Java计算产生不落本表；TAG_MISSING是查不到行的推导结果不入库',
+  matched_ingredients VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '命中食材名称的JSON数组字符串',
+  reason              VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '模型返回的判定理由',
+  model_version       VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT 'LLM-B模型版本',
+  prompt_version      VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT 'LLM-B提示词版本',
+  tag_rule_version    VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '内容常量版本，仅排障可读',
+  last_seen_date      DATE         NOT NULL COMMENT '最后一次被预热确认为当前有效的业务日，清理只看这一列',
   create_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间，由数据库维护',
-  create_by           VARCHAR(50)  NULL COMMENT '创建人标识',
+  create_by           VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '创建人标识',
   update_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护',
-  update_by           VARCHAR(50)  NULL COMMENT '更新人标识',
-  UNIQUE KEY uk (dish_id, dish_hash, tag_policy_version, enum_key),
-  KEY idx_online (tag_policy_version, enum_key, dish_id, dish_hash),   -- ④ 的回源走这条
-  KEY idx_cleanup (create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='菜品维度打标结果';
+  update_by           VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '更新人标识',
+  UNIQUE KEY uk (dish_id, tag_hash, enum_key),
+  KEY idx_online (enum_key, dish_id, tag_hash),      -- ④ 的回源走这条
+  KEY idx_last_seen (last_seen_date)                 -- 清理走这条
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='菜品维度打标结果';
 ```
 
-三个 `*_version` 列冗余存储（`tagPolicyVersion` 已是它们的 hash），用于复现某天的推荐结果。
+（正式 DDL 以开发方案 §3.1 为准；那边每个字符列都逐列写了字符集与排序规则。）
+
+三个 `*_version` 列冗余存储（版本段已经在 `tag_hash` 里），
+**仅供排障复现某天的推荐结果，不参与任何键与查询条件**。
 
 **没有单独的 `tagged_at` 列**——打标时间就是行的 `create_time`，
-而 `tag_policy_version` 进了唯一键，同一策略下的行不会被覆写重打。
+而 `tag_hash` 进了唯一键，同一输入下的行不会被覆写重打。
 
 ### 8.4 LLM-B 打标契约
 
 输入：一批菜品（菜名 + 食材列表 + 重量）+ 一个枚举的展示名和内容常量。
-正式契约为 `schema/llm_b_output.schema.json`。
+**食材列表里没有任何调味料**（§8.1.1），这一点必须在提示词里对模型讲明。
+正式契约为 `schema/dish_tag_output.schema.json`。
 
 ```jsonc
 {
   "enumKey": "LOW_FAT",
-  "neutralDishIds": [10001, 10003],     // 已核验、结论为中立的，只回 ID
-  "hitList": [                           // 只有命中项携带证据
+  "neutralDishIds": [10001],            // 能确认不含/不违反的，只回 ID
+  "unknownDishIds": [10003, 10004],     // 判不出的，只回 ID —— 过敏维度下这类是常态
+  "hitList": [                           // 只有 REJECT 携带证据
     { "dishId": 10002, "verdict": "REJECT",
       "evidenceType": "COOKING", "matchedIngredients": [], "reason": "油炸菜品" }
   ]
 }
 ```
 
-**紧凑格式不缩小覆盖范围**：`neutralDishIds ∪ hitList` 必须精确等于本批全部输入 `dishId`，
-少一个、多一个、重复一个都判整批作废，不写库、不重试。
-**遗漏的菜绝不静默补成 `NEUTRAL`。**
+**紧凑格式不缩小覆盖范围**：`neutralDishIds ∪ unknownDishIds ∪ hitList` 必须精确等于
+本批全部输入 `dishId`，**三者两两不相交**；少一个、多一个、重复一个都判整批作废，
+不写库、不重试。**遗漏的菜绝不静默补成 `NEUTRAL`，也不补成 `UNKNOWN`。**
 
 | 维度 | 允许的 verdict |
 |---|---|
-| 食入性过敏原 | `REJECT` / `NEUTRAL` |
-| 饮食注意 | **只有 `REJECT` / `NEUTRAL`**，不产生推荐 |
+| 食入性过敏原 | `REJECT` / `UNKNOWN` / `NEUTRAL` |
+| 饮食注意 | `REJECT` / `UNKNOWN` / `NEUTRAL`，**不产生推荐** |
 
-过敏维度提示词要点：**判断这道菜的实际成分中是否可能含有该过敏原，包括调味料和加工食品里的
-隐藏成分**（XO 酱含干贝虾米、沙拉酱含蛋、海鲜酱含虾）。宁可多标，不可漏标。
+#### 调用方式：直连，且必须先剥离思考段（2026-08-27 定）
+
+模型是 **qwen3-32b-k100**，走与 LLM-A / OCR 同一个网关的 OpenAI 兼容
+`/chat/completions`，两条消息：`system` 放提示词正文，`user` 放本批菜品。
+
+**这个模型带「深度思考」，而思考过程是内联在 `content` 里的**，不是单独字段：
+
+```
+"content": "<think>\n（思考过程，可能很长）\n</think>\n\n{ 真正的 JSON }"
+```
+
+因此 `content` **不能直接当 JSON 解析**。Java 侧必须先按 `</think>` 剥离，
+再解析剩余部分。**剥离规则要严格**，理由见开发方案 §13.2.3：
+思考段里经常出现示例 JSON，任何"找第一个 `{`"式的宽松提取都会把示例当成结果。
+
+> **打标结果的正确性不依赖"思考能不能关掉"。** 即使后续确认网关支持关闭思考，
+> 剥离逻辑也必须无条件保留——一个部署开关不该成为解析正确性的前提。
+
+#### `NEUTRAL` 与 `UNKNOWN` 必须分开（2026-08-25 补）
+
+§8.1.1 说"食材表没有调味料，不能证明这道菜不含某过敏原"，
+而**上一版**的例子写着「白灼西兰花 → 无明显调料路径 → `NEUTRAL`」、
+提示词里写着"判不出通常放什么就是 `NEUTRAL`"——**那两条与前一句自相矛盾**：
+`NEUTRAL` 的语义是"确定不含"，而在没有真实调味料数据的前提下，
+模型能给出的最强结论只有"没看出含的理由"，那不是"确定不含"。
+
+> **两处均已修正**（2026-08-25）：§8.1.1 的例子改为 `UNKNOWN`，
+> `prompt/dish_tag.md` 的三态定义、证据降级口径、饮食注意示例（凉拌黄瓜）
+> 全部改为 `UNKNOWN`。**当前提示词不存在这个冲突**，本段只作变更记录保留。
+
+```
+REJECT    菜名、食材或标准产品名称提供明确或高可信成分证据
+UNKNOWN   数据不足，判不出 —— 食材表没调味料、菜名也看不出、做法不确定
+NEUTRAL   有完整配方或调味料标签，能确认不含
+```
+
+**在当前数据条件下，过敏维度的 `NEUTRAL` 几乎不应该出现。** 食堂给的是主料配料表，
+不是配方表，所以「白灼西兰花」的正确答案是 `UNKNOWN` 而不是 `NEUTRAL`——
+白灼确实没有明显调料路径，但那只是"我没看出来"，不是"厨房没放"。
+`NEUTRAL` 留给将来食材表补全调味料、或菜品数据带上配方标签之后。
+
+**Java 侧只做枚举判断，不重新解释语义（§0-2）：**
+
+```
+过敏维度 UNKNOWN  →  HIDDEN，与 TAG_MISSING 同样处理（§8.9、§8.10）
+                     不进推荐列表，也不进不推荐列表
+饮食注意 UNKNOWN  →  同上
+```
+
+> **为什么不干脆把 UNKNOWN 从严映射成 REJECT。** 那样几乎所有菜都会被拒
+> ——过敏维度下 `NEUTRAL` 本来就该罕见，全判 `REJECT` 等于推荐模块永远空着，
+> 而且会把大量无辜菜品放进"不推荐列表"，构成错误指控（§8.9 已论证过这一点）。
+> `HIDDEN` 是唯一诚实的选择：**我们不知道，所以不说。**
+>
+> **代价是推荐列表会明显变短**，与 §8.1.1 的"过敏拒绝率上升"是同一笔账的另一半，
+> 一并计入 §11-4a 的量化。
+
+**过敏维度提示词要点：**
+
+1. **判断可见菜名和食材是否为该过敏原提供直接或高可信证据**，包括菜名明确写出的调味料和
+   加工食品线索。只有明确/高可信证据可 `REJECT`；仅“可能含有”时必须 `UNKNOWN`。
+2. **食材列表里没有调味料，「列表里没有」不等于「这道菜里没有」**（§8.1.1）。
+   判断调味料带来的过敏原时，依据是**菜名或实际配方证据**，不能把通常做法当成事实：
+
+   ```
+   蚝油生菜    食材：生菜                → 贝类？【是】菜名里就写着蚝油
+   麻婆豆腐    食材：豆腐、牛肉末        → 大豆？【是】明确豆腐；不能另推定豆瓣酱配方
+   沙拉时蔬    食材：生菜、圣女果        → 鸡蛋？【UNKNOWN】菜名未说明酱料配方
+   XO酱炒饭    食材：米饭、鸡蛋、青豆    → 虾/软体动物？【UNKNOWN】XO酱配方不固定
+   白灼西兰花  食材：西兰花              → 无明显调料路径 → 【UNKNOWN，不是 NEUTRAL】
+   ```
+
+   > **最后一行是 2026-08-25 修正的。** 原先写 `NEUTRAL`，与本节开头
+   > 「食材表为空 ≠ 这道菜没有这个过敏原」直接矛盾——没有配方数据时，
+   > 模型能给的最强结论是"没看出含的理由"，那是 `UNKNOWN`，不是"确认不含"（§8.4）。
+
+   > **口径已裁决：**菜名明确出现酱油/豉油时可作为大豆/小麦高可信线索；香油只作芝麻
+   > `MODEL_ONLY` 线索；红烧、酱爆、卤、凉拌等做法词不得单独推出调味料成分。
+
+3. **模型不得把通常做法补成实际配方。** `UNKNOWN` 本身就是安全态，在线与缺标签同样隐藏；
+   因此没有必要用未经证实的常识制造 `REJECT`，也不能用信息缺失制造 `NEUTRAL`。
+   代价是 REJECT 率会明显上升，见下。
+
+> **这条改动会让过敏拒绝率大幅上升。** 「酱油含小麦」一条就能让小麦过敏用户的
+> 中式咸口菜几乎全军覆没。这是**正确**行为（那些菜确实含酱油），但产品需要知道
+> 推荐列表会变得很短，甚至空掉——与 §7.2.1 收录「香油」的代价是同一类，只是范围更大。
+> 需用真实菜单量化（§11-22）。
 
 ### 8.5 过敏的 Java 关键词兜底
 
@@ -1563,12 +2801,26 @@ CREATE TABLE ct_dish_tag (
 
 ```java
 // AllergenKeywords 直接由 AllergenGroup 的 avoidIngredients ∪ hiddenFoods 得出
-// 与展示同源，共 11 组 73 词，不另建一张表
+// 与展示同源，不另建一张表
 // 匹配范围：菜名 + 全部食材名（不只主料）；无重量阈值，微量即命中
 任一来源判 REJECT → 该菜在该过敏维度 REJECT，模型不可推翻
 ```
 
-**已知代价：过杀。**「鱼香肉丝」在鱼过敏时会被误标。按 §0-5 的不对称主动接受。
+**食材表没有调味料之后，这一层实际上只剩「菜名」一条通路**（§8.1.1）。
+「蚝油生菜」能拦住是因为**菜名里写着蚝油**，不是因为食材里有；而「红烧肉」里的酱油、
+「凉拌黄瓜」里的香油，这一层**一个都拦不到**——§8.4 也不得猜配方，只能给 `UNKNOWN`，
+由在线完整性门槛把该菜隐藏。
+
+后果是这一层从"双保险"退化成了"菜名保险"，两条必须跟上：
+
+```
+① 词表必须收录调味料在【菜名】里的写法
+   蚝油 / 蚝汁 → MOLLUSK       香油 / 麻油 / 麻酱 → SESAME 的 MODEL_ONLY 线索
+   酱油 / 豉油 → WHEAT          红烧 / 酱爆 / 卤 → 不进硬词表，配方不明为 UNKNOWN
+② MOLLUSK 与 SESAME 已纳入正式契约（§7.2.1）
+```
+
+**已知代价：过杀。**「鱼香肉丝」在鱼过敏时会被误标。按 §0-6 的不对称主动接受。
 误杀集中在少数几个词时，加一个不超过 20 条的例外词典（常量数组）。
 
 ### 8.6 枚举外过敏原（`OTHER` 且 `isFoodBorne = true`）
@@ -1585,6 +2837,11 @@ CREATE TABLE ct_dish_tag (
 
 > **已知接受的风险：** 字面匹配拦得住「芹菜炒肉」，拦不住复合调味料里的隐藏成分。
 > 这部分菜会正常出现在推荐列表中，且页面不作任何说明。兜底仅靠 §8.12 的模块声明。
+>
+> **枚举外过敏原比正式枚举更脆弱。** 正式枚举至少有独立 LLM-B 维度承载 `UNKNOWN` 安全态，
+> 而本节走的是**纯字面匹配**——食材表没有调味料（§8.1.1），
+> 报告写「芥末 阳性」时，含芥末酱的菜既不在食材表里、菜名也未必写，就是拦不住。
+> 本次不为此单独引入模型判断，风险记录在案。
 
 ### 8.7 营养补充：纯 Java 确定性匹配
 
@@ -1602,8 +2859,8 @@ verdict = matched.isEmpty() ? NEUTRAL : RECOMMEND;
 **没校验它属不属于该营养素的推荐食材**。模型如果认为「大米补铁」，而大米确实是主料，
 Java 校验会原样放行——一道白米饭就成了补铁推荐菜。
 
-改成 Java 交集后：结果完全确定、零模型成本、可单测穷举，且符合 §0-2
-「能程序判定的不交给模型」。**LLM-B 少 9 个维度。**
+改成 Java 交集后：结果完全确定、零模型成本、可单测穷举，且符合 §0-3
+「确定性规则不交给模型」。**LLM-B 少 9 个维度。**
 
 食材名对不上时（「猪肝」vs「鲜猪肝」）用 `IngredientAliasWords` 常量别名表兜一层，
 未命中即按不匹配处理（方向保守，只会少推荐）。
@@ -1616,14 +2873,19 @@ Java 校验会原样放行——一道白米饭就成了补铁推荐菜。
 
 ```java
 Set<String> mainIngredients(Dish d) {
-    // 1. 排除调味料（SEASONING 常量：油、盐、糖、酱油、醋、葱、姜、蒜、料酒、淀粉...）
-    // 2. 排除无重量数据的食材；全部无重量 → 返回空集（该菜营养维度全 NEUTRAL）
-    // 3. total = 剩余食材重量之和
+    // 1. 排除无重量数据的食材；全部无重量 → 返回空集（该菜营养维度全 NEUTRAL）
+    // 2. total = 剩余食材重量之和
     // 规则一：重量占比 >= 25% 的，无论名次
     // 规则二：重量前 2 名，且占比 >= 15%
     // 两条取并集；都不满足则取最重的一个
 }
 ```
+
+> **没有「排除调味料」这一步，也没有 `SEASONING` 常量**——食材表里本来就没有调味料（§8.1.1）。
+> 原设计的第一步是空操作，删掉。
+>
+> **阈值不用重新校准。** 旧公式的分母本来就是"排除调味料之后的重量和"，
+> 而排除是空操作，所以分母没变，`0.25 / 0.15` 的推导前提不受影响（仍需按 §11-2 实测校准）。
 
 | 菜品 | 数据 | 仅 ≥25% | 仅前2名 | 双规则 |
 |---|---|---|---|---|
@@ -1650,25 +2912,51 @@ Set<String> mainIngredients(Dish d) {
 
 过敏维度同理，而且后果更严重。
 
-**因此引入四态，`TAG_MISSING` 与 `NEUTRAL` 必须分开：**
+**因此引入五态，三种"不是 REJECT"必须分开：**
 
 ```java
-enum TagState { TAG_MISSING, NEUTRAL, RECOMMEND, REJECT }
+enum TagState {
+    TAG_MISSING,   // 没打过标（预热没覆盖到 / 缓存与库都没有）
+    UNKNOWN,       // 打过标，模型判不出（§8.4：数据不足）
+    NEUTRAL,       // 打过标，确认不含 / 不违反
+    RECOMMEND,     // 仅营养维度，Java 现算（§8.7）
+    REJECT
+}
+```
+
+**两者的产生位置不同，不要混：**
+
+```
+UNKNOWN      模型给的结论，或写库前校验降级而来（§8.4）—— 库里【有】这一行，verdict=UNKNOWN
+TAG_MISSING  在线读取时 Redis 与 MySQL 都查不到有效标签（§8.3.4-⑤）—— 库里【没有】这一行
+
+【模型漏返回某道菜】不产生 TAG_MISSING —— 那是覆盖不完整，整批作废、不写库（§8.4）
+    结果是这批标签根本没写进去，在线读取自然查不到，此时才表现为 TAG_MISSING
+    两者是「因」与「果」，不是同一层的两条并列规则
+```
+
+`TAG_MISSING` 与 `UNKNOWN` 在**裁决上同结果**（都进 `HIDDEN`），但**必须是两个值**——
+它们是两种完全不同的故障，混成一个就没法排障：
+
+```
+TAG_MISSING 多  →  预热任务的问题：跑失败了、菜是窗口后新上架的、tagHash 变了没重打
+UNKNOWN     多  →  数据或提示词的问题：食材表信息太少、菜名看不出、提示词该改
 ```
 
 **完整性门槛：** 对本次报告实际生效的每个**可产生 REJECT 的维度**
-（全部食入性过敏原维度 + 全部饮食注意维度），该菜只要有任意一个维度是 `TAG_MISSING`，
-**这道菜就不能进入推荐列表**。
+（全部食入性过敏原维度 + 全部饮食注意维度），该菜只要有任意一个维度**不是**
+`NEUTRAL` 也不是 `REJECT`（即 `TAG_MISSING` 或 `UNKNOWN`），**就不能进入推荐列表**。
 
 ```
 可产生 REJECT 的维度 = 生效的食入性过敏原枚举 ∪ 生效的饮食注意枚举
-营养补充维度不在此列（Java 现算，永不缺失）
+营养补充维度不在此列（Java 现算，永不缺失，也永不 UNKNOWN）
 
-该菜在上述任一维度 TAG_MISSING  →  不进推荐列表，也不进不推荐列表（不展示）
+该菜在上述任一维度 TAG_MISSING 或 UNKNOWN  →  不进推荐列表，也不进不推荐列表（不展示）
 ```
 
-**为什么不放进不推荐列表：** 我们并不知道它违规，只是没核验过；
-放进不推荐列表是对菜品的错误指控，也会误导用户以为这道菜有问题。不展示是唯一诚实的选择。
+**为什么不放进不推荐列表：** 我们并不知道它违规，只是没核验过（`TAG_MISSING`）
+或核验不出来（`UNKNOWN`）；放进不推荐列表是对菜品的错误指控，
+也会误导用户以为这道菜有问题。不展示是唯一诚实的选择。
 
 预热窗口之后新上架的菜品**当天不出现在推荐列表里**，这是有意的。
 
@@ -1676,16 +2964,19 @@ enum TagState { TAG_MISSING, NEUTRAL, RECOMMEND, REJECT }
 
 ```java
 // ① 逐条校验（不通过就降级，不整批丢弃）
-//    - matchedIngredients ⊆ 该菜食材表，对不上的剔除；全对不上 → 降 NEUTRAL
-//    - 本批未被模型返回的菜 → TAG_MISSING（★ 不是 NEUTRAL，见 §8.9）
+//    - matchedIngredients ⊆ 该菜食材表，对不上的剔除
+//      全对不上 → 降 UNKNOWN（★ 不是 NEUTRAL：证据不成立不等于确认不含，§8.4）
+//    ★ 【没有「未返回的菜 → TAG_MISSING」这一条】
+//      覆盖不完整在【写库前】就整批作废了（§8.4），根本走不到这里
+//      TAG_MISSING 只有一个来源：在线读取时 Redis 与 MySQL 都查不到有效标签（§8.3.4-⑤）
 //    - 营养维度不走此路径，由 §8.7 直接产出
 
 // ② 裁决（需求 §8-3：冲突以不推荐优先）
-if (任一过敏维度 REJECT)     return NOT_RECOMMENDED;   // 只带过敏标签
-if (任一维度 REJECT)         return NOT_RECOMMENDED;   // 推荐标签作灰色附注
-if (任一可 REJECT 维度 TAG_MISSING) return HIDDEN;     // ★ 不进任何列表（§8.9）
-if (任一维度 RECOMMEND)      return RECOMMENDED;
-return NEUTRAL;                                        // 不进任何列表
+if (任一过敏维度 REJECT)              return NOT_RECOMMENDED;   // 只带过敏标签
+if (任一维度 REJECT)                  return NOT_RECOMMENDED;   // 推荐标签作灰色附注
+if (任一可 REJECT 维度 ∈ {TAG_MISSING, UNKNOWN}) return HIDDEN; // ★ 不进任何列表（§8.9、§8.4）
+if (任一维度 RECOMMEND)               return RECOMMENDED;
+return NEUTRAL;                                                 // 不进任何列表
 ```
 
 **过敏拒绝的菜不下发任何正面标签**，灰色附注也不行——「补铁 · 虾蟹过敏」并列展示会削弱过敏提示。
@@ -1744,19 +3035,43 @@ recommendList 与 rejectList 最大长度均为 3
 |---|---|---|
 | MySQL `ct_health_report_task` | 任务状态真源、attempt、心跳、deadline、partial、deleted_at（DDL §2.3.2） | `expire_at` 到期物理删除 |
 | MySQL `ct_health_report_file` | fileId、userId、S3 定位、taskId、fileIndex、文件元数据、status、expire_at | 按 §2.7 清理矩阵 |
-| MySQL `ct_dish_tag` | 菜品标签真源 + 版本元数据（DDL §8.3.5） | 按 `create_time` 清理陈旧行 |
+| MySQL `ct_dish_tag` | 菜品标签真源 + 版本元数据（DDL §8.3.5） | 按 `last_seen_date < bizDate-30d` 清理陈旧行 |
 | MySQL `ct_dish` / `ct_dish_ingredient` | 食堂菜品与食材（外部同步，本方案只读） | 外部维护 |
 | S3 私有 Bucket | 原始文件 | 按 §2.7 清理矩阵 |
 | Redis `result:{taskId}` | 四模块结果 JSON | TTL 2h |
-| Redis `dish:tag:{enumKey}:{tagPolicyVersion}:{bizDate}` | 打标读缓存，Field = `dishId:dishHash`（§8.3.1） | TTL 3d |
-| Redis `q:analysis` | 任务队列 | — |
+| Redis `dish:tag:{enumKey}:{bizDate}` | 打标读缓存，Field = `dishId:tagHash`（§8.3.1） | TTL 3d |
 
-**没有 `task:{taskId}` 状态 Hash，也没有 Redis 墓碑，也没有 outbox 表。**
+**没有任务队列，没有 `task:{taskId}` 状态 Hash，没有 Redis 墓碑，也没有 outbox 表。**
 任务状态与删除标志都在 MySQL——状态 CAS 要与文件绑定同事务，Redis 做不到；
-`deleted_at` 也不能随 TTL 消失（§2.6）。入队由 §2.3.3 的事务内 XADD 完成。
+`deleted_at` 也不能随 TTL 消失（§2.6）。执行由 §2.3.3 的**事务提交后**提交本机线程池完成。
 
-**姓名、报告原文、OCR 文本不进 MySQL**，只在 Redis 结果里存 2 小时。
-`ct_health_report_task` 不含任何健康数据。
+**Redis 在本方案里只剩两个用途**：四模块结果（TTL 2h）和菜品打标读缓存（TTL 3d）。
+两者都是"丢了只是变慢或要用户重来"，**没有任何调度状态依赖 Redis**——
+Redis 整个挂掉时，正在跑的任务仍能跑完，只是写结果那一步失败、任务判 `FAILED`。
+
+**MySQL 不存任何健康数据**，`ct_health_report_task` 不含。
+
+> **一个例外必须显式承认：`ct_health_report_file.origin_name`。**
+> 它原样保存上传文件名，而真实文件名常常是「张三-2026年度体检报告.pdf」
+> ——姓名与体检属性都在里面。本版把它定性为**敏感元数据**：
+> 只用于前端回显、**禁止进日志**、禁止传给任何外部系统、随 file 行一起删除。
+> 是否改成只存安全生成的展示名，列入 §12 待产品确认。
+但"不进 MySQL"不等于"都进 Redis"——三类数据的去向不同：
+
+| 数据 | 去向 | 存活期 |
+|---|---|---|
+| **姓名 / 性别** | **只在工作线程内存**，用于 §4.5 同一性比对，比完即弃 | 任务执行期内，**从不写 Redis** |
+| **完整 OCR 文本 / 全部 segment 的 `rawText`** | **只在工作线程内存** | 同上，**从不写 Redis** |
+| **四模块要展示的原文片段**（健康问题 `rawText`、饮食建议来源原文、指标五字段…） | 随四模块结果写 Redis `result:{taskId}` | TTL 2 小时 |
+
+> **本表 2026-08-25 修正。** 原文写「姓名、报告原文、OCR 文本…只在 Redis 结果里存 2 小时」，
+> 与 §2.7 的「姓名 / 性别仅在 Worker 内存，**不写 Redis**、不入日志、不返回前端」直接冲突。
+> 以 §2.7 为准：**姓名和完整 OCR 文本一个字都不进 Redis**。
+>
+> 进 Redis 的只有**四模块实际要展示的那些片段**——它们本来就要下发给前端，
+> 存进结果缓存不增加任何暴露面；而姓名和全文 OCR 是**前端根本不需要**的东西，
+> 让它们在 Redis 里躺两小时是纯粹的多余风险（§11.1 的核查项「运维人员能否直接读取 Redis
+> 中的报告原文」正是冲着这个来的）。
 
 **`ct_health_report_file` 行必须整行删除，不是只删 S3 对象。**
 原文件名、文件大小、`cloud_file_key`、内容 hash 都是可定位报告的信息，
@@ -1776,12 +3091,29 @@ ct_health_report_task    ct_health_report_file    ct_dish_tag
 
 ```sql
 create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间，由数据库维护',
-create_by    VARCHAR(50)  NULL COMMENT '创建人标识',
+create_by    VARCHAR(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '创建人标识',
 update_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护',
-update_by    VARCHAR(50)  NULL COMMENT '更新人标识'
+update_by    VARCHAR(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '更新人标识'
 ```
 
+> **文档里的 DDL 示例也不能例外**（`AGENTS.md` §4）：每个字符列逐列写
+> `CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`，UUID、hash、枚举名这些只存 ASCII 的列也一样。
+
 **③ `create_time` 与 `update_time` 由数据库维护，代码永远不赋值。**
+
+**实体上必须显式声明，光靠"不写"不够**（`AGENTS.md` §4）：
+
+```java
+@TableField(insertStrategy = FieldStrategy.NEVER, updateStrategy = FieldStrategy.NEVER)
+private LocalDateTime createTime;
+
+@TableField(insertStrategy = FieldStrategy.NEVER, updateStrategy = FieldStrategy.NEVER)
+private LocalDateTime updateTime;
+```
+
+该字段永不进入 insert / update 语句，select 不受影响。
+**禁止配置 `MetaObjectHandler` 自动填充这两列，禁止在任何 SQL 或 `UpdateWrapper` 里写
+`update_time = now()`。**
 
 插入时不写这两列，更新时也不写——`DEFAULT CURRENT_TIMESTAMP` 负责前者，
 `ON UPDATE CURRENT_TIMESTAMP` 负责后者。
@@ -1799,22 +3131,31 @@ task.setUpdateTime(new Date());
 > MyBatis-Plus 若配置了 `@TableField(fill = FieldFill.INSERT_UPDATE)` 自动填充，
 > 需对这两列关闭，否则会覆盖数据库默认值、绕开约定。
 
-**④ `create_by` / `update_by` 由业务代码赋值。**
+**④ `create_by` / `update_by` 写固定系统标识，绝不写入用户标识**（`AGENTS.md` §4）。
 
 | 表 | 取值 |
 |---|---|
-| `ct_health_report_task` | 当前 `userId` |
-| `ct_health_report_file` | 当前 `userId` |
-| `ct_dish_tag` | 固定标识，如 `DISH_TAG_JOB`（离线任务写入，无用户上下文） |
+| `ct_health_report_task` | `HEALTH_REPORT_API`（在线创建）/ `HEALTH_REPORT_WORKER`（工作线程写回） |
+| `ct_health_report_file` | `HEALTH_REPORT_API` |
+| `ct_dish_tag` | `DISH_TAG_JOB`（离线预热任务） |
 
-> 这两列存的是操作者标识，不是健康数据，不违反 §9.1 的"任务表不含健康数据"。
+> **本节 2026-08-25 修正。** 原先写「取当前 `userId`」，直接违反工程规范
+> 「`create_by` / `update_by` 写固定系统标识，绝不写入用户标识」。
+> 这不只是规范问题——`user_id` 列已经承担归属校验（§2.2），
+> 再把 userId 冗余进审计列，等于同一份身份信息多一处副本、多一处泄漏面，
+> 而它对排障没有任何新增价值：**通过 `task_id` 就能查到 `user_id`。**
 
 **⑤ 字符集与排序规则（MySQL 8.0）。**
 
 | 列类型 | 字符集 / 排序规则 | 理由 |
 |---|---|---|
-| 建表默认 | `utf8mb4` | 报告文本含部首区字符（§3.2.2）与生僻 CJK，`utf8mb3` 不够用 |
-| 哈希、ID、枚举列<br>（`dish_hash` / `tag_policy_version` / `enum_key` / `task_id` / `file_id`） | `ascii_bin` 或 `utf8mb4_bin` | 这些列参与唯一键和等值查找，需要**精确二进制比较**。MySQL 8 的默认 `utf8mb4_0900_ai_ci` 大小写与重音不敏感，用在哈希列上是隐患 |
+| 建表默认 | **`utf8mb4` / `utf8mb4_general_ci`**，必须显式写在每条 `CREATE TABLE` 上 | 报告文本含部首区字符（§3.2.2）与生僻 CJK，`utf8mb3` 不够用；显式写出是为了不随部署环境或 MySQL 版本默认漂移（MySQL 8 自己的默认是 `utf8mb4_0900_ai_ci`，不是同一个） |
+| 每一个字符列（含哈希、ID、枚举列） | 逐列 `CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`，**无例外** | 统一到一套字符集与排序规则，不再有 `ascii_bin` 特例。代价是 `_ci` 大小写不敏感、唯一键会把大小写变体当同一行，因此**大小写唯一性改由代码层保证**：ID 统一由 `IdCanonicalizer` 生成小写规范形式，`user_id` 的归属校验在 Java 侧再做一次精确 `equals`（开发方案 §3.1.3） |
+
+**⑤-2 表上不写任何 `CONSTRAINT`。** 没有外键、没有 `CHECK`、没有触发器；
+`verdict` 与 `evidence_type` 的一致性等业务规则全部由代码层在写入前保证
+（执行点见开发方案 §3.1.2）。表定义里只保留 `PRIMARY KEY` / `UNIQUE KEY` / `KEY`
+三种索引声明——唯一键是 `insertIgnore` 幂等的基础设施，不算业务约束。
 
 `ct_dish` / `ct_dish_ingredient` 是食堂系统的表，本方案只读，其结构以对方为准。
 
@@ -1851,14 +3192,21 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 
 ### P0 — 安全
 
+0. **三层职责边界（§0-2）**：生产链路里 Java 的词表**只允许「往安全方向降级或拦截」一种用法**，
+   **不得改写 `status` / `isFoodBorne` / `includeInHealthProblems` / `enumKey`**，
+   **也不得为"只告警"而扫词表**（§4.4-③ 已整体下线）。
+   单测须断言：生产代码中不存在 `ConclusionLabelWords` / `NormalStatementWords` /
+   `AllergenSectionWords` 的任何引用（ArchUnit 或包扫描即可）。
 1. LLM-A 输出 Schema 强制必填 + **高风险内容交叉扫描与安全降级**（§4.4-①②）
 2. **过敏原 `resultStatus` 准入过滤，阴性绝不进入**（§4.4-④）
 3. **过敏原回切失败 → `ALLERGEN_SUSPECT_MISS` 降级，不得静默丢弃**（§4.4-⑤）
 4. **批次 `UNREADABLE` → `BATCH_UNREADABLE` 降级，模块三四不输出**（§4.1.1）
-5. **超 30 页 → `PAGE_TRUNCATED` 降级，模块三四不输出**（§3.3.2）
+5. **精确累计 31~60 页 → `PAGE_TRUNCATED` 降级，模块三四不输出；精确累计 >60 页或
+   单个 Word 超独立上限 → `PAGE_LIMIT_EXCEEDED`，且不调用 LLM-A**（§3.3）
 6. **`TAG_MISSING` ≠ `NEUTRAL`，可 REJECT 维度缺标签的菜不进推荐列表**（§8.9）
-7. 过敏原按 `isFoodBorne` 拆两条路径 + 词表反向校验（§4.4-④、§7.2）
-8. 高危表述强制转 `OTHER` 的 Java 黑名单（§7.3）
+7. 过敏原按 `isFoodBorne` 拆两条路径；**正式枚举的 `isFoodBorne` 由 `enumKey` 查表得出
+   （模型返回值直接丢弃）；`OTHER` 采信 LLM-A，Java 不校验、不改写、不告警**（§4.4-③④、§7.2）
+8. 高危表述**退出结构化链路**的 Java 安全闸，**不覆写 `enumKey`**（§7.3）
 9. 过敏 Java 关键词兜底 + 与模型取并集（§8.5）
 10. 枚举外过敏原名称匹配，仅对 `isFoodBorne = true` 生效（§8.6）
 11. 过敏拒绝优先于一切推荐判定（§8.10）
@@ -1867,19 +3215,82 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 14. **`deleted_at` 标志 + Worker 写回前带条件**（§2.6）
 15. **`DietAdviceContent` 全量内容、过敏关键词族、高危黑名单、饮食注意规则的营养师/医务审核**
     ——**未审核通过，模块三与模块四不得上线**。审核需留档审核人与内容版本号。
+15a. **`MOLLUSK` / `SESAME` 两组的工程契约补齐已完成**（§7.2.1）：
+    常量类、两个 Schema、两个提示词、四个契约数字（13、18、22、36）及
+    `tagRuleVersion=tag-1.0.0` 已同步。部署时仍须全量重打；如组织要求具名执业签字，签字未完成
+    仍是模块三、模块四的上线阻断项
+15b. **LLM-B 三态 `REJECT` / `UNKNOWN` / `NEUTRAL`**：食材表不含调味料时
+    过敏维度的 `NEUTRAL` 应当罕见，判不出必须给 `UNKNOWN`；
+    Java 把 `UNKNOWN` 与 `TAG_MISSING` 同样处理为 `HIDDEN`（§8.4、§8.9、§8.10）
 
 ### P0 — 正确性
 
 16. **Segment 机制 + `rawText`/`normalizedText` 分离 + 按 `textSource` 分档的包含性校验**（§3.2）
 17. `batchStatus` 三态，`NO_REPORT_FEATURE` 与 `UNREADABLE` 分开（§4.1.1）
-18. 健康问题准入：`includeInHealthProblems` + Java 反向兜底（§4.4-⑥、§6.1）
+18. 健康问题准入：**三类来源统一用 LLM-A 的 `includeInHealthProblems`**，
+    `INDICATOR_NUMERIC` 不再由 `status != NORMAL` 派生；**Java 既不覆写也不扫词表**（§4.4-③⑥、§6.1、§4.3-11）
+18a. **章节归属由 LLM-A 给出**，`sectionIndex` 为批内局部序号，跨批对齐用 `sectionSegmentId`；
+    **批次边界由 `sectionRelation` 四态显式表态，Java 只在 `CONTINUATION` 时继承**
+    （§4.1、§4.2、§4.6、§5.3、§6.3）
+18d. **解析器只输出原子文本块 + `bbox`，不识别表格、不聚类行列**；单元格与行的归组由
+    LLM-A 用 `segmentIds` 表达（§3.2.1、§4.3-10a）
+18e. **来源约束覆盖全部模型复述的原文串**，包括患者姓名/性别、总览数字、指标五字段，
+    以及 `UNSECTIONED` 分组的 `sectionName`（它会上分组标题）；
+    无法回切的字段按 §4.2 逐字段降级，不得参与同一性判断（§4.2、§3.2.3、§4.4-⑤）
+18f. **PDF 绘制单元密度闸**：某文件 `segment/页 > 400` 判为逐字形绘制，
+    **该文件整体改走 OCR**，不得把字形块喂给模型；解析用 `PDFStreamEngine.showTextString`,
+    **不用 `PDFTextStripper`**（它内部按行聚类，等于把版面判断做回 Java）（§3.2.1）
+18g. **`blockRefs` 上限 32**，且 `orderInSection` / `sourceOrder` 必须进正式契约
+    ——§6.3、§4.6 的排序规则依赖这两个字段，Schema 缺它们等于排序无据（§4.2、§6.3）
+18h. **批内块号编址**：模型侧只见 `blockRef`（整数）+ 每页页眉，Java 在 Schema 校验后
+    立刻查表展开成 `segmentId`，下游只认展开后的值（§4.1.5、§4.4-①a）。
+    页眉必须给**真实页码**，否则 `sectionRelation` 的 `CONTINUATION` 判断失去依据
+18i. **每批输入预算 ≤ 60k token**；OCR 路径同样受 400 块/页 约束，
+    **超限整任务 `FAILED / UNREADABLE`，不做局部截断、不新增 `partial_reason` 枚举**（§4.1.5）
+18k. **模块三来源三字段进契约**：`nutritionSupplements` / `dietRequirements` 必须带
+    `sectionIndex` / `sourceOrder` / `itemNo`，否则来源标注只能靠推断或写死（§4.2、§7.6）
+18l. **全案排序统一到 §4.6 的排序总则**：分组 `fileIndex → groupOrder`，
+    组内 `page → orderInSection`，条目 `page → sourceOrder`；
+    **任何排序键都不得用 `segmentId` 的 `seq`**，批内序号必须先用 `page` 收敛
+    （§4.6、§5.3、§6.3、§7.6）
+18p. **`allergens` 必须带 `sourceOrder`**——§7.2 要求过敏提醒区按报告原文顺序混排，
+    没有它 Java 只能回去依赖 segment 顺序（§4.2、§7.2）
+18q. **`sectionIndex` 的引用完整性由 Java 校验**：`sections[i].sectionIndex == i` 且唯一；
+    条目的 `sectionIndex` 必须命中该集合，否则整条丢弃（§4.4-①b）
+18m. **跨批同章节靠 `CONTINUATION` 继承合并**，不靠"两批返回同一个 ID"——
+    批次不重叠，后一批看不到前一批的标题块（§4.1、§4.6）
+18r. **②b 阳性行覆盖扫描**：以解析器 segment 为输入，「过敏原名 + 阳性标记」**同块**共现的段
+    必须被 `allergens` 覆盖，否则 `ALLERGEN_SUSPECT_MISS`。**候选段的发现依据独立于模型**
+    （②a 的三个集合同源，
+    拦不住"一致地漏"），但**只是同块场景的有限兜底**——电子版 PDF 上名称与结果分属不同绘制单元，
+    本层命中不了，**不得描述成"过敏漏抽已堵死"**（§4.4-②b）
+18s. **不得为配对名称与结果而做相邻块 / `bbox` 同行 / 表格还原**——那是版面推断，
+    属 LLM-A 职责（§0-2、§3.2.1）。宁可保留盲区，也不破边界
+18n. **`allergenSectionBlockRefs` / `allergenDataBlockRefs` 的集合规则**：
+    `D ⊆ S`、`A ⊆ S` 为结构断言；`D \\ A` 非空 = 漏抽 → `ALLERGEN_SUSPECT_MISS`（§4.4-②a）
+18o. **`bbox` 逐块随文本下发**，不能只给页面图——解析器不聚类行列，
+    模型判断"同一行"要靠坐标（§4.1.5、§3.2.1）
+18j. **`页/批`、`8 批上限`、`W = floor(C/4)` 是一组参数，不得单独调**（§4.1.5）
+18b. **`status` 由模型决定，Java 在线不做任何校验**；确定性方向词落在提示词与评测集，
+    不落在 Java（§4.4-③、§5.2）
+18c. **`displayName` 两个分支都只出报告原文**，Java 不拼「归一化结论词」（§4.3-12、§6.2）
 19. `INDICATOR_TEXTUAL` 不带 `indicatorId`（§6.1）
 20. 准入三分法（§4.3-2）
-21. **阴性与阳性同走模型判断路径，不进正常词表**（§4.3-6）
+21. **阴性与阳性同走模型判断路径，不进正常词表**（§4.3-6）；
+    该口径同样适用于离线评测集里的 `NormalStatementWords`——**不含「阴性」**（§11-18）
+21a. **三张语义词表不进生产**（`ConclusionLabelWords` / `NormalStatementWords` /
+    `AllergenSectionWords`）：不实现 `statusConflictCount` / `normalAdmitSuspectCount` /
+    `foodBorneConflictCount`，全部移入离线评测（§4.4-③、§11-18）。
+    **§4.4-② 的高风险交叉扫描不在此列**——它触发安全降级，不是计数器
 22. **营养维度改 Java 确定性交集匹配**（§8.7）
-23. 主料双规则推导（§8.8）
-24. **`tagPolicyVersion` 进唯一键与缓存 Key；Key 按维度组织 + `bizDate` 每日重建**（§8.3.1）
-25. **`dishHash` 排序 + 单位统一 + 名称规范化**（§8.3.2）
+23. 主料双规则推导（§8.8）；**没有 `SEASONING` 常量**——食材表本来就不含调味料（§8.1.1）
+23a. **食材表不含调味料**：LLM-B 只按明确菜名/配方证据判 `REJECT`，通常做法不明时判 `UNKNOWN`；
+    Java 兜底词表覆盖明确调味料在**菜名**里的写法；`MOLLUSK` / `SESAME` 已纳入正式契约
+    （§8.1.1、§8.4、§8.5、§7.2.1）
+23b. **禁止「食材表里没有 X 所以判 NEUTRAL」的推理**——它只能推出"主料配料里没有 X"（§8.1.1）
+24. **单一 `tagHash`（规则/提示词/模型版本 + 菜名 + 食材）进唯一键与缓存 Field；
+    Key 按维度组织 + `bizDate` 每日重建；没有 `tagPolicyVersion`**（§8.3.1，2026-08-24 合并）
+25. **`tagHash` 排序 + 单位统一 + 名称规范化**（§8.3.2）
 26. **去重只认 `segmentId + itemIndex`，非重叠页面不去重**（§4.1.3）
 27. 多文件合并用 `groupKey`，健康指标按 `groupKey` 分组（§4.6、§5.3）
 28. **一条原文可拆多个枚举条目，共享同一 segment**（§4.2、§4.3-4）
@@ -1890,7 +3301,30 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 
 31. **状态机纯单向无回边，删除用 `deleted_at` 正交标志**（§2.3.1）
 32. **`ct_health_report_task` DDL，状态 CAS 落 MySQL**（§2.3.2）
-33. **XADD 在创建事务内、提交之前；失败即回滚**（§2.3.3）
+33. **`submit` 到线程池在创建事务提交【之后】；被拒则事务外把任务 CAS 为 `FAILED/SERVER_ERROR`**（§2.3.3）
+33a. **没有消息队列**：删 `XADD`/`XACK`/`XDEL`、`q:analysis`、Consumer Group、
+    创建前的队列深度校验、投递失败与孤儿消息处理。**Redis 只剩结果缓存与打标缓存**（§2.3.3、§9.1）
+33b. **线程池必须有界 + `AbortPolicy`**：不得用无界队列（用户排到文件都过期了）、
+    不得用 `CallerRunsPolicy`（分析会跑在 Tomcat 请求线程上，分钟级占死）、
+    不得静默丢弃（任务永远停在 `QUEUED`）（§2.3.3）
+33c. **`W = floor(C / (4 × 实例数))`**——本机线程池下每个实例独立跑满自己的 `W`，
+    漏掉实例数会成倍超用模型配额（§4.1.4）
+33d. **重启即失败、不自动恢复**：靠 §2.3.4 的心跳巡检在 15 分钟内收敛。
+    单实例可在启动时把非终态任务一次判失败以加速；**多实例绝对不可以**（§2.3.3）
+33e. **任务池与批次池必须分开**（`analysisExecutor` / `llmBatchExecutor`）——
+    共用一个池必然线程饥饿死锁，而且心跳正常、巡检扫不出来（§2.3.3、§4.1.4）
+33f. **巡检两条件并列**：心跳超时 → `SERVER_ERROR`；`now() > deadline_at` → `EXECUTION_TIMEOUT`。
+    心跳只更新 `heartbeat_at`，**绝不顺延 `deadline_at`**，否则第二条永不命中（§2.3.4）
+33g. **成功写入顺序固定**：写 Redis（不可见）→ MySQL CAS → CAS 失败则删 Redis；
+    结果接口必须先查 MySQL 为 `SUCCEEDED` 再读 Redis（§2.6.1）
+33h. **成功时把 `expire_at` 顺延为 2 小时**与结果 TTL 对齐，否则第 30 分钟后
+    任务行被删、归属校验没有依据，结果的后 90 分钟读不到（§2.6.2）
+33i. **成功 CAS 必须带 `AND deadline_at >= now()`**——否则超时后、巡检跑到前的窗口里
+    任务照样能成功，`deadline_at` 从来拦不住任何东西（§2.6.1）
+33j. **`idx_deadline (status, deadline_at)`**——巡检的第二个条件需要它，
+    只有 `idx_sweep (status, heartbeat_at)` 时那条 UPDATE 会全表扫（§2.3.2）
+33k. **审计时间列实体上写 `@TableField(insertStrategy/updateStrategy = NEVER)`**，
+    禁止 `MetaObjectHandler` 自动填充，禁止 SQL 里写 `update_time = now()`（§9.1.1）
 34. **全案零重试**：无执行重试、无投递重投（§2.3.3、§2.5、§4.1、§4.4）
 34a. **`FILE_ALREADY_BOUND` 返回已绑定的 taskId**，兜住响应丢包（§2.2）
 34b. **LLM-A 批次并发执行**（串行跑不完 deadline）+ **只持有编码字节不持有 `BufferedImage`** + **心跳独立线程**（§4.1.4）
@@ -1898,12 +3332,13 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 36. **清理矩阵按状态逐类判定，原文件在 `SUCCEEDED` 后才删**（§2.7）
 37. **`ct_dish_tag` MySQL 真源；Redis 未命中必须回源查库**，否则预热失败当天推荐列表全空（§8.3.4）
 38. 逐格式判定 + 解压炸弹防御，**流式计数不信 `getSize()`**（§3.1、§3.1.1）
-39. **Word 独立分块规则 + 内嵌图片 OCR**（§3.3.1）
+39. **Word 独立分块规则 + 内嵌图片 OCR + 上传下界预筛/Worker 精确容量裁决**（§3.3.1）
 40. **正式 JSON Schema 文件（LLM-A / LLM-B）+ 契约测试**（§4.2、§8.4）
 
 ### P0 — 需求符合性
 
-41. 四个模块底部声明 + 全部空态文案
+41. 四个模块底部声明 + 全部空态文案；空态只能表达「未提取到明确内容」，
+    不得推导「各项正常」「未涉及某风险」等医学结论（§6.4、§7.7）
 42. 总览条数字（§5.4）
 43. 来源标注取报告原文章节名（§6.2）
 44. 推荐理由 Java 拼接，引号引用原文（§8.11）
@@ -1915,7 +3350,6 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 47. 打标计数与召回率告警
 48. 部首映射表持续补齐
 49. 食材别名表扩充
-50. OCR bounding box 落库（为原图高亮预留）
 
 ### P2
 
@@ -1931,11 +3365,26 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 - 严重程度分级 / 风险排序（需求 §6-4 禁止）
 - 历史报告回看（结果 TTL 2 小时）
 - 原图跳转与单页预览
+- **OCR bounding box 落库**（原为 P1-50，2026-08-25 移到此处）
 - 内容管理后台 / 建议内容的人工编辑
 - 报告未写饮食建议时的通用建议兜底（§7.1）
 - 菜品标签的版本双缓冲与原子切换（单菜粒度后不需要，§8.3.1）
 
----
+> **为什么「bbox 落库」不是"暂缓"而是"不做"。** 它与 §2.7 直接冲突：
+> 渲染图与 OCR 中间产物**仅存在于内存，不落盘、不入 S3**，bbox 就是 OCR 中间产物。
+>
+> 而且落了也没用——原图高亮需要三样东西：
+>
+> ```
+> 原图  → §2.7 清理矩阵：SUCCEEDED 后即删
+> 原文  → 只在 Redis 存 2 小时
+> 坐标  → 就算落库了，指向的另外两样都已经不存在
+> ```
+>
+> **要让它有用就得连坐**：建 segment 表把 `rawText` 一起落库、并延长原始文件留存期
+> ——那是把报告原文永久落库，撞 §2.7 的日志红线和 §11.1 的上线阻断项。
+> 所以这件事的前提不是"排期"，是**先做一轮隐私评估并重定数据留存策略**；
+> 在那之前它不该以任何形式出现在需求列表里。
 
 ## 11. 上线前必须验证的假设
 
@@ -1944,21 +3393,31 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 | # | 假设 | 验证方式 | 不成立的后果 |
 |---|---|---|---|
 | 1 | 文本层判据（50字符/页、30%非空白） | 20 份不同机构 PDF 抽样 | 电子版误走 OCR，或扫描件误当电子版 |
-| 2 | 主料双规则阈值 0.25 / 0.15 | 50 道真实菜品人工标注对比 | 营养推荐名不副实，或该推的推不出来 |
-| 3 | 34 个枚举的覆盖率 | 20 份真实报告统计 `OTHER` 占比 | 模块三大面积只展示原文 |
+| 2 | 主料双规则阈值 0.25 / 0.15 | 50 道真实菜品人工标注对比 | 营养推荐名不副实，或该推的推不出来。**注意分母不含调味料，但那是因为食材表本来就没有（§8.1.1），不是因为代码排除了它们** |
+| 3 | 36 个枚举的覆盖率 | 20 份真实报告统计 `OTHER` 占比 | 模块三大面积只展示原文 |
 | 4 | 过敏原枚举覆盖真实筛查面板 | 收集 5 家机构的过敏原检查项目清单 | §8.6 的兜底分支频繁触发 |
+| 4a | **调味料缺失对过敏召回的影响** | 抽 50 道真实菜品，人工标注"实际含哪些过敏原（含调味料带入的）"，与 LLM-B + Java 兜底的结果比对，分别统计**漏标率**和**过杀率** | 食材表不含调味料（§8.1.1），过敏拦截从"数据 + 模型"退化成"菜名 + 模型常识"。漏标率高 → 安全红线被削弱，必须回头推动食材表补调味料；过杀率高 → 推荐列表空掉，产品要重新权衡（§8.4、§8.5、§12-10a） |
 | 5 | OFD 解析可行性 | 3~5 家真实样本跑通 | 该格式降级或砍掉 |
 | 6 | LLM-B 打标稳定性 | 同一批菜连跑 5 次比对 verdict 一致率 | 打标结果每天跳变 |
-| 7 | **Segment 切分的稳定性与粒度** | 20 份报告统计：一个 segment 平均含几个指标、表格单元格切分成功率 | 包含性校验失效（粒度太粗则形同虚设，太细则回切不到完整原文） |
+| 7 | **Segment 切分的稳定性与粒度** | 20 份报告统计：一个 segment 平均含几个指标、**一个指标平均跨几个 segment**（原子块粒度下这是常态，§3.2.1） | 包含性校验失效（粒度太粗则形同虚设），或 `blockRefs` 超过 32 条上限 |
+| 7b | **`MAX_SEGMENTS_PER_PAGE = 400` 这个密度闸阈值** | 20 份不同机构 PDF 统计每页 segment 数分布，看「按单元格发绘制操作」与「逐字形」两簇分不分得开 | 定高了，逐字形 PDF 漏进模型侧撑爆输入；定低了，正常 PDF 被误降级成 OCR，精度白丢（§3.2.1） |
+| 7a | **原子块粒度下模型的 `segmentIds` 引用准确率** | 20 份报告人工标注表格行，统计漏引、跨栏错引的比例 | 解析器不再切单元格（§3.2.1），单元格归组全靠模型。漏引一个块 → 包含性校验不过 → 指标被丢弃，直接反映在 `evidenceMissCount` |
 | 8 | **Word 等效页折算系数（40 segment/页）** | 5 份医院导出 Word 报告，比对实际渲染页数 | 容量限制与分批策略失准 |
 | 9 | **Word 内嵌图片形态占比** | 同上样本统计"扫描件贴进 Word"的比例 | 若占多数，Word 路径实质上是 OCR 路径，成本与耗时需重估 |
 | 10 | 抽取召回率评测集 | 20~30 份真实报告人工标注过敏原、饮食医嘱、异常结论，统计 LLM-A 漏抽率 | 无法判断疑似漏抽告警的阈值，也无法证明模型没在静默漏抽 |
 | 11 | 30 页以上报告的实际占比 | 样本统计 | 降级路径触发频率未知，可能远超预期 |
-| 12 | **`ALLERGEN_SUSPECT_MISS` 的误报率** | 用评测集跑，统计有多少正常报告被误降级 | 误报过高则模块四大面积不输出。**去掉定向重试后该值会上升** |
+| 12 | **`ALLERGEN_SUSPECT_MISS` 的误报率与漏报率** | 用评测集跑，**样本必须按 `textSource` 分层**（电子版 PDF 与扫描件各占一半）：① 误报——多少正常报告被误降级；② 漏报——人工标注每份报告的阳性过敏原条数，与 `allergens` 实际抽出的条数比对；③ **②b 在两类样本上各自的命中率** | 误报过高则模块四大面积不输出。漏报是新增观测项：②a 三个集合同源拦不住"一致地漏"，而 ②b **只在名称与结果同块时有效**（§4.4-②b 的已知盲区）——电子版 PDF 上它基本不工作，这个差异必须用分层样本量出来，否则会误以为兜底层普遍有效 |
 | 13 | **LLM-A 调用的瞬时失败率**（超时 / 429 / 5xx） | 压测 + 灰度期观测 | 全案不做执行重试，瞬时抖动直接变成用户可见失败。失败率高于 2% 就要重新讨论是否放开批次级重试 |
-| 14 | **创建任务时 XADD 的失败率** | 灰度期观测 `analyze` 接口的 `SERVER_ERROR` 占比 | 无投递重投，Redis 抖动会让用户白点一次「生成体检报告」。占比明显时需重新评估是否恢复 outbox |
+| 14 | **线程池 `QUEUE_CAPACITY` 与拒绝率** | 灰度期观测 `analyze` 接口因 `AbortPolicy` 返回 `SERVER_ERROR` 的占比，以及任务从 `QUEUED` 到 `PARSING` 的等待时长分布 | 容量定小了，正常流量就被拒；定大了，用户排到文件 `expire_at`（30 分钟）都到了，排到也没文件可读（§2.2、§2.3.3）。这两个方向都直接反映成用户可见失败 |
+| 14a | **重启导致的任务失败率与收敛时长** | 灰度期统计发版/重启期间被心跳巡检判 `FAILED` 的任务数，以及用户从提交到看见失败的实际等待 | 本次简单版接受"重启即失败"，但 15 分钟的干等是否可接受需要真实数据。发版频繁时可能要缩短巡检间隔，或改成发版前先停止接单再等在途任务跑完（§2.3.3、§2.3.4） |
 | 15 | **模型服务的并发配额 `C`** | 向服务方确认，并压测验证 | §4.1.4 的 `W = floor(C/4)` 定不下来。全案零重试，一个 429 就是一次用户可见失败，`W` 设大了会直接反映成失败率 |
 | 16 | **OCR 单页耗时与 LLM-A 单批耗时** | 用真实样本实测 | §4.1.4 的 deadline 测算基于 2~3s/页 与 60~180s/批，都是推演值。实际更慢的话 10 分钟 deadline 要重新定 |
+| 16a | **`sectionRelation` 四态的判准率**，尤其 `CONTINUATION` 与 `UNSECTIONED` 的区分 | 20 份报告人工标注批次边界，统计封面/须知页被误判为 `CONTINUATION` 的比例 | 误判会把封面文字挂到上一个检查章节下。`sectionUnknownCount` 偏高只是不归组（安全），误判成 `CONTINUATION` 才是错误归属 |
+| 20 | **每批输入 token 实测**（当前 49k/批 是估算，非实测） | 用真实报告按 §4.1.5 的格式渲染一批，实际调用一次数 input token | §4.1.5 的预算表、`≤60k` 硬约束、8 批 ≈39 万 token 的成本估算全部建立在估算值上。实测偏高时**不能只降页/批**，那会撞上 8 批上限（§4.1.5 的耦合说明） |
+| 21 | **模型回填块号的准确率**（是否会写成 `"17"` / `"[17]"` / 越界 / 漏填） | 契约测试 + 评测集统计 `blockRef` 展开失败率 | 编址从字符串 id 换成整数块号（§4.1.5），省 24% 输入，但引入一类新错误：块号错了就等于引用了不存在的块，条目被丢弃、记 `evidenceMissCount`。失败率高于预期就要回退到全 id 编址 |
+| 19 | **PDFBox 能否稳定拿到 `Tj` / `TJ` 绘制单元** | 覆写 `PDFStreamEngine.showTextString` / `showTextStrings` 在 20 份真实 PDF 上试跑，统计每页 segment 数与切分形态 | 拿不到就只能退回 `PDFTextStripper`，而它内部按行聚类——等于把版面判断偷偷做回 Java（§0-2），此路不通。届时只剩「全部 PDF 走 OCR」一条路，需重估成本与精度（§3.2.1） |
+| 17 | **LLM-A 给 `sectionSegmentId` 的准确率**（含跨页续表、双栏、批次边界继承） | 20 份真实报告人工标注章节边界，比对模型输出 | 章节归属已收归模型（§0-2、§4.1），准确率不够则模块一分组和模块二排序错乱。**注意：这不是"改回 Java 推导"的理由**——Java 推导在同样的版面上错得更多且静默，正确的应对是改提示词或换模型 |
+| 18 | **离线评测集必须覆盖三处已下线的在线检查** | 在 §11-10 的评测集里补三组用例并给出通过阈值：① `status` 与报告方向标记一致（「↑偏高」不得判 `NORMAL`）；② `OTHER` 过敏原的 `isFoodBorne` 判定；③ 正常语句不得进模块二（「甲状腺结节，余未见异常」的结节要留、「未见明显异常」要滤掉） | 三处 Java 覆写先改成只告警、再整体下线（§4.4-③），**生产环境已没有任何模型漂移的实时信号**。评测集是唯一的替代，因此**发版前跑评测集从"建议"变成"必须"**：换模型、改提示词、报告形态变化都要跑。不跑就上线 = 模型静默变差无人知晓 |
 
 ### 11.1 敏感数据链路的技术核查
 
@@ -1967,10 +3426,18 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 
 ```
 □ OCR 服务是否第三方？请求图片留存多久？
-□ Dify 工作流日志是否默认保存输入输出？能否关闭？
+□ 【LLM-B】模型服务端是否留存请求与响应？能否关闭？
+   —— LLM-B 的输入只有菜名、食材、枚举展示名，【不含任何健康数据】，风险等级低
+   —— 改直连后不再有 Dify 运行记录这一处留存，但模型网关本身仍在上面那条链路里
+□ 【LLM-A】直连的模型服务端是否留存请求？留存多久？能否关闭？
+   —— 这条取代了原来的 Dify 检查项。LLM-A 的请求里有报告页面图与 OCR 全文，
+      是全案最敏感的一次出网，**必须逐项落实到服务方的书面口径**
 □ 模型网关 / APM / 异常追踪（Sentry 等）是否记录请求体？
 □ 传输与对象存储是否加密？
-□ 临时文件、崩溃转储、队列重试消息是否含报告内容？
+□ 临时文件、崩溃转储（heap dump）是否含报告内容？
+   —— 分析与 Web 层共用一个堆（§2.3.3），OOM 时的自动 heap dump 会把内存里的
+      报告原文、姓名、OCR 文本、segment 与 bbox 一起写进磁盘。
+      这是本方案唯一会让报告原文落盘的路径，**必须显式关闭或加密隔离**
 □ 第三方服务的数据留存周期与删除机制？
 □ 是否存在跨境传输？
 □ 运维人员能否直接读取 Redis 中的报告原文？
@@ -1990,10 +3457,11 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 | 4 | **累计 60MB 上限**——需求只规定单文件限制和最多 5 个文件，按需求理论上限是 100MB。60MB 指**上传体积**。需回写需求并给出固定错误提示（§2.2） |
 | 5 | **三种降级的用户可见形态**——`PAGE_TRUNCATED` / `BATCH_UNREADABLE` 两类不出模块三四，`ALLERGEN_SUSPECT_MISS` 不出模块四。用户会看到"页面少了两块"，需确认是静默隐藏还是给文案；但 §12-3 已定"不出任何提示文字"，两者需一并裁决（§4.1.1） |
 | 6 | **饮食要求来源 = 总检结论 + 医生建议章节**——比需求 §7-2「仅总检结论」略宽，排除各科小结、检查须知、科普段落、检查前准备。需回写需求（§4.3-5） |
-| 7 | **弱阳性 / 可疑 / 临界过敏结果按阳性处理**，进入菜品拦截。按 §0-5 安全不对称从严。需医务确认是否过于保守（§4.4-④） |
+| 7 | **已确认：弱阳性 / 可疑 / 临界过敏结果作为产品安全信号进入菜品过滤，但不得展示或表述为临床确诊阳性。** 这是 §0-6 的保守策略；后续如有病史、复测或食物激发结论，应由医疗流程作个体化判断（§4.4-④） |
 | 8 | **一次只能分析一个人的报告，不支持代家人分析**——需求未规定，属新增限制，需回写需求。已知该校验是"发现冲突则拒绝"的弱校验，拦不住同名不同人和双方都识别不出姓名的情况（§4.5） |
 | 9 | **总览条用报告自带数字还是本模块计算值**——后端评审建议一律用本模块计算值，理由是报告的总项目数含大量不展示的指标，会导致数字与卡片对不上。产品当前决策为不处理该不一致（§5.4） |
-| 10 | **健康问题名称允许系统拼接**——「甘油三酯 2.8 ↑」拼成「甘油三酯偏高」。需求 §6-2 要求直接引用原文不做改写。已加 `displayNameGenerated` 字段供验收统计（§6.2） |
+| 10 | **健康问题名称允许系统拼接两段报告原文**——报告没有成句表述（`problemName = null`）时，拼「指标名 + 结论原文」，如「甘油三酯 ↑」。**不再拼「甘油三酯偏高」这类归一化措辞**——那是系统造出报告里没有的表述（§0-2，本轮已改）。需求 §6-2 要求直接引用原文不做改写，拼接严格说仍不是引用（虽然两段素材都是原文），已加 `displayNameGenerated` 字段供验收统计（§6.2） |
+| 10a | **已确认调味料证据边界**——明确菜名/配方出现酱油、豉油时可产生大豆/小麦拒绝；“红烧、酱爆、卤”等做法词不入硬词表，只靠通常做法时为 `UNKNOWN`。产品需监控 `UNKNOWN` 导致的推荐收缩，但不得以提高推荐量为由把未知降成 `NEUTRAL`（§8.4、§8.5） |
 | 11 | **`OTHER` 建议只展示原文，不给食材内容**——不满足需求 §7-3 对每条建议的字段要求。需回写需求（§7.4） |
 | 12 | **过敏命中时不下发任何正面标签**——与需求 §8-3「展示所有命中的标签」不一致。安全考虑，需作为正式产品决策回写需求（§8.10） |
 | 14 | **预热窗口后新上架的菜当天不出现在推荐列表**——§8.9 完整性门槛的必然结果。若食堂当天临时加菜频繁，需评估影响面 |

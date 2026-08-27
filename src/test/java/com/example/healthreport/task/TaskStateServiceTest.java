@@ -1,0 +1,128 @@
+package com.example.healthreport.task;
+
+import com.example.healthreport.cache.AnalysisModules;
+import com.example.healthreport.cache.AnalysisResult;
+import com.example.healthreport.cache.TaskResultCache;
+import com.example.healthreport.persistence.CtHealthReportTaskService;
+import com.example.healthreport.support.FailCode;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
+
+import java.time.LocalDateTime;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/** R35~R37：状态 CAS 与 Redis/MySQL 固定提交顺序。 */
+class TaskStateServiceTest {
+
+    private static final String TASK_ID = "123e4567-e89b-12d3-a456-426614174000";
+
+    private CtHealthReportTaskService taskService;
+    private TaskResultCache resultCache;
+    private TaskStateService stateService;
+
+    @BeforeEach
+    void setUp() {
+        taskService = mock(CtHealthReportTaskService.class);
+        resultCache = mock(TaskResultCache.class);
+        stateService = new TaskStateService(taskService, resultCache);
+    }
+
+    @Test
+    void shouldWriteRedisBeforeSuccessCas() {
+        AnalysisResult result = emptyResult();
+        when(taskService.succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
+
+        assertThat(stateService.markSucceeded(TASK_ID, result)).isTrue();
+
+        InOrder order = inOrder(resultCache, taskService);
+        order.verify(resultCache).write(TASK_ID, result);
+        order.verify(taskService).succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class));
+        order.verifyNoMoreInteractions();
+    }
+
+    @Test
+    void expiredSuccessCasShouldDeleteRedisThenWriteTimeoutFailure() {
+        AnalysisResult result = emptyResult();
+        when(taskService.succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(0);
+        when(taskService.failExpiredAssembling(eq(TASK_ID), any(LocalDateTime.class))).thenReturn(1);
+
+        assertThat(stateService.markSucceeded(TASK_ID, result)).isFalse();
+
+        InOrder order = inOrder(resultCache, taskService);
+        order.verify(resultCache).write(TASK_ID, result);
+        order.verify(taskService).succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class));
+        order.verify(resultCache).delete(TASK_ID);
+        order.verify(taskService).failExpiredAssembling(eq(TASK_ID), any(LocalDateTime.class));
+    }
+
+    @Test
+    void databaseExceptionAfterRedisWriteShouldDeleteDraftAndPropagate() {
+        AnalysisResult result = emptyResult();
+        when(taskService.succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenThrow(new IllegalStateException("synthetic database failure"));
+
+        assertThatThrownBy(() -> stateService.markSucceeded(TASK_ID, result))
+                .isInstanceOf(IllegalStateException.class);
+
+        InOrder order = inOrder(resultCache, taskService);
+        order.verify(resultCache).write(TASK_ID, result);
+        order.verify(taskService).succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class));
+        order.verify(resultCache).delete(TASK_ID);
+    }
+
+    @Test
+    void serverFailureShouldBeReanalyzableButInputFailureShouldNot() {
+        when(taskService.failActive(TASK_ID, FailCode.SERVER_ERROR.name(), true)).thenReturn(1);
+        when(taskService.failActive(TASK_ID, FailCode.UNREADABLE.name(), false)).thenReturn(1);
+        when(taskService.failActive(TASK_ID, FailCode.IMAGE_TOO_LARGE.name(), false)).thenReturn(1);
+
+        assertThat(stateService.markFailed(TASK_ID, FailCode.SERVER_ERROR)).isTrue();
+        assertThat(stateService.markFailed(TASK_ID, FailCode.UNREADABLE)).isTrue();
+        assertThat(stateService.markFailed(TASK_ID, FailCode.IMAGE_TOO_LARGE)).isTrue();
+
+        verify(taskService).failActive(TASK_ID, FailCode.SERVER_ERROR.name(), true);
+        verify(taskService).failActive(TASK_ID, FailCode.UNREADABLE.name(), false);
+        verify(taskService).failActive(TASK_ID, FailCode.IMAGE_TOO_LARGE.name(), false);
+    }
+
+    @Test
+    void nonReanalyzableFailureShouldImmediatelyCleanFilesAndResult() {
+        TaskResourceCleanupService cleanupService = mock(TaskResourceCleanupService.class);
+        stateService = new TaskStateService(taskService, resultCache, cleanupService);
+        when(taskService.failActive(TASK_ID, FailCode.UNREADABLE.name(), false)).thenReturn(1);
+
+        assertThat(stateService.markFailed(TASK_ID, FailCode.UNREADABLE)).isTrue();
+
+        InOrder order = inOrder(taskService, cleanupService);
+        order.verify(taskService).failActive(TASK_ID, FailCode.UNREADABLE.name(), false);
+        order.verify(cleanupService).deleteFiles(TASK_ID);
+        order.verify(cleanupService).deleteResult(TASK_ID);
+    }
+
+    @Test
+    void partialPersistenceShouldUseAccumulatorSeverityInsteadOfLastHit() {
+        DegradeAccumulator accumulator = new DegradeAccumulator();
+        accumulator.recordPageTruncated();
+        accumulator.recordAllergenSuspectMiss();
+        when(taskService.markPartial(TASK_ID,
+                com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name())).thenReturn(1);
+
+        assertThat(stateService.markPartial(TASK_ID, accumulator)).isTrue();
+
+        verify(taskService).markPartial(TASK_ID,
+                com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name());
+    }
+
+    private AnalysisResult emptyResult() {
+        return AnalysisResult.create(new DegradeAccumulator(), 0, 0, AnalysisModules.empty());
+    }
+}
