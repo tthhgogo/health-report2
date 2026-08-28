@@ -14,8 +14,7 @@
         f.precheck_pages,
         f.expire_at,
         t.status AS bound_task_status,
-        t.reanalyzable AS bound_task_reanalyzable,
-        t.deleted_at AS bound_task_deleted_at
+        t.reanalyzable AS bound_task_reanalyzable
     </sql>
 
     <!-- 联表结果显式映射，避免依赖全局下划线转驼峰配置。 -->
@@ -30,7 +29,6 @@
         <result column="expire_at" property="expireAt"/>
         <result column="bound_task_status" property="boundTaskStatus"/>
         <result column="bound_task_reanalyzable" property="boundTaskReanalyzable"/>
-        <result column="bound_task_deleted_at" property="boundTaskDeletedAt"/>
     </resultMap>
 
     <!-- 事务外预检需要关联旧任务状态，属于 MyBatis-Plus 无法表达的联表查询。 -->

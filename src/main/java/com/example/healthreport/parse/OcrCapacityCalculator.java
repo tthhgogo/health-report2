@@ -1,9 +1,6 @@
 package com.example.healthreport.parse;
 
-import org.springframework.stereotype.Component;
-
 /** 根据 OCR 单图、请求体与协议开销共同计算有效图像字节上限。 */
-@Component
 public class OcrCapacityCalculator {
 
     static final long JSON_FIXED_OVERHEAD_BYTES = 64L * 1024L;

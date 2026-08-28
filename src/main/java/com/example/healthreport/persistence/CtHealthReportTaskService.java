@@ -36,14 +36,6 @@ public class CtHealthReportTaskService {
         return taskMapper.insert(taskEntity);
     }
 
-    /**
-     * 工作线程写回任务，强制使用固定工作线程身份。
-     */
-    public int updateFromWorker(CtHealthReportTaskEntity taskEntity) {
-        taskEntity.setUpdateBy(SystemActor.HEALTH_REPORT_WORKER);
-        return taskMapper.updateById(taskEntity);
-    }
-
     /** 领取任务并进入 PARSING；影响零行时调用方必须直接结束。 */
     public int claim(String taskId, LocalDateTime heartbeatAt, LocalDateTime deadlineAt) {
         return taskMapper.claim(taskId, heartbeatAt, deadlineAt, SystemActor.HEALTH_REPORT_WORKER);

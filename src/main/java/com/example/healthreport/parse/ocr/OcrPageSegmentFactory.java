@@ -37,6 +37,6 @@ public class OcrPageSegmentFactory {
             segmentList.add(new Segment(Segment.id(fileIndex, pageNumber, sequence++), block.getRawText(),
                     normalizationResult.getNormalizedText(), TextSource.OCR, normalizedBox));
         }
-        return new OcrPageSegmentResult(segmentList, sequence);
+        return new OcrPageSegmentResult(segmentList);
     }
 }

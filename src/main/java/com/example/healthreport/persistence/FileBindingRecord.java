@@ -20,5 +20,4 @@ public class FileBindingRecord {
     private LocalDateTime expireAt;
     private String boundTaskStatus;
     private Boolean boundTaskReanalyzable;
-    private LocalDateTime boundTaskDeletedAt;
 }

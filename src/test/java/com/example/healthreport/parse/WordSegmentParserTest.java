@@ -49,8 +49,6 @@ class WordSegmentParserTest {
                 .containsExactly(TextSource.NATIVE, TextSource.NATIVE, TextSource.NATIVE,
                         TextSource.OCR, TextSource.OCR);
         assertThat(result.getSegmentList()).allSatisfy(segment -> assertThat(segment.getBbox()).isNull());
-        assertThat(result.isImageRequired()).isFalse();
-        assertThat(result.getJpegBytes()).isNull();
         assertThat(calls.get()).isEqualTo(1);
     }
 

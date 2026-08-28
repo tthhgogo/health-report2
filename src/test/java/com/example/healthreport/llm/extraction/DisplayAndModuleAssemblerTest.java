@@ -17,7 +17,6 @@ import com.example.healthreport.safety.HighRiskAdviceGate;
 import com.example.healthreport.safety.StructuredAdmission;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;

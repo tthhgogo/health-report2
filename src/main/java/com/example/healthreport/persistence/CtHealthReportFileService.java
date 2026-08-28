@@ -37,14 +37,6 @@ public class CtHealthReportFileService {
         return fileMapper.insert(fileEntity);
     }
 
-    /**
-     * 在线接口更新文件元数据，强制使用固定系统身份。
-     */
-    public int updateFromApi(CtHealthReportFileEntity fileEntity) {
-        fileEntity.setUpdateBy(SystemActor.HEALTH_REPORT_API);
-        return fileMapper.updateById(fileEntity);
-    }
-
     /** 一次读取事务外容量预检与可绑定性所需字段。 */
     public List<FileBindingRecord> findForPrecheck(List<String> fileIdList, String userId) {
         return fileMapper.selectForPrecheck(fileIdList, userId);

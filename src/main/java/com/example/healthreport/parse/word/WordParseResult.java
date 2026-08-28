@@ -18,14 +18,4 @@ public final class WordParseResult {
         this.segmentList = Collections.unmodifiableList(new ArrayList<Segment>(segmentList));
         this.capacity = capacity;
     }
-
-    /** Word 逻辑页不发送图像给 LLM-A。 */
-    public boolean isImageRequired() {
-        return false;
-    }
-
-    /** Word 逻辑页不生成或持有 JPEG。 */
-    public byte[] getJpegBytes() {
-        return null;
-    }
 }

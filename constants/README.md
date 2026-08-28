@@ -11,7 +11,7 @@
 | `AllergenExceptions` | 16 条误杀例外，12 条 `REVIEWED`、4 条 `REJECTED`；`sourceField` 只支持菜名 |
 | `NutritionContents` | 9 个营养维度，含可推荐 / 仅展示两个食材列表 |
 | `DietRequirementContents` | 9 个饮食注意维度，**结构上没有可推荐字段** |
-| `TagRuleVersion` / `DisplayContentVersion` | 两个版本号，前者进 `tagHash`（打标输入哈希），后者不进 |
+| `TagRuleVersion` | 唯一的版本号，进 `tagHash`（打标输入哈希）。展示类内容改动不 bump 它，也不需要 bump 任何别的版本号 |
 
 列语义、裁决结论、契约测试清单见 `内容常量说明V3.md`；逐条来源与版本见
 `内容常量证据审核台账V1.md`。台账中的证据复核不替代组织要求的具名执业人员签字。

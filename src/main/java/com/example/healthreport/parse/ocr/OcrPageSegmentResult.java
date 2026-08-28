@@ -12,10 +12,8 @@ import java.util.List;
 public final class OcrPageSegmentResult {
 
     private final List<Segment> segmentList;
-    private final int nextSequence;
 
-    public OcrPageSegmentResult(List<Segment> segmentList, int nextSequence) {
+    public OcrPageSegmentResult(List<Segment> segmentList) {
         this.segmentList = Collections.unmodifiableList(new ArrayList<Segment>(segmentList));
-        this.nextSequence = nextSequence;
     }
 }

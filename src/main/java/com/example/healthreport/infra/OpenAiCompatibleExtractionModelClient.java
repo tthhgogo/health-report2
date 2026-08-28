@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
-import java.util.List;
 
 /**
  * OpenAI 兼容的 LLM-A 直连客户端。

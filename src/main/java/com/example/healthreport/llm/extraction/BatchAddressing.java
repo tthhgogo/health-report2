@@ -56,14 +56,6 @@ public final class BatchAddressing {
         this.pageList = Collections.unmodifiableList(addressedPageList);
     }
 
-    /** 把模型返回的批内块号展开为进程内 segmentId。 */
-    public String expand(int blockRef) {
-        if (blockRef < 0 || blockRef >= segmentIdByBlockRef.size()) {
-            throw new IllegalArgumentException("blockRef 越界");
-        }
-        return segmentIdByBlockRef.get(blockRef);
-    }
-
     private String renderPage(int page, List<Segment> segmentList, List<String> mappingList) {
         StringBuilder rendered = new StringBuilder(64 + segmentList.size() * 64);
         rendered.append("=== 第 ").append(page).append(" 页 ===\n");

@@ -33,8 +33,7 @@ class BatchAddressingAndPlannerTest {
         assertThat(rendered).contains("[0] (NATIVE, bbox=72,110,180,22) block-0\n");
         assertThat(rendered).contains("[1] (OCR, bbox=null) block-1\n");
         assertThat(rendered.indexOf("[0]")).isLessThan(rendered.indexOf("[1]"));
-        assertThat(addressing.expand(0)).isEqualTo("f0-p2-s0");
-        assertThat(addressing.expand(1)).isEqualTo("f0-p2-s1");
+        assertThat(addressing.getSegmentIdByBlockRef()).containsExactly("f0-p2-s0", "f0-p2-s1");
         assertThat(rendered).doesNotContain("segmentId").doesNotContain("f0-p2");
     }
 

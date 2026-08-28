@@ -32,18 +32,6 @@ public class CtDishTagService {
     }
 
     /**
-     * 按唯一键更新标签，审计时间继续由数据库维护。
-     */
-    public int updateFromJob(CtDishTagEntity dishTagEntity) {
-        dishTagEntity.setUpdateBy(SystemActor.DISH_TAG_JOB);
-        LambdaUpdateWrapper<CtDishTagEntity> updateWrapper = new LambdaUpdateWrapper<>();
-        updateWrapper.eq(CtDishTagEntity::getDishId, dishTagEntity.getDishId())
-                .eq(CtDishTagEntity::getTagHash, dishTagEntity.getTagHash())
-                .eq(CtDishTagEntity::getEnumKey, dishTagEntity.getEnumKey());
-        return dishTagMapper.update(dishTagEntity, updateWrapper);
-    }
-
-    /**
      * 批量读取候选菜、哈希和维度的已有行；调用方还需按三元组做精确筛选。
      */
     public List<CtDishTagEntity> findCandidates(Set<Long> dishIdSet, Set<String> tagHashSet,

@@ -52,8 +52,4 @@ public final class RadicalNormalizeMap {
         return MAPPING_MAP.get(codePoint);
     }
 
-    /** 返回不可修改的映射，仅供契约测试与离线审计。 */
-    public static Map<Integer, String> mappings() {
-        return MAPPING_MAP;
-    }
 }
