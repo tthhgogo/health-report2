@@ -13,12 +13,9 @@ public final class OcrPageSegmentResult {
 
     private final List<Segment> segmentList;
     private final int nextSequence;
-    private final int residualNonStandardCount;
 
-    public OcrPageSegmentResult(List<Segment> segmentList, int nextSequence,
-                                int residualNonStandardCount) {
+    public OcrPageSegmentResult(List<Segment> segmentList, int nextSequence) {
         this.segmentList = Collections.unmodifiableList(new ArrayList<Segment>(segmentList));
         this.nextSequence = nextSequence;
-        this.residualNonStandardCount = residualNonStandardCount;
     }
 }

@@ -3,16 +3,18 @@ package com.example.healthreport.assemble.dishrecommend;
 import com.example.healthreport.constants.AllergenGroup;
 import com.example.healthreport.constants.AllergenGroups;
 import com.example.healthreport.constants.AllergenKey;
+import com.example.healthreport.constants.DietRequirementContents;
 import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.NutritionKey;
 import com.example.healthreport.dish.Dish;
+import com.example.healthreport.dish.DietPositiveMatcher;
 import com.example.healthreport.dish.DishTagReadService;
 import com.example.healthreport.dish.NutritionMatcher;
 import com.example.healthreport.dish.TagState;
 import com.example.healthreport.dish.TagValue;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
 import com.example.healthreport.safety.AllergenKeywordFallback;
-import com.example.healthreport.safety.HighRiskAdviceGate;
+import com.example.healthreport.safety.StructuredAdmission;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -26,8 +28,10 @@ import java.util.Set;
 
 /**
  * 从校验后的报告建议和当日在架菜品建立模块四输入。
- * <p>本工厂是离线标签读取、营养确定性交集和过敏硬兜底的唯一合并点；硬兜底命中
+ * <p>本工厂是离线标签读取、营养与饮食确定性交集和过敏硬兜底的唯一合并点；硬兜底命中
  * 无条件覆盖模型状态，模型不能推翻 Java 安全结果。</p>
+ * <p>饮食注意维度在这里产生两条事实：LLM-B 的安全事实（可拒绝、可隐藏）与 Java 的正向事实
+ * （只推荐、不可拒绝）。两条必须并列存在，把正向结果写回安全那条会让缺数据时的隐藏门槛失效。</p>
  */
 @Service
 public class DishRecommendInputFactory {
@@ -37,17 +41,20 @@ public class DishRecommendInputFactory {
 
     private final DishTagReadService dishTagReadService;
     private final NutritionMatcher nutritionMatcher;
+    private final DietPositiveMatcher dietPositiveMatcher;
     private final AllergenKeywordFallback allergenKeywordFallback;
-    private final HighRiskAdviceGate highRiskAdviceGate;
+    private final StructuredAdmission structuredAdmission;
 
     public DishRecommendInputFactory(DishTagReadService dishTagReadService,
                                NutritionMatcher nutritionMatcher,
+                               DietPositiveMatcher dietPositiveMatcher,
                                AllergenKeywordFallback allergenKeywordFallback,
-                               HighRiskAdviceGate highRiskAdviceGate) {
+                               StructuredAdmission structuredAdmission) {
         this.dishTagReadService = dishTagReadService;
         this.nutritionMatcher = nutritionMatcher;
+        this.dietPositiveMatcher = dietPositiveMatcher;
         this.allergenKeywordFallback = allergenKeywordFallback;
-        this.highRiskAdviceGate = highRiskAdviceGate;
+        this.structuredAdmission = structuredAdmission;
     }
 
     /**
@@ -110,7 +117,8 @@ public class DishRecommendInputFactory {
                 : output.getNutritionSupplementList()) {
             List<String> rawTextList = output.rawTextList(nutrition.getSegmentIdList());
             if (nutrition.getEnumKey() != NutritionKey.OTHER
-                    && !highRiskAdviceGate.shouldSuppress(rawTextList)) {
+                    && !structuredAdmission.shouldSuppress(nutrition.getApplicability(),
+                    nutrition.getStructuredSafety(), nutrition.getAdviceQuote(), rawTextList)) {
                 addRawText(dimensions.nutritionRawTextByKeyMap, nutrition.getEnumKey(),
                         rawTextList);
                 dimensions.formalAdvicePresent = true;
@@ -120,7 +128,8 @@ public class DishRecommendInputFactory {
                 : output.getDietRequirementList()) {
             List<String> rawTextList = output.rawTextList(diet.getSegmentIdList());
             if (diet.getEnumKey() != DietRequirementKey.OTHER
-                    && !highRiskAdviceGate.shouldSuppress(rawTextList)) {
+                    && !structuredAdmission.shouldSuppress(diet.getApplicability(),
+                    diet.getStructuredSafety(), diet.getAdviceQuote(), rawTextList)) {
                 addRawText(dimensions.dietRawTextByKeyMap, diet.getEnumKey(), rawTextList);
                 dimensions.formalAdvicePresent = true;
             }
@@ -195,10 +204,45 @@ public class DishRecommendInputFactory {
         for (Map.Entry<DietRequirementKey, LinkedHashSet<String>> entry
                 : rawTextByKeyMap.entrySet()) {
             TagValue value = tagValue(tagByEnumKeyMap, entry.getKey().name(), dish.getDishId());
+            String rawText = joinRawText(entry.getValue());
             matchList.add(new DishRecommendInput.Match(value.getState(), true, false,
                     DishRecommendInput.TagType.DIET_AVOID, dietRejectTagText(entry.getKey()),
-                    value.getMatchedIngredientList(), joinRawText(entry.getValue())));
+                    value.getMatchedIngredientList(), rawText));
+            addDietPositiveMatch(matchList, dish, entry.getKey(), value.getState(), rawText);
         }
+    }
+
+    /**
+     * 追加饮食注意维度的 Java 确定性推荐，命中不了就什么都不加。
+     * <p>它是与拒绝事实<b>并列的第二条</b> Match，且 {@code rejectCapable=false}：
+     * 拒绝那条必须保持 true，否则模型判不出时的隐藏门槛会失效。安全门槛在
+     * {@link DietPositiveMatcher} 里，只有安全态 NEUTRAL 才可能走到这里。</p>
+     */
+    private void addDietPositiveMatch(List<DishRecommendInput.Match> matchList, Dish dish,
+                                      DietRequirementKey key, TagState safetyState,
+                                      String rawText) {
+        TagValue positiveValue = dietPositiveMatcher.match(dish, key, safetyState);
+        if (positiveValue.getState() != TagState.RECOMMEND) {
+            return;
+        }
+        String tagText = DietRequirementContents.ALL.get(key).getRecommendTagText();
+        if (hasRecommendTagText(matchList, tagText)) {
+            // 同一句正面标签只出现一次：报告同时写「高纤维饮食」和「补充膳食纤维」时两个维度都会命中。
+            return;
+        }
+        matchList.add(new DishRecommendInput.Match(TagState.RECOMMEND, false, false,
+                DishRecommendInput.TagType.DIET_OK, tagText,
+                positiveValue.getMatchedIngredientList(), rawText));
+    }
+
+    /** 判断同一道菜是否已经有同文案的推荐标签，营养维度先加入因此优先保留。 */
+    private boolean hasRecommendTagText(List<DishRecommendInput.Match> matchList, String tagText) {
+        for (DishRecommendInput.Match match : matchList) {
+            if (match.getState() == TagState.RECOMMEND && match.getTagText().equals(tagText)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private TagValue tagValue(Map<String, Map<Long, TagValue>> tagByEnumKeyMap,

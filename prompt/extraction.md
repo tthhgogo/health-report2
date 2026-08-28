@@ -1,7 +1,7 @@
 # 抽取提示词 — 体检报告结构化抽取
 
 > 体检报告抽取提示词。输出必须通过 `schema/extraction_output.schema.json` 校验。
-> 版本：`promptVersion = extraction-2.3.2`
+> 版本：`promptVersion = extraction-2.4.0`
 
 ---
 
@@ -324,14 +324,121 @@ OCR     扫描件、拍照件识别出来的，有误差（错别字、0/O 与 1
 准入是三选一，判错会直接导致内容跑到错误的模块：
 
 ```
-有数值 + 有结论  →  indicators        例：甘油三酯 2.8 mmol/L 0.56~1.70 ↑偏高
-有数值 + 无结论  →  全部丢弃           例：白细胞 6.2 ×10⁹/L 4.0~10.0     （没有结论列）
-无数值 + 有结论  →  textualFindings   例：肝胆B超：提示脂肪肝
+有检查结果 + 有结论            →  indicators        例：甘油三酯 2.8 mmol/L 0.56~1.70 ↑偏高
+有检查结果 + 无结论 + 能与参考值明确比较
+                              →  indicators        见下「参考值准入」
+有检查结果 + 无结论 + 无法明确比较
+                              →  全部丢弃
+无检查结果 + 有结论            →  textualFindings   例：肝胆B超：提示脂肪肝
 ```
+
+> 说「检查结果」而不是「数值」：定性项目（阴性/阳性）也是检查结果，同样走 `indicators`。
 
 **结论为「正常」的指标同样要抽。** 这个模块要展示全部有结论的指标，不是只展示异常的。
 
 - `name` / `value` / `unit` / `refRange` / `conclusionText` 全部逐字取自报告，`unit` 和 `refRange` 报告没写就给 `null`，**不要填通用参考值**
+
+#### 参考值准入（报告没印结论时）
+
+分两种：结果是数值的走**参考范围**，结果是定性的走**定性参考值**。
+
+很多报告的正常项**不写结论**，「提示」那一列直接留空——正常是靠留白表达的。
+这类指标同样要抽，走 `conclusionBasis = REFERENCE_RANGE_IN_RANGE`：
+
+```json
+{
+  "name": "白细胞", "value": "6.2", "unit": "×10⁹/L", "refRange": "4.0~10.0",
+  "conclusionText": null,
+  "conclusionBasis": "REFERENCE_RANGE_IN_RANGE",
+  "rangeComparison": {
+    "measuredValue": "6.2",
+    "lowerBound": "4.0", "lowerInclusive": true,
+    "upperBound": "10.0", "upperInclusive": true
+  },
+  "status": "NORMAL", "statusJudgedByModel": false, "includeInHealthProblems": false
+}
+```
+
+**`conclusionText` 必须是 `null`。不要自己写一个「正常」填进去**——那个字段的语义是
+「报告上的原话」，编进去的字会被当成原文展示给用户。展示文案由后端用固定措辞生成。
+
+> **这两条路径给出的 `status = NORMAL`，含义是「符合本报告给出的参考值」，
+> 不是「这个人这项没问题」。** 它不包含任何医学评价，也不要因此去调整别的字段。
+
+**你负责的是判断，后端只负责比大小：**
+
+| 你判断 | 后端做 |
+|---|---|
+| 结果、单位、参考范围是不是同一个指标的 | 只对你拆好的数做 `compareTo` |
+| 多套参考范围（男/女、年龄段、孕期、方法学）里**哪一套适用** | 不理解「成人参考值」「女性绝经前」这类语义 |
+| 单位是否已对齐 | **不做任何单位换算** |
+| 把区间拆成上下界与开闭标志 | 不解析 `4.0~10.0` 这种原文 |
+
+**上下界怎么拆：**
+
+```
+4.0~10.0   →  lowerBound "4.0" lowerInclusive true,  upperBound "10.0" upperInclusive true
+<3.0       →  lowerBound null,                        upperBound "3.0"  upperInclusive false
+>1.0       →  lowerBound "1.0" lowerInclusive false,  upperBound null
+≤26        →  lowerBound null,                        upperBound "26"   upperInclusive true
+```
+
+注意 `>1.0` 这种**只有下界**的形态（HDL 这类越高越好的指标），别拆反成上界。
+
+**四条硬规则：**
+
+1. **报告已经印了结论，永远以报告结论为准**，走 `REPORT_TEXT`，
+   即使结果看起来符合参考值，也不要改判报告印的 ↑ / H / 异常；
+2. **只有落在范围内才用这条路径。** 超出范围而报告没给结论的指标，
+   `rangeComparison` 照常给，后端会判出「不在范围内」并丢弃它——
+   **你不要因此把 status 改成 HIGH / LOW**，报告没写的结论系统不生成；
+3. **拆不出唯一比较条件时给 `rangeComparison: null`**：多套人群参考范围无法确认适用哪套、
+   单位与结果对不齐、参考值是「见报告单」这类非数值。该指标随之不展示，**这是正确结果，不要硬凑**；
+4. **上下界必须逐字来自 `refRange` 原文。** 后端会拿它们回去核对，
+   对不上整条丢弃——凭空报一个宽区间让数值「落进去」是无效的。
+
+##### 定性参考值（结果是「阴性」这类）
+
+报告印了定性结果和定性参考值、没印结论时，走 `conclusionBasis = REFERENCE_VALUE_MATCH`：
+
+```json
+{
+  "name": "亚硝酸盐", "value": "阴性", "unit": null, "refRange": "阴性",
+  "conclusionText": null,
+  "conclusionBasis": "REFERENCE_VALUE_MATCH",
+  "rangeComparison": null,
+  "valueMatch": { "resultComparableValue": "NEGATIVE", "acceptableReferenceValues": ["NEGATIVE"] },
+  "status": "NORMAL", "statusJudgedByModel": false, "includeInHealthProblems": false
+}
+```
+
+**归一化是你的活，后端只做集合包含。** 把报告的各种写法统一到这四个枚举之一：
+
+```
+NEGATIVE       阴性、(-)、未见
+POSITIVE       阳性、(+)
+WEAK_POSITIVE  弱阳性、±
+NOT_DETECTED   未检出
+```
+
+**`NOT_DETECTED` 与 `NEGATIVE` 是两个值，后端不会把它们当同义词。**
+你若认为某份报告里两者确实指同一件事，就在归一化时统一成同一个枚举；
+**不要指望后端替你判等价** —— 那是医学判断，它不做。
+
+归不进这四个的（「见报告单」「正常」「0-2/HP」这类），
+给 `valueMatch: null`，该指标不展示。**这是正确结果，不要硬凑一个枚举。**
+
+**参考值常常不是单值，要展开成列表。** 尿常规的尿胆原就是：
+
+```
+检查结果「阴性」，参考值「阴性或弱」
+  → resultComparableValue: "NEGATIVE"
+  → acceptableReferenceValues: ["NEGATIVE", "WEAK_POSITIVE"]
+```
+
+**不要指望后端做字面子串匹配。**「阳性」是「弱阳性」的子串，
+按字面包含会把阳性结果判成「符合参考值」——那是把异常判成正常。
+所以参考值必须由你展开成明确的枚举集合，后端只判断结果在不在集合里。
 - `sectionIndex` 必给，指向 `sections` 的批内下标（见铁律 3）
 - `orderInSection` 必给，是这一条在**它所属章节内**的阅读顺序，从 0 起。**批内序号**——
   别的批次也从 0 开始，这是对的；后端排序时先按页码收敛再用它
@@ -481,6 +588,58 @@ itemNo        报告上【印着】的编号；没印就给 null，【不要拿 
 
 **同一条原文拆出多个枚举时，三个字段必须一模一样**——它们描述的是"这句话从哪来"，
 跟拆成几条无关，区分靠 `itemIndex`。
+
+#### 每条还要给三个安全字段
+
+```
+adviceQuote        建议本身那一句原文，【必须能在 blockRefs 里逐字找到】，上限 100 字
+applicability      这条建议给谁的：CURRENT_PATIENT / OTHER_PERSON / GENERAL_INFORMATION / UNCERTAIN
+structuredSafety   这条建议什么性质：NORMAL / DIRECTIONAL_RESTRICTION / SPECIAL_POPULATION / UNCERTAIN
+```
+
+**`adviceQuote` 只摘建议那一句，不要连上下文。** 给你的块是 PDF 绘制单元，
+一句建议和一句毫不相干的话经常落在同一块里。真实踩过的坑：
+
+```
+[101] 体重指数(BMI)=体重(Kg)/身高(M)^2;正常为18.5-24.0,>28为肥胖(孕妇和
+[102] 14岁以下儿童除外)。请您戒烟忌酒,低脂、低糖饮食,控制食量,多吃蔬菜、水果
+                        ↑ 建议从这里才开始，前面半句是 BMI 公式的免责说明
+```
+
+这一块拆出 4 条建议，每条的 `adviceQuote` 应该是：
+
+```
+LOW_FAT / LOW_ADDED_SUGAR  → "低脂、低糖饮食"
+LIMIT_ALCOHOL              → "戒烟忌酒"
+LOW_CALORIE                → "控制食量"
+```
+
+**不要把 `14岁以下儿童除外)` 也摘进去** —— 后端只对这一句做安全检查，
+摘多了会让不相干的词把整条建议误伤掉。上限 100 字就是为了逼你摘准。
+
+**`applicability` 判的是指向，这件事只有你能做。**「儿童」「孕期」这类词出现在文本里，
+可能在说受检者、家属、既往史，也可能是科普——后端只能做字面包含，分辨不了。
+
+```
+"请您戒烟忌酒,低脂饮食"           → CURRENT_PATIENT   （「您」，明确针对受检者）
+"孕妇和14岁以下儿童除外"          → GENERAL_INFORMATION（公式的适用范围说明）
+"血尿酸长期增高可致痛风"          → GENERAL_INFORMATION（医学名词科普）
+"建议家属同查"                    → OTHER_PERSON
+看不出来                          → UNCERTAIN
+```
+
+**`structuredSafety` 判的是性质，与 `applicability` 正交：**
+
+```
+"低脂、低糖饮食"          → NORMAL
+"优质低蛋白饮食"          → DIRECTIONAL_RESTRICTION（须医嘱个体化）
+"限钾、限磷饮食"          → DIRECTIONAL_RESTRICTION
+"您已绝经,应注意补钙"     → CURRENT_PATIENT + SPECIAL_POPULATION（给本人，但涉特殊人群）
+看不出来                  → UNCERTAIN
+```
+
+> **后端只放行 `CURRENT_PATIENT` + `NORMAL`**，其余一律只展示原文、不生成食材清单、
+> 不参与菜品推荐。**拿不准就给 `UNCERTAIN`**——保守抑制比错误推荐安全得多。
 
 **不要写死「总检结论」。** 饮食相关表述的抽取范围还包括「专家建议」「健康指导」
 「医师建议」等章节（见铁律 5 / 抽取范围），标错来源比不标更糟。

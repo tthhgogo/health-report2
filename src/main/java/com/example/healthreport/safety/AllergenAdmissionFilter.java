@@ -4,7 +4,6 @@ import com.example.healthreport.constants.AllergenGroup;
 import com.example.healthreport.constants.AllergenGroups;
 import com.example.healthreport.constants.AllergenKey;
 import com.example.healthreport.llm.extraction.AllergenResultStatus;
-import com.example.healthreport.llm.extraction.ExtractionValidationCounters;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
 import org.springframework.stereotype.Component;
 
@@ -15,18 +14,13 @@ import java.util.List;
 @Component
 public class AllergenAdmissionFilter {
 
-	private final ExtractionValidationCounters counters;
-
-	public AllergenAdmissionFilter(ExtractionValidationCounters counters) {
-		if (counters == null) {
-			throw new IllegalArgumentException("过敏准入计数器不能为空");
-		}
-		this.counters = counters;
-	}
-
 	/**
-	 * 产品安全策略只保留 POSITIVE/BORDERLINE；NEGATIVE 静默丢弃，UNKNOWN 只计数。 BORDERLINE
+	 * 产品安全策略只保留 POSITIVE/BORDERLINE；NEGATIVE 与 UNKNOWN 都不进入链路。 BORDERLINE
 	 * 的准入不表示临床确诊，只用于信息不完整时避免自动推荐潜在风险菜品。
+	 * <p>
+	 * <b>UNKNOWN 不再单独计数</b>（2026-08-27 计数全部下线）：它不得自动当成阳性，也不得当成阴性，
+	 * 与 NEGATIVE 一样静默不进链路。将来要观测它，先把导出口径定清楚，别再加一个只写不读的计数。
+	 * </p>
 	 */
 	public List<ValidatedExtractionOutput.Allergen> filter(
 			List<ValidatedExtractionOutput.Allergen> sourceAllergenList) {
@@ -39,9 +33,6 @@ public class AllergenAdmissionFilter {
 			if (allergen.getResultStatus() == AllergenResultStatus.POSITIVE
 					|| allergen.getResultStatus() == AllergenResultStatus.BORDERLINE) {
 				admittedAllergenList.add(allergen);
-			}
-			else if (allergen.getResultStatus() == AllergenResultStatus.UNKNOWN) {
-				counters.recordAllergenUnknown();
 			}
 		}
 		return admittedAllergenList;

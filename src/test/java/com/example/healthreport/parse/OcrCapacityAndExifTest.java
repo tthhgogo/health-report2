@@ -85,8 +85,14 @@ class OcrCapacityAndExifTest {
         assertThat(segmentResult.getSegmentList().get(0).getBbox()).isSameAs(source);
     }
 
+    /**
+     * 未收录的部首补充区字符必须<b>原样保留</b>，不得猜测替换。
+     * <p>形近替换会改变文本含义，而 normalizedText 正是来源回切与过敏原扫描的匹配对象；
+     * 替错一个字就可能让整条过敏信息匹配不到。保留原样虽然也匹配不上，
+     * 但它至少不会把 A 认成 B。</p>
+     */
     @Test
-    void parserCounterShouldCountAffectedSegmentsInsteadOfResidualCharacters() {
+    void unmappedRadicalsMustSurviveOcrSegmentBuildingUnchanged() {
         TextNormalizer textNormalizer = new TextNormalizer();
         OcrResult result = new OcrResult(Arrays.asList(
                 new OcrBlock("\u2E80\u2E81", null),
@@ -98,8 +104,13 @@ class OcrCapacityAndExifTest {
         OcrPageSegmentResult segmentResult = new OcrPageSegmentFactory(
                 textNormalizer, bboxNormalizer).create(result, 0, 1, 0, 1);
 
-        assertThat(segmentResult.getResidualNonStandardCount()).isEqualTo(4);
-        assertThat(textNormalizer.residualNonStandardCount()).isEqualTo(2L);
+        assertThat(segmentResult.getSegmentList()).hasSize(3);
+        assertThat(segmentResult.getSegmentList().get(0).getNormalizedText())
+                .as("未收录的部首保持原样").isEqualTo("\u2E80\u2E81");
+        assertThat(segmentResult.getSegmentList().get(1).getNormalizedText())
+                .as("干净文本不受影响").isEqualTo("clean");
+        assertThat(segmentResult.getSegmentList().get(2).getNormalizedText())
+                .isEqualTo("\u2E80\u2E81");
     }
 
     private OcrProperties validProperties() {

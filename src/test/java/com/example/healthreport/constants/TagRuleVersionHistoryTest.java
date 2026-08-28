@@ -68,7 +68,9 @@ class TagRuleVersionHistoryTest {
             DietRequirementRule rule = entry.getValue();
             append(builder, "diet", entry.getKey(), rule.getAvoidFoodList(),
                     rule.getAvoidDishPatternList(), rule.getCookingTipList(),
-                    rule.getReviewStatus());
+                    rule.getReviewStatus(), rule.getPositiveMatchPolicy(),
+                    rule.getRecommendableFoodList(), rule.getRecommendTagText(),
+                    rule.getPositiveReviewStatus());
         }
         byte[] bytes = MessageDigest.getInstance("SHA-256").digest(
                 builder.toString().getBytes(StandardCharsets.UTF_8));

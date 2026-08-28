@@ -13,13 +13,10 @@ public final class WordParseResult {
 
     private final List<Segment> segmentList;
     private final WordCapacityResult capacity;
-    private final int residualNonStandardCount;
 
-    public WordParseResult(List<Segment> segmentList, WordCapacityResult capacity,
-                           int residualNonStandardCount) {
+    public WordParseResult(List<Segment> segmentList, WordCapacityResult capacity) {
         this.segmentList = Collections.unmodifiableList(new ArrayList<Segment>(segmentList));
         this.capacity = capacity;
-        this.residualNonStandardCount = residualNonStandardCount;
     }
 
     /** Word 逻辑页不发送图像给 LLM-A。 */

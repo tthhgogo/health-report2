@@ -75,7 +75,6 @@ class TagHashCalculatorTest {
 
         tagHashCalculator.calculate("tag-1", "prompt-1", "model-1", dish);
 
-        assertThat(textNormalizer.residualNonStandardCount()).isZero();
     }
 
     private Dish dish(long id, DishIngredient... ingredientArray) {

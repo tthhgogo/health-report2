@@ -15,6 +15,7 @@ import com.example.healthreport.task.DegradeAccumulator;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -50,7 +51,7 @@ public class ExtractionValidationPipeline {
     private final AllergenCoverageScanner allergenCoverageScanner;
     private final PositiveRowCoverageScanner positiveRowCoverageScanner;
     private final AllergenAdmissionFilter allergenAdmissionFilter;
-    private final ExtractionValidationCounters counters;
+    private final ReferenceRangeParser referenceRangeParser;
     private final TextNormalizer textNormalizer;
 
     public ExtractionValidationPipeline(ExtractionSchemaValidator schemaValidator,
@@ -59,12 +60,13 @@ public class ExtractionValidationPipeline {
                                   AllergenCoverageScanner allergenCoverageScanner,
                                   PositiveRowCoverageScanner positiveRowCoverageScanner,
                                   AllergenAdmissionFilter allergenAdmissionFilter,
-                                  ExtractionValidationCounters counters,
+                                  ReferenceRangeParser referenceRangeParser,
                                   TextNormalizer textNormalizer) {
         if (schemaValidator == null || sourceEvidenceValidator == null
                 || allergenSuspectScanner == null || allergenCoverageScanner == null
                 || positiveRowCoverageScanner == null
-                || allergenAdmissionFilter == null || counters == null || textNormalizer == null) {
+                || allergenAdmissionFilter == null || referenceRangeParser == null
+                || textNormalizer == null) {
             throw new IllegalArgumentException("LLM-A 校验依赖不能为空");
         }
         this.schemaValidator = schemaValidator;
@@ -73,7 +75,7 @@ public class ExtractionValidationPipeline {
         this.allergenCoverageScanner = allergenCoverageScanner;
         this.positiveRowCoverageScanner = positiveRowCoverageScanner;
         this.allergenAdmissionFilter = allergenAdmissionFilter;
-        this.counters = counters;
+        this.referenceRangeParser = referenceRangeParser;
         this.textNormalizer = textNormalizer;
     }
 
@@ -218,7 +220,6 @@ public class ExtractionValidationPipeline {
         List<ExpandedItem> itemList = new ArrayList<ExpandedItem>(arrayNode.size());
         for (JsonNode itemNode : arrayNode) {
             if (!sectionIndexSet.contains(itemNode.path("sectionIndex").asInt())) {
-                counters.recordSectionRefMiss();
                 if (allergen) {
                     recordAllergenSuspect(degradeAccumulator);
                 }
@@ -325,7 +326,6 @@ public class ExtractionValidationPipeline {
                 }
             } else if (relation == SectionRelation.UNKNOWN) {
                 displayName = UNKNOWN_SECTION_DISPLAY_NAME;
-                counters.recordSectionUnknown();
             }
             batchData.sectionList.add(new ValidatedExtractionOutput.Section(context.fileIndex,
                     context.batchIndex, sectionIndex, relation, sectionSegmentId,
@@ -338,7 +338,6 @@ public class ExtractionValidationPipeline {
         for (ExpandedItem item : itemList) {
             JsonNode node = item.node;
             if (!requiredIndicatorFieldsMatch(node, item.segmentIdList, context.segmentByIdMap)) {
-                counters.recordEvidenceMiss();
                 continue;
             }
             String problemName = nullableText(node.get("problemName"));
@@ -346,16 +345,27 @@ public class ExtractionValidationPipeline {
                     item.segmentIdList, context.segmentByIdMap)) {
                 problemName = null;
             }
+            // 原样透传给展示层，Java 不因这个标记改判状态；计数已于 2026-08-27 全部下线。
             boolean statusJudgedByModel = node.path("statusJudgedByModel").asBoolean();
-            if (statusJudgedByModel) {
-                counters.recordStatusJudgedByModel();
+            IndicatorConclusionBasis conclusionBasis =
+                    IndicatorConclusionBasis.valueOf(node.path("conclusionBasis").asText());
+            if (conclusionBasis == IndicatorConclusionBasis.REFERENCE_RANGE_IN_RANGE
+                    && !referenceRangeAdmits(node)) {
+                // 比较条件对不上原文、或结果没落在范围内：该指标不展示。
+                // 【绝不改判为异常】——报告没给结论，系统就不生成一个报告没写过的结论。
+                continue;
+            }
+            if (conclusionBasis == IndicatorConclusionBasis.REFERENCE_VALUE_MATCH
+                    && !referenceValueAdmits(node)) {
+                continue;
             }
             batchData.indicatorList.add(new ValidatedExtractionOutput.Indicator(context.fileIndex,
                     context.batchIndex, node.path("sectionIndex").asInt(),
                     node.path("orderInSection").asInt(), node.path("itemIndex").asInt(),
                     minimumPage(item.segmentIdList), item.segmentIdList, node.path("name").asText(),
                     node.path("value").asText(), nullableText(node.get("unit")),
-                    nullableText(node.get("refRange")), node.path("conclusionText").asText(),
+                    nullableText(node.get("refRange")), nullableText(node.get("conclusionText")),
+                    conclusionBasis,
                     IndicatorStatus.valueOf(node.path("status").asText()), statusJudgedByModel,
                     node.path("includeInHealthProblems").asBoolean(), problemName));
         }
@@ -365,8 +375,12 @@ public class ExtractionValidationPipeline {
                                                  Map<String, Segment> segmentByIdMap) {
         if (!sourceEvidenceValidator.matches(node.path("name").asText(), segmentIdList, segmentByIdMap)
                 || !sourceEvidenceValidator.matches(node.path("value").asText(), segmentIdList,
-                segmentByIdMap)
-                || !sourceEvidenceValidator.matches(node.path("conclusionText").asText(),
+                segmentByIdMap)) {
+            return false;
+        }
+        // conclusionText 为 null 说明报告没印结论，没有原文可回切；其余字段照常校验。
+        String conclusionText = nullableText(node.get("conclusionText"));
+        if (conclusionText != null && !sourceEvidenceValidator.matches(conclusionText,
                 segmentIdList, segmentByIdMap)) {
             return false;
         }
@@ -377,6 +391,117 @@ public class ExtractionValidationPipeline {
                 segmentByIdMap));
     }
 
+    /**
+     * 参考范围准入：核验模型拆出的比较条件，并判断结果是否落在范围内。
+     *
+     * <p><b>回溯核验是这条路径的防伪根基。</b> 模型可以凭空报一个宽区间让任何值都「正常」，
+     * 所以整组比较条件必须与 {@code refRange} 原文里写着的某一个区间<b>完全一致</b>
+     * （见 {@link ReferenceRangeParser}），结果值必须与已通过回切的 {@code value} 数值相等。
+     * 核验不过一律丢弃。</p>
+     *
+     * <p><b>只核验单个边界是不够的</b>：{@code 4.0~10.0} 只报下界、{@code 14.0~20.0} 报一个恰好是
+     * 子串的 {@code 4.0}、{@code <3.0} 报成闭区间，三种都能让系统对着报告没写过的范围宣布「正常」。
+     * 因此下界、上界、两侧开闭必须一起对上，缺一侧就是缺一侧。</p>
+     *
+     * <p>数值一律用 {@link BigDecimal#compareTo} 而不是字符串：{@code 6.2} 与 {@code 6.20}
+     * 是同一个数的合法写法；而 {@code 40} 与 {@code 4.0} 不是，比对不过会被拒。</p>
+     */
+    private boolean referenceRangeAdmits(JsonNode node) {
+        JsonNode comparisonNode = node.get("rangeComparison");
+        String refRange = nullableText(node.get("refRange"));
+        if (comparisonNode == null || !comparisonNode.isObject() || refRange == null) {
+            return false;
+        }
+        BigDecimal measuredValue = decimalOrNull(comparisonNode.get("measuredValue"));
+        BigDecimal lowerBound = decimalOrNull(comparisonNode.get("lowerBound"));
+        BigDecimal upperBound = decimalOrNull(comparisonNode.get("upperBound"));
+        if (measuredValue == null) {
+            return false;
+        }
+        BigDecimal declaredValue = decimalOrNull(node.get("value"));
+        if (declaredValue == null || measuredValue.compareTo(declaredValue) != 0) {
+            return false;
+        }
+        boolean lowerInclusive = comparisonNode.path("lowerInclusive").asBoolean();
+        boolean upperInclusive = comparisonNode.path("upperInclusive").asBoolean();
+        if (!referenceRangeParser.admits(refRange, lowerBound, lowerInclusive, upperBound,
+                upperInclusive)) {
+            // 报上来的区间不是参考范围原文里写着的那一个：没有可核验的准入条件，不展示。
+            return false;
+        }
+        final IndicatorRangeComparison comparison;
+        try {
+            comparison = new IndicatorRangeComparison(measuredValue, lowerBound,
+                    lowerInclusive, upperBound, upperInclusive);
+        } catch (IllegalArgumentException exception) {
+            // 上下界自相矛盾或都不设限：不是可用的准入条件。
+            return false;
+        }
+        return comparison.inRange();
+    }
+
+    /**
+     * 定性项目准入：两侧归一化取值必须精确相等。
+     *
+     * <p>Java 在这里<b>只做集合包含</b>。参考值常常不是单值——「阴性或弱」允许阴性与弱阳性两种——
+     * 所以模型把它展开成 {@code acceptableReferenceValues} 列表，Java 判断结果在不在列表里。</p>
+     *
+     * <p><b>刻意不做字面子串匹配。</b>「阳性」是「弱阳性」的子串，
+     * 按字面包含会把阳性结果判成「符合参考值」——正是最危险的那种错法。
+     * 同理「0」是「0-2/HP」的子串。展开成枚举集合之后，这类误判从根上不存在。</p>
+     *
+     * <p><b>与数值路径的信任边界不同，这里必须说清楚</b>：数值路径的上下界能回到
+     * {@code refRange} 原文逐字核验，而归一化枚举<b>无法回溯原文</b>——
+     * 「阴性」映射成哪个枚举，Java 无从验证。能兜住的只有：
+     * {@code value} 与 {@code refRange} 本身都已通过来源回切，确实是报告上的原话。
+     * 因此这条路径对模型归一化的正确性是<b>信任</b>关系，不是校验关系。</p>
+     */
+    private boolean referenceValueAdmits(JsonNode node) {
+        JsonNode matchNode = node.get("valueMatch");
+        if (matchNode == null || !matchNode.isObject() || nullableText(node.get("refRange")) == null) {
+            return false;
+        }
+        ComparableQualitativeValue resultValue =
+                qualitativeOrNull(matchNode.get("resultComparableValue"));
+        JsonNode acceptableNode = matchNode.get("acceptableReferenceValues");
+        if (resultValue == null || acceptableNode == null || !acceptableNode.isArray()
+                || acceptableNode.size() == 0) {
+            return false;
+        }
+        for (JsonNode acceptableValueNode : acceptableNode) {
+            if (resultValue == qualitativeOrNull(acceptableValueNode)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 解析归一化取值；枚举外的写法一律当作缺失，不做近似匹配。 */
+    private ComparableQualitativeValue qualitativeOrNull(JsonNode valueNode) {
+        String text = nullableText(valueNode);
+        if (text == null) {
+            return null;
+        }
+        try {
+            return ComparableQualitativeValue.valueOf(text);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    /** 解析十进制字符串；非十进制一律当作缺失，绝不做近似。 */
+    private BigDecimal decimalOrNull(JsonNode valueNode) {
+        String text = nullableText(valueNode);
+        if (text == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(text.trim());
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
     private void validateTextualFindings(List<ExpandedItem> itemList, BatchContext context,
                                          BatchData batchData) {
         for (ExpandedItem item : itemList) {
@@ -385,7 +510,6 @@ public class ExtractionValidationPipeline {
                     context.segmentByIdMap)
                     || !sourceEvidenceValidator.matches(node.path("conclusionText").asText(),
                     item.segmentIdList, context.segmentByIdMap)) {
-                counters.recordEvidenceMiss();
                 continue;
             }
             batchData.textualFindingList.add(new ValidatedExtractionOutput.TextualFinding(
@@ -402,7 +526,6 @@ public class ExtractionValidationPipeline {
                                             BatchData batchData) {
         for (ExpandedItem item : itemList) {
             if (!allSegmentsExist(item.segmentIdList, context.segmentByIdMap)) {
-                counters.recordEvidenceMiss();
                 continue;
             }
             JsonNode node = item.node;
@@ -428,7 +551,6 @@ public class ExtractionValidationPipeline {
                     context.segmentByIdMap)
                     || !sourceEvidenceValidator.matches(node.path("rawResult").asText(),
                     item.segmentIdList, context.segmentByIdMap)) {
-                counters.recordEvidenceMiss();
                 recordAllergenSuspect(degradeAccumulator);
                 continue;
             }
@@ -444,20 +566,53 @@ public class ExtractionValidationPipeline {
         }
     }
 
+    /** 解析适用范围；缺失或非法一律按 UNCERTAIN，由准入政策保守处理。 */
+    private AdviceApplicability adviceApplicability(JsonNode node) {
+        String text = nullableText(node.get("applicability"));
+        if (text == null) {
+            return AdviceApplicability.UNCERTAIN;
+        }
+        try {
+            return AdviceApplicability.valueOf(text);
+        } catch (IllegalArgumentException exception) {
+            return AdviceApplicability.UNCERTAIN;
+        }
+    }
+
+    /** 解析建议性质；缺失或非法一律按 UNCERTAIN。 */
+    private AdviceStructuredSafety adviceStructuredSafety(JsonNode node) {
+        String text = nullableText(node.get("structuredSafety"));
+        if (text == null) {
+            return AdviceStructuredSafety.UNCERTAIN;
+        }
+        try {
+            return AdviceStructuredSafety.valueOf(text);
+        } catch (IllegalArgumentException exception) {
+            return AdviceStructuredSafety.UNCERTAIN;
+        }
+    }
+
     private <T extends Enum<T>> void validateAdvice(List<ExpandedItem> itemList, Class<T> enumType,
                                                     BatchContext context,
                                                     List<ValidatedExtractionOutput.AdviceItem<T>> targetList) {
         for (ExpandedItem item : itemList) {
             if (!allSegmentsExist(item.segmentIdList, context.segmentByIdMap)) {
-                counters.recordEvidenceMiss();
                 continue;
             }
             JsonNode node = item.node;
+            String adviceQuote = nullableText(node.get("adviceQuote"));
+            if (adviceQuote == null || !sourceEvidenceValidator.matches(adviceQuote,
+                    item.segmentIdList, context.segmentByIdMap)) {
+                // 建议原文回切不过就整条丢弃：它是安全检查的唯一输入，
+                // 让一句无法核验的话去决定要不要抑制，等于没有检查。
+                continue;
+            }
             targetList.add(new ValidatedExtractionOutput.AdviceItem<T>(context.fileIndex,
                     context.batchIndex, node.path("sectionIndex").asInt(),
                     node.path("sourceOrder").asInt(), nullableInteger(node.get("itemNo")),
                     node.path("itemIndex").asInt(), minimumPage(item.segmentIdList),
-                    item.segmentIdList, Enum.valueOf(enumType, node.path("enumKey").asText())));
+                    item.segmentIdList, Enum.valueOf(enumType, node.path("enumKey").asText()),
+                    adviceQuote, adviceApplicability(node), adviceStructuredSafety(node)));
         }
     }
 
@@ -545,7 +700,6 @@ public class ExtractionValidationPipeline {
             if (section.getRelation() == SectionRelation.CONTINUATION) {
                 ValidatedExtractionOutput.Section previous = previousSectionByFileMap.get(section.getFileIndex());
                 if (previous == null) {
-                    counters.recordSectionUnknown();
                     resolved = new ValidatedExtractionOutput.Section(section.getFileIndex(),
                             section.getBatchIndex(), section.getSectionIndex(), SectionRelation.UNKNOWN,
                             syntheticSectionId("X-", section), UNKNOWN_SECTION_DISPLAY_NAME,
@@ -684,7 +838,6 @@ public class ExtractionValidationPipeline {
 
     private void recordAllergenSuspect(DegradeAccumulator degradeAccumulator) {
         degradeAccumulator.recordAllergenSuspectMiss();
-        counters.recordAllergenSuspectMiss();
     }
 
     private boolean intersects(Iterable<String> left, Iterable<String> right) {
@@ -704,8 +857,18 @@ public class ExtractionValidationPipeline {
         return fileIndex + ":" + batchIndex;
     }
 
+    /**
+     * 取可空文本；<b>空串与纯空白一律按缺失处理</b>。
+     *
+     * <p>「字段在、但没有内容」不是内容：空串能通过所有子串式校验，
+     * 等于让该字段绕过来源回切与各条准入判断。</p>
+     */
     private String nullableText(JsonNode node) {
-        return node == null || node.isNull() ? null : node.asText();
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        String text = node.asText();
+        return text.trim().isEmpty() ? null : text;
     }
 
     private Integer nullableInteger(JsonNode node) {

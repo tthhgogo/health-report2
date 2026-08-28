@@ -1,6 +1,5 @@
 package com.example.healthreport.safety;
 
-import com.example.healthreport.llm.extraction.ExtractionValidationCounters;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import com.example.healthreport.task.DegradeAccumulator;
@@ -12,15 +11,6 @@ import java.util.Set;
 /** 校验过敏章节 S、数据行 D、条目证据 A 三个集合的结构与覆盖关系。 */
 @Component
 public class AllergenCoverageScanner {
-
-    private final ExtractionValidationCounters counters;
-
-    public AllergenCoverageScanner(ExtractionValidationCounters counters) {
-        if (counters == null) {
-            throw new IllegalArgumentException("过敏覆盖计数器不能为空");
-        }
-        this.counters = counters;
-    }
 
     /**
      * D 或 A 不是 S 子集时按模型契约失败；章节无数据或 D 减 A 非空时降级。
@@ -43,7 +33,6 @@ public class AllergenCoverageScanner {
         if ((!allergenSectionSegmentIdSet.isEmpty() && allergenDataSegmentIdSet.isEmpty())
                 || !uncoveredDataSegmentIdSet.isEmpty()) {
             degradeAccumulator.recordAllergenSuspectMiss();
-            counters.recordAllergenSuspectMiss();
             return true;
         }
         return false;

@@ -18,33 +18,18 @@ class TextNormalizerTest {
         assertThat(rawText).isEqualTo("\u2F00\u2EA9\uFF21");
         assertThat(first.getNormalizedText()).isEqualTo("\u4E00\u738BA");
         assertThat(second.getNormalizedText()).isEqualTo(first.getNormalizedText());
-        assertThat(first.getResidualNonStandardCount()).isZero();
-        assertThat(second.getResidualNonStandardCount()).isZero();
     }
 
+    /** 未收录的部首补充区字符原样保留，且反复规范化结果不变。 */
     @Test
-    void shouldCountResidualCharactersPerResultButRecordOnlyAffectedSegments() {
+    void unmappedRadicalsMustBeLeftUnchangedAndNormalizationMustBeIdempotent() {
         TextNormalizationResult first = normalizer.normalize("\u2E80\u2E81");
-        TextNormalizationResult second = normalizer.normalize("\u2E80\u2E81");
+        TextNormalizationResult second = normalizer.normalize(first.getNormalizedText());
         TextNormalizationResult clean = normalizer.normalize("clean");
 
         assertThat(first.getNormalizedText()).isEqualTo("\u2E80\u2E81");
-        assertThat(first.getResidualNonStandardCount()).isEqualTo(2);
-        assertThat(second.getResidualNonStandardCount()).isEqualTo(2);
-        assertThat(normalizer.residualNonStandardCount()).isZero();
-
-        normalizer.recordResidualSegment(first);
-        normalizer.recordResidualSegment(second);
-        normalizer.recordResidualSegment(clean);
-
-        assertThat(normalizer.residualNonStandardCount()).isEqualTo(2L);
-    }
-
-    @Test
-    void shouldRejectMissingNormalizationResultAtParserBoundary() {
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> normalizer.recordResidualSegment(null))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(second.getNormalizedText()).isEqualTo(first.getNormalizedText());
+        assertThat(clean.getNormalizedText()).isEqualTo("clean");
     }
 
     /**
@@ -63,22 +48,19 @@ class TextNormalizerTest {
             assertThat(result.getNormalizedText())
                     .as("含不可见字符的「牛奶」必须能被子串匹配命中")
                     .isEqualTo("牛奶");
-            assertThat(result.getResidualNonStandardCount())
-                    .as("已清除的不可见字符不算残留污染").isZero();
         }
     }
 
     /**
-     * 私用区必须计入 residualNonStandardCount。
-     * 子集字体把字形塞进 PUA 是中文报告 PDF 最常见的污染形态；只统计部首补充区
-     * 会让残留计数严重低报，掩盖「这份报告其实根本没抽对字」。
+     * 私用区字符原样保留，不猜测替换。
+     * <p>子集字体把字形塞进 PUA 是中文报告 PDF 最常见的污染形态。
+     * 我们无从知道某个 PUA 码位在这份 PDF 里代表哪个字，猜一个填进去
+     * 会让 normalizedText 变成一段看似正常、实则错字的文本，比留着不认识的字符危险得多。</p>
      */
     @Test
-    void privateUseAreaMustCountAsResidualPollution() {
+    void privateUseAreaCharactersMustBeLeftUnchangedRatherThanGuessed() {
         TextNormalizationResult result = new TextNormalizer().normalize("血\uE000糖");
 
-        assertThat(result.getResidualNonStandardCount()).isEqualTo(1);
-        // 未确认映射的字符保留原样，不猜测替换。
         assertThat(result.getNormalizedText()).isEqualTo("血\uE000糖");
     }
 
@@ -88,7 +70,7 @@ class TextNormalizerTest {
      * 「⻥」这样的字会原样留在 normalizedText 里，导致「鱼」相关的过敏原匹配不到。
      */
     @Test
-    void everyMappedRadicalMustNormalizeToItsIdeographAndLeaveNoResidual() {
+    void everyMappedRadicalMustNormalizeToItsIdeograph() {
         String[] caseList = {"\u2EC4:西", "\u2EC5:见", "\u2EC6:角", "\u2EC9:贝", "\u2ECB:车", "\u2ED3:长", "\u2ED4:门", "\u2ED8:青", "\u2ED9:韦", "\u2EDB:风", "\u2EDD:食", "\u2EE2:马", "\u2EE3:骨", "\u2EE5:鱼", "\u2EE6:鸟", "\u2EE9:黄", "\u2EEC:齐", "\u2EEE:齿", "\u2EF0:龙", "\u2EA9:王"};
         TextNormalizer normalizer = new TextNormalizer();
         for (String testCase : caseList) {
@@ -98,27 +80,27 @@ class TextNormalizerTest {
             assertThat(result.getNormalizedText())
                     .as("部首 U+%04X 应规范化为 %s", (int) radical.charAt(0), expected)
                     .isEqualTo(expected);
-            assertThat(result.getResidualNonStandardCount())
-                    .as("已收录的部首不应计入残留").isZero();
         }
     }
 
     /**
      * 【形近但语义不等的部首一律不得收录】。
      * ⺘ 是提手旁（对应扌）不是手，⺖ 是竖心旁（对应忄）不是心，⺙ 是反文旁不是攵。
-     * 把它们替换成整字会改变文本含义；保留原字符并计入残留才是安全方向。
+     * 把它们替换成整字会改变文本含义；保留原字符才是安全方向。
      * 这条断言防止后来者「照着别处的表补全」时把它们一并抄进来。
      */
     @Test
-    void semanticallyDifferentRadicalsMustStayUnmappedAndCountAsResidual() {
+    void semanticallyDifferentRadicalsMustStayUnmapped() {
         int[] mustNotMapList = {0x2E98, 0x2E96, 0x2E99};
         TextNormalizer normalizer = new TextNormalizer();
         for (int codePoint : mustNotMapList) {
             assertThat(RadicalNormalizeMap.replacement(codePoint))
                     .as("U+%04X 语义不等价，不得收录", codePoint).isNull();
-            TextNormalizationResult result =
-                    normalizer.normalize(new String(Character.toChars(codePoint)));
-            assertThat(result.getResidualNonStandardCount()).isEqualTo(1);
+            String radical = new String(Character.toChars(codePoint));
+            TextNormalizationResult result = normalizer.normalize(radical);
+            assertThat(result.getNormalizedText())
+                    .as("U+%04X 未收录时必须原样保留，不得被替换成形近整字", codePoint)
+                    .isEqualTo(radical);
         }
     }
 }

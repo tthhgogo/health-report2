@@ -3,7 +3,6 @@ package com.example.healthreport.safety;
 import com.example.healthreport.constants.AllergenGroup;
 import com.example.healthreport.constants.AllergenGroups;
 import com.example.healthreport.constants.AllergenWord;
-import com.example.healthreport.llm.extraction.ExtractionValidationCounters;
 import com.example.healthreport.parse.segment.Segment;
 import com.example.healthreport.task.DegradeAccumulator;
 import org.springframework.stereotype.Component;
@@ -20,18 +19,13 @@ import java.util.Set;
 @Component
 public class PositiveRowCoverageScanner {
 
-    private final ExtractionValidationCounters counters;
     private final List<String> knownAllergenNameList;
 
-    public PositiveRowCoverageScanner(ExtractionValidationCounters counters) {
-        if (counters == null) {
-            throw new IllegalArgumentException("阳性覆盖扫描计数器不能为空");
-        }
-        this.counters = counters;
+    public PositiveRowCoverageScanner() {
         this.knownAllergenNameList = knownAllergenNames();
     }
 
-    /** 对每个未被 A 集合覆盖的同块候选计数，并触发一次任务级降级。 */
+    /** 统计未被 A 集合覆盖的同块候选数，命中时触发一次任务级降级。 */
     public int scan(List<Segment> allSegmentList, Set<String> admittedSegmentIdSet,
                     DegradeAccumulator degradeAccumulator) {
         if (allSegmentList == null || admittedSegmentIdSet == null || degradeAccumulator == null) {
@@ -44,12 +38,10 @@ public class PositiveRowCoverageScanner {
                     && containsAny(normalizedText, knownAllergenNameList)
                     && !admittedSegmentIdSet.contains(segment.getSegmentId())) {
                 uncoveredCount++;
-                counters.recordAllergenPositiveUncovered();
             }
         }
         if (uncoveredCount > 0) {
             degradeAccumulator.recordAllergenSuspectMiss();
-            counters.recordAllergenSuspectMiss();
         }
         return uncoveredCount;
     }

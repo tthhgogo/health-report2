@@ -38,7 +38,9 @@ public class DietAdviceInputFactory {
         for (ValidatedExtractionOutput.Allergen allergen : plan.getAllergenList()) {
             allergenList.add(new DietAdviceInput.AllergenItem(
                     new DietAdviceInput.StructuredValue<com.example.healthreport.constants.AllergenKey>(
-                            allergen.getEnumKey(), output.rawTextList(allergen.getSegmentIdList())),
+                            allergen.getEnumKey(), output.rawTextList(allergen.getSegmentIdList()),
+                            // 过敏原不过高危安全闸（2026-08-26 产品确认），三个字段留空。
+                            null, null, null),
                     new DietAdviceInput.Source(plan.groupOf(allergen).getDisplayName()),
                     allergen.isFoodBorne(), allergen.getRawName(), allergen.getRawResult()));
         }
@@ -71,7 +73,8 @@ public class DietAdviceInputFactory {
         }
         return new DietAdviceInput.AdviceItem<T>(
                 new DietAdviceInput.StructuredValue<T>(item.getEnumKey(),
-                        output.rawTextList(item.getSegmentIdList())),
+                        output.rawTextList(item.getSegmentIdList()), item.getAdviceQuote(),
+                        item.getApplicability(), item.getStructuredSafety()),
                 new DietAdviceInput.Source(sourceLabel));
     }
 }

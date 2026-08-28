@@ -69,7 +69,6 @@ public class PdfSegmentParser {
         }
         List<Segment> segmentList = new ArrayList<Segment>();
         int[] sequence = new int[]{0};
-        int residualCount = 0;
         int pageNumber = 0;
         for (PDPage page : document.getPages()) {
             pageNumber++;
@@ -78,13 +77,12 @@ public class PdfSegmentParser {
                     geometry, textNormalizer);
             engine.processPage(page);
             segmentList.addAll(engine.getSegmentList());
-            residualCount += engine.getResidualNonStandardCount();
         }
         if (glyphDensityGate.requiresOcr(segmentList.size(), document.getNumberOfPages())) {
             return new PdfParseResult(Collections.<Segment>emptyList(), true,
-                    document.getNumberOfPages(), residualCount);
+                    document.getNumberOfPages());
         }
-        return new PdfParseResult(segmentList, false, document.getNumberOfPages(), residualCount);
+        return new PdfParseResult(segmentList, false, document.getNumberOfPages());
     }
 
     /** 仅注册处理内容流文本与必要图形状态的操作符。 */
@@ -99,7 +97,6 @@ public class PdfSegmentParser {
         private DrawingUnit currentUnit;
         /** 绘制单元嵌套深度；Type 3 字形内容流会让 Tj 递归，>0 表示身处内层。 */
         private int unitDepth;
-        private int residualNonStandardCount;
 
         private DrawingUnitEngine(int fileIndex, int pageNumber, int[] sequence,
                                   PageGeometry geometry, TextNormalizer textNormalizer) {
@@ -170,8 +167,6 @@ public class PdfSegmentParser {
             }
             String rawText = finishedUnit.rawTextBuilder.toString();
             TextNormalizationResult normalizationResult = textNormalizer.normalize(rawText);
-            residualNonStandardCount += normalizationResult.getResidualNonStandardCount();
-            textNormalizer.recordResidualSegment(normalizationResult);
             segmentList.add(new Segment(Segment.id(fileIndex, pageNumber, sequence[0]++),
                     rawText, normalizationResult.getNormalizedText(), TextSource.NATIVE,
                     geometry.toRenderedBox(finishedUnit.toUserBox())));
@@ -206,9 +201,6 @@ public class PdfSegmentParser {
             return segmentList;
         }
 
-        private int getResidualNonStandardCount() {
-            return residualNonStandardCount;
-        }
     }
 
     /** 单次绘制操作内的字形文本与用户空间外包框。 */

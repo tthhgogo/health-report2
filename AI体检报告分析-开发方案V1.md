@@ -991,7 +991,7 @@ NFKC → RadicalNormalizeMap（U+2E80–U+2EFF，约 30 条手工映射）→ �
 
 > NFKC 只解决一半：康熙部首区（U+2F00–U+2FD5）有兼容分解会被自动还原，
 > **CJK 部首补充区（U+2E80–U+2EFF）没有兼容分解，NFKC 对它无效**，必须手工映射。
-> 记 `residualNonStandardCount` 发现新污染形态，**只记计数不记原文**（§0.3-③）。
+> 未收录的字符**保留原样，不猜测替换**（§0.3-③）：替错一个字会让 normalizedText 变成看似正常实则错字的文本。
 
 ### 5.3 绘制单元密度闸
 
@@ -1002,7 +1002,6 @@ NFKC → RadicalNormalizeMap（U+2E80–U+2EFF，约 30 条手工映射）→ �
 if (segmentCount / effectivePageCount > MAX_SEGMENTS_PER_PAGE) {   // 暂定 400
     // 判定为「逐字形绘制」→ 该文件整体改走 OCR 路径
     // textSource 记为 OCR，包含性校验走放宽档（§6.4）
-    // 记 glyphLevelPdfCount
 }
 ```
 
@@ -2472,7 +2471,7 @@ llm:
 | 6 | **最大响应体上限** | 一份 30 页报告的抽取结果约上百 KB；代码给了 4MB 兜底并**有界读取**（`BoundedResponseExtractor`），防止服务端异常时返回巨大 body |
 | 7 | **图片内联格式** | 已确认字段是 `content[].image_url.url`，代码按 `data:image/jpeg;base64,…` 写。**平台示例用的是 http 外链**——我们不采用（§5.6.7），但由此产生一个新的联调确认项：网关是否接受 data URI |
 | 8 | **单次请求是否支持 8 张图 + 文本图片交替** | 不支持就要降到更小的批，而这会连锁改 §6.1 的 8 批上限与 `W`（§4.2） |
-| 9 | **是否支持 `response_format`** | 代码写了 `json_object`。不支持就删那三行，仍能跑（Java 侧还会校验，§6.3-①），但 `schemaMissCount` 会明显变高 |
+| 9 | **是否支持 `response_format`** | 代码写了 `json_object`。不支持就删那三行，仍能跑（Java 侧还会校验，§6.3-①），但 Schema 校验失败会明显变多 |
 | 10 | **是否强制 HTTPS / TLS 版本与证书校验要求** | 报告图像出网，这条不能靠默认值 |
 | 11 | **429 / 5xx / 超时的响应体形状** | 决定怎么在**不泄露正文**的前提下映射成内部错误码（见下） |
 
@@ -2658,7 +2657,7 @@ class DegradeAccumulator {
 #### ① Schema 校验
 
 `schema/extraction_output.schema.json`，任一必填缺失 → **直接 `FAILED / SERVER_ERROR`，不重试**。
-`schemaMissCount` 升高时改提示词或换模型，不是加重试。
+Schema 校验频繁失败时改提示词或换模型，不是加重试。
 
 > **「Schema 通过」不等于「报告已完整识别」**——`"allergens": []` 结构上完全合法。
 
@@ -2687,7 +2686,7 @@ sections 自洽
 
 条目引用有效
     每个条目的 sectionIndex 必须 ∈ {sections[].sectionIndex}
-    → 不满足：该条目【整条丢弃】，记 sectionRefMissCount
+    → 不满足：该条目【整条丢弃】
       属 allergens 时按 ④ 触发 ALLERGEN_SUSPECT_MISS
 
 sourceOrder / orderInSection
@@ -2702,19 +2701,56 @@ sourceOrder / orderInSection
 模型侧的抽取规则，Java 侧据此知道该读哪个数组，**不得自行搬运条目**：
 
 ```
-有数值 + 有结论  →  indicators         例：甘油三酯 2.8 mmol/L 0.56~1.70 ↑偏高
-有数值 + 无结论  →  【全部丢弃】        例：白细胞 6.2 ×10⁹/L 4.0~10.0（没有结论列）
-无数值 + 有结论  →  textualFindings    例：肝胆B超：提示脂肪肝
+有检查结果 + 有结论              →  indicators      conclusionBasis = REPORT_TEXT
+                                                    例：甘油三酯 2.8 mmol/L 0.56~1.70 ↑偏高
+有检查结果 + 无结论 + 数值可比    →  indicators      conclusionBasis = REFERENCE_RANGE_IN_RANGE
+                                                    例：白细胞 6.2 ×10⁹/L 4.0~10.0（提示列留空）
+有检查结果 + 无结论 + 定性可比    →  indicators      conclusionBasis = REFERENCE_VALUE_MATCH
+                                                    例：亚硝酸盐 阴性 / 参考值 阴性
+有检查结果 + 无结论 + 无法明确比较 →  【全部丢弃】
+无检查结果 + 有结论              →  textualFindings 例：肝胆B超：提示脂肪肝
 ```
+
+**参考范围准入**（2026-08-27 增补，设计方案 §4.3.1）：
+
+```
+模型负责：结果/单位/参考范围是否同属一个指标、多套人群范围选哪套、单位是否对齐、
+         把区间拆成 lowerBound / upperBound 与开闭标志
+Java 负责：只对拆好的十进制数做 BigDecimal.compareTo，见 IndicatorRangeComparison
+
+Java 侧的核验（ExtractionValidationPipeline.referenceRangeAdmits）：
+     整组区间必须与 refRange 原文解析出的某个区间完全一致（ReferenceRangeParser）
+         下界、上界、两侧开闭一起比；数值用 compareTo，4.0 与 4.00 判等、40 与 4.0 不判等
+         ← 防三种绕过：省略一侧边界、拿子串当边界（4.0 在 14.0~20.0 里）、篡改开闭符号
+         ← 原文写法认不出（非 a-b / a~b / a至b / <、≤、<=、>、≥、>= 这几种）时一律不展示
+     measuredValue 必须与 value 数值相等       ← 用 compareTo，允许 6.2 与 6.20 的标度差异
+     上下界自相矛盾、都不设限、非十进制         ← 一律丢弃
+     结果不在范围内                            ← 丢弃，【不得改判为 HIGH/LOW】
+
+定性型（REFERENCE_VALUE_MATCH）：
+模型负责：结果归一化成 ComparableQualitativeValue 四态枚举；
+         参考值【展开成允许取值的集合】（「阴性或弱」→ [NEGATIVE, WEAK_POSITIVE]）
+Java 负责：只做集合包含，见 ExtractionValidationPipeline.referenceValueAdmits
+     【绝不做字面子串匹配】「阳性」是「弱阳性」的子串，字面包含会把异常判成正常
+     【NOT_DETECTED 与 NEGATIVE 不是同义词】——要认等价，模型在归一化时就要统一
+     枚举外的取值、两侧不等、valueMatch 为 null → 该指标不展示
+     ⚠️ 归一化枚举【无法回溯原文】，这条路径对模型归一化是信任关系而非校验关系
+        （数值型的上下界可以逐字核验，两者信任边界不同）
+```
+
+**`status = NORMAL` 的语义边界**：走这两条路径时，`NORMAL` 只表示
+「符合本报告给出的参考值」，**不表示未发现疾病、更不表示身体正常**。
+接口字段说明与页面文案必须同口径（需求 §5-3）。
 
 ```
 【结论为「正常」的项同样要抽】—— 模块一展示全部有结论的指标，不是只展示异常的
      textualFindings 里同样有正常项：「肝胆B超：未见明显异常」「心电图：窦性心律，正常心电图」
      它们靠 status 区分，status = NORMAL 时 includeInHealthProblems 必须为 false
 
-Java 侧的后果：模块一的「总指标数」会明显少于报告的「总项目数」
-     只列数值不给结论的项在生化全套、血常规里常占 30~40%，这是设计选择不是 bug（§7.2）
-     【Java 不得为了对齐数字而把「有数值无结论」的项补回来】
+Java 侧的后果：模块一的「总指标数」仍可能少于报告的「总项目数」
+     参考范围准入补回了「有数值无结论但有参考值」的那批（实测样本 A 从 31 项涨到 56 项）
+     剩下的缺口是「无结论且无可用参考值」的项，这是设计选择不是 bug（§7.2）
+     【Java 不得为了对齐数字而把它们补回来，也不得放宽参考范围准入的四条硬规则】
 ```
 
 ### 6.4 来源校验：凡声明「来自报告原文」的字符串都要能回切
@@ -2724,7 +2760,7 @@ Java 侧的后果：模块一的「总指标数」会明显少于报告的「总
 | `textSource` | 校验方式 |
 |---|---|
 | `NATIVE` | **严格子串**：规范化(字段值) 必须是合并 `normalizedText` 的子串 |
-| `OCR` | **放宽**：去全部空白后子串匹配；仍不中则归一化后编辑距离 ≤ 1，记 `ocrFuzzyMatchCount` |
+| `OCR` | **放宽**：去全部空白后子串匹配；仍不中则归一化后编辑距离 ≤ 1 |
 
 > OCR 放宽是必须的：OCR 把 `2.8` 认成 `2.6` 时，模型看图正确读出 `2.8`，
 > 严格匹配会把**正确的抽取结果**杀掉，而拍照上传是主流形态。
@@ -2733,7 +2769,7 @@ Java 侧的后果：模块一的「总指标数」会明显少于报告的「总
 
 | 字段 | 校验对象 | 不过时 |
 |---|---|---|
-| `indicators`：`name` `value` `unit` `refRange` `conclusionText` | 该条目 `segmentIds` 合并文本 | 该指标**整条丢弃**，记 `evidenceMissCount` |
+| `indicators`：`name` `value` `unit` `refRange` `conclusionText` | 该条目 `segmentIds` 合并文本 | 该指标**整条丢弃** |
 | `indicators.problemName`（非 null 时） | 同上 | 降为 `null`，走 §7.3 拼接分支，**不丢条目** |
 | `textualFindings`：`title` `conclusionText` | 该条目 `segmentIds` | 该条**整条丢弃** |
 | `allergens`：`rawName` `rawResult` | 该条目 `segmentIds` | 该条丢弃，**且触发 `ALLERGEN_SUSPECT_MISS`** |
@@ -2745,7 +2781,7 @@ Java 侧的后果：模块一的「总指标数」会明显少于报告的「总
 ```
 展示原文类长文本一律不用模型返回值：健康问题 rawText、饮食建议来源原文
     → Java 按 segmentId 取整段 rawText，模型只负责指路
-segmentId 不存在 → 该条整条丢弃，记 evidenceMissCount
+segmentId 不存在 → 该条整条丢弃
 不给指标做字符区间切分：规范化会改变字符数（NFKC 把 ㎎ 拆成 mg），
     字段级 offset 需维护 raw↔normalized 逐字符映射表，成本远高于收益
 ```
@@ -2761,7 +2797,6 @@ segmentId 不存在 → 该条整条丢弃，记 evidenceMissCount
 阳性标记（阳性、(+)、＋）出现在过敏章节 segment 内而 allergens 为空
     → partial=true, partial_reason=ALLERGEN_SUSPECT_MISS
     → 模块一二三照常，模块四整体不输出
-    → 记 allergenSuspectMissCount
 ```
 
 **没有饮食医嘱词扫描，没有 `dietSuspectMissCount`**——它只记计数不影响输出，
@@ -2795,7 +2830,7 @@ A = allergens 各条目 segmentIds 的并集
                     ② 任一已知过敏原名称（AllergenGroups 全部 displayName + matchWord） }
 
 每个候选段必须 ∈ A
-    命中而不在 A → ALLERGEN_SUSPECT_MISS，记 allergenPositiveUncoveredCount
+    命中而不在 A → ALLERGEN_SUSPECT_MISS
 ```
 
 **分两步，只有第一步独立**：候选段从原文独立找出（模型漏多少都不影响候选集大小），
@@ -2816,7 +2851,7 @@ A = allergens 各条目 segmentIds 的并集
 
 以下都不进入，但计数口径不同：
     resultStatus == NEGATIVE        // 【不计数】筛查表里的绝大多数，计了没信息量
-    resultStatus == UNKNOWN         // 【记 allergenUnknownCount】这一行没读明白，
+    resultStatus == UNKNOWN         // 这一行没读明白，
                                     //  而它不触发任何降级，计数是唯一能看见它的地方
 ```
 
@@ -2925,7 +2960,7 @@ displayName = 单文件：sectionName
 
 ```
 Java 只在 CONTINUATION 一种取值下继承，且只做继承、不做识别
-文件的第一批就报 CONTINUATION 时没有可继承对象 → 按 UNKNOWN 处理，记 sectionUnknownCount
+文件的第一批就报 CONTINUATION 时没有可继承对象 → 按 UNKNOWN 处理
                                                 【不向前跨文件继承】
 跨批的同一章节【不会两批返回同一个 ID】——批次不重叠，后一批看不到前一批的标题块
 后两态用最小 segmentId 只是【唯一键】不是顺序键，展示顺序仍由 groupOrder 决定
@@ -3046,20 +3081,26 @@ SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 排序     = groupOrder → page → sourceOrder
 ```
 
-**高危表述安全闸（生产链路词表用法之三）：**
+**结构化准入政策（2026-08-28 重构，设计方案 §7.3）：**
 
 ```java
-// safety.HighRiskAdviceGate —— 对 rawText 做黑名单扫描
-低蛋白 / 限蛋白 / 优质低蛋白 / 低钾 / 限钾 / 低磷 / 限磷
-低碘 / 限碘 / 忌碘 / 高碘
-妊娠 / 孕期 / 哺乳期 / 儿童
+// safety.StructuredAdmission —— 两层，第一层是模型判定，第二层是 Java 词表兜底
+第一层：applicability == CURRENT_PATIENT && structuredSafety == NORMAL 才放行
+        两个枚举都由 LLM-A 给；Java【不判断年龄、不解析代词指向、不猜「儿童」在说谁】
+        缺失或非法一律按 UNCERTAIN 处理 → 抑制（fail-closed）
+
+// safety.HighRiskAdviceGate —— 不可被模型推翻的兜底，只扫 adviceQuote
+低蛋白 / 限蛋白 / 优质低蛋白 / 低钾 / 限钾 / 低磷 / 限磷 / 低碘 / 限碘 / 忌碘 / 高碘
+        【人群裸词已移除】妊娠 / 孕期 / 哺乳期 / 儿童 不再在词表里——
+        它们不是限制表述，指向谁由 applicability 判断
+        【扫描对象是 adviceQuote 不是整段 rawText】模型摘出的建议本身那一句，
+        上限 100 字、必须逐字回切；回切不过整条丢弃
 ```
 
 ```
-命中 → 打 structuredOutputSuppressed = true，该条按 OTHER 路径处理
+命中任一层 → 打 structuredOutputSuppressed = true，该条按 OTHER 路径处理
        只展示报告原文与来源，不生成食材清单、不参与菜品匹配、不进入打标维度
-       记 highRiskSuppressedCount
-【不覆写 enumKey】—— enumKey 是 LLM-A 的归一化结论，改它就是替模型下另一个结论
+   【不覆写 enumKey】—— enumKey 是 LLM-A 的归一化结论，改它就是替模型下另一个结论
                    模型原本给的值原样保留，仅用于排障归因
 ```
 
@@ -3068,8 +3109,6 @@ SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 > **【作用范围仅限营养补充与饮食注意，不含过敏原】**（2026-08-26 产品确认）
 > 过敏忌口本身就是要展示给用户的安全信息。「妊娠 / 儿童」这类词出现在过敏原原文里是常态，
 > 用它们连带抑制忌口清单，等于把最该看见的内容收掉，**方向反了**。
-> 同时 §9.3 定义 `adviceOtherCount` 是「`enumKey == OTHER` 的**建议**条数」，
-> 把过敏原计进去会让口径失真。
 > 实现上过敏原卡片的 `structuredOutputSuppressed` 恒为 `false`，
 > 只有 `enumKey == OTHER` 这一个原因会让它走 OTHER 路径。
 
@@ -3079,7 +3118,6 @@ SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 照常展示该条建议的报告原文与来源标注
 不加任何说明文字（产品决策）
 不生成食材清单、不参与菜品匹配、不进入打标维度
-记 adviceOtherCount
 ```
 
 > 这不满足需求 §7-3（要求每条建议都列食材/摄入量/搭配建议），**产品已确认接受该降级**。
@@ -3254,7 +3292,14 @@ return NEUTRAL;                                                            // �
 | `NUTRITION` | 营养补充 `RECOMMEND` | 补铁、高蛋白 | 绿 |
 | `ALLERGY` | 过敏命中 | 虾蟹过敏 | 红 |
 | `DIET_AVOID` | 饮食注意 `REJECT` | 高脂、高盐 | 橙 |
-| ~~`DIET_OK`~~ | — | **当前不会产生**，保留枚举值，前端不需实现 | 蓝 |
+| `DIET_OK` | 饮食注意 Java 正向匹配 | 低嘌呤、高纤维 | 蓝 |
+
+**`DIET_OK` 的来源与 `NUTRITION` 同构**（设计方案 §8.7.1）：LLM-B 仍只判
+`REJECT`/`UNKNOWN`/`NEUTRAL`，正向事实由 `DietPositiveMatcher` 在线做主料交集产出，
+作为与拒绝事实并列的第二条 `Match`，`rejectCapable=false`，且只在安全事实为 `NEUTRAL`
+时才计算。第一期只有 `LOW_PURINE`、`HIGH_FIBER` 开放，政策写在
+`DietRequirementRule.positiveMatchPolicy`；同文案的正面标签在
+`DishRecommendInputFactory` 内去重，营养维度优先保留。
 
 **推荐理由由 Java 拼接，不加工报告原文：**
 
@@ -3488,34 +3533,42 @@ taskId / userId 仅用于普通日志关联，也不得进 URL 查询串或分�
 清理任务每轮的删除计数
 ```
 
-### 9.3 生产计数清单（完整，不在其上的一律不实现）
+### 9.3 生产计数（2026-08-27 全部下线）
+
+**生产环境不存在任何进程级计数。** 不要实现、不要打点、不要配告警。
+
+曾经存在过、现已下线的计数名如下，禁止以任何形式重新出现：
 
 ```
-schemaMissCount                  Schema 校验失败次数
-evidenceMissCount                来源校验不过被丢弃的条目数
-ocrFuzzyMatchCount               OCR 放宽档被使用次数
-allergenSuspectMissCount         §6.5-A 触发次数
-allergenPositiveUncoveredCount   §6.5-C 触发次数
-allergenUnknownCount             resultStatus == UNKNOWN 的过敏原条数
-adviceOtherCount                 enumKey == OTHER 的建议条数
-sectionRefMissCount              §6.3-①b 条目引用无效被丢弃数
-sectionUnknownCount              sectionRelation == UNKNOWN 的章节数
-highRiskSuppressedCount          §7.4 安全闸触发次数
-glyphLevelPdfCount               §5.3 密度闸触发次数
-residualNonStandardCount         §5.2 规范化后仍有污染字符的段数
-statusJudgedByModelCount         status 由模型按临床含义判定（statusJudgedByModel=true）的指标条数
+statusConflictCount / foodBorneConflictCount / normalAdmitSuspectCount
+        —— 2026-08-25 随三张语义词表一起移入离线评测（§11.4）
+
+schemaMissCount / evidenceMissCount / ocrFuzzyMatchCount /
+allergenSuspectMissCount / allergenPositiveUncoveredCount / allergenUnknownCount /
+adviceOtherCount / sectionRefMissCount / sectionUnknownCount /
+highRiskSuppressedCount / glyphLevelPdfCount / residualNonStandardCount /
+statusJudgedByModelCount
+        —— 2026-08-27 因只写不读整体下线
 ```
 
-> **`statusJudgedByModelCount` 是直接数模型返回的一个布尔字段，不是词表扫描**，
-> 所以它不受 §0.3-② 约束。它告诉你有多大比例的判定走了模型的临床含义判断路径
-> （而非照抄方向标记），用于决定 §11.4 评测集的抽查样本量。
+**下线理由**：这 13 个计数每个都有自增点，却**没有任何读取点**——
+既不进日志、也没有导出方式，`src/main` 里连一次 getter 调用都没有，只有单测在读。
+读不到的计数不提供信息，只增加一处并发状态与一处维护负担。
 
-**新增计数前先问：它是处理过程本来就会产生的副产品，还是为了观察而额外扫一遍？**
-后者按 §0.3-② 不允许。
+随之删除的还有单次调用的 `residualNonStandardCount` 传递链：
+`TextNormalizationResult` 只保留 `normalizedText`，
+`PdfParseResult` / `OcrPageSegmentResult` / `WordParseResult` / `OfdParseResult`
+各去掉该字段——进程计数删掉后它就没有任何消费者了。
 
-**以下三个计数在生产环境不存在，不要实现、不要打点、不要配告警：**
-`statusConflictCount` / `foodBorneConflictCount` / `normalAdmitSuspectCount`。
-它们对应的三张语义词表已整体移入离线评测（§11.4）。
+> **注意区分：`DegradeAccumulator` 不是计数器，不在下线之列。**
+> 它记录的 `PAGE_TRUNCATED` / `BATCH_UNREADABLE` / `ALLERGEN_SUSPECT_MISS`
+> 直接决定任务的 `partial` 与 `partial_reason`，**影响输出**。
+> 同理 §5.3 密度闸的路由判定、§7.4 安全闸的抑制行为都保留，只是不再计数。
+> 判据仍然是那一条：**影响输出的留下，只用于观察的下线。**
+
+**将来确有观测需求时，先把导出口径定清楚再实现。** 先加计数、指望以后补导出，
+正是这 13 个的来路。契约由 `ProductionCounterContractTest` 断言：
+生产类中不得出现任何 `AtomicLong` 计数字段。
 
 ### 9.4 常量类
 
@@ -3614,6 +3667,7 @@ prompt/versions.tsv                追加式，一行一个版本，A 与 B 各�
 constants/tag-rule-versions.tsv    同构，对象换成内容常量
     tag-0.1.0-DRAFT  <sha256(全部内容常量的结构化序列化)>
     tag-1.0.0        d260666e595954828fa99ab8f87c3183d612cae2c42ea8226a6c184e6c6106c7
+    tag-1.1.0        33f8773bbd3b9277e5bffce9e9de4db379bde3d4e63da60705dd3a421c40e40f
 
 R55b / R55c 各断言四条：
     ① 末行 version == 对应常量（PromptVersions.EXTRACTION / LLM_B / TagRuleVersion.VALUE）
@@ -3634,15 +3688,20 @@ R55b / R55c 各断言四条：
 建议在 CI 加校验」，落地方式相同：
 
 ```
-R55c  对【全部进入模型输入的内容常量】做结构化摘要，与 TagRuleVersion 的 DIGEST 比对
+R55c  对【全部能改变用户可见结论的内容常量】做结构化摘要，与 TagRuleVersion 的 DIGEST 比对
       覆盖范围 = DishTagInput 的每一个内容字段 + 决定它们取值的东西：
           AllergenGroups（含 displayName —— 它作为 enumDisplayName 进请求）
           AllergenExceptions
-          NutritionContents.recommendableFoodList
           DietRequirementContents.avoidFoodList / avoidDishPatternList / cookingTipList
           每个条目的 reviewStatus            ← 状态从 DRAFT 变 REVIEWED 会改变注入内容，
                                               等价于换了一份常量，必须触发重打
+      加上不进模型输入、但直接决定 Java 推荐的两组：
+          NutritionContents.recommendableFoodList
+          DietRequirementContents 的 positiveMatchPolicy / recommendableFoodList /
+              recommendTagText / positiveReviewStatus（设计方案 §8.7.1）
       【易漏三项】cookingTipList、enumDisplayName、reviewStatus —— 都会改变模型看到的输入
+      【口径】摘要不是「进模型的东西」，是「能改结论的东西」；Java 正向内容改了也要 bump，
+              代价是一次并不改变离线标签的全量重打标，这是明知并接受的
 ```
 
 > **三条摘要测试的共同点：它们不判断内容对不对，只判断「内容变了而版本没变」。**
@@ -3771,14 +3830,26 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 |---|---|---|
 | **R7** | 过敏章节名命中而 `allergens` 为空 | `partial=true`、`partial_reason=ALLERGEN_SUSPECT_MISS`、模块四不输出、模块一二三照常 |
 | **R8** | `D \ A` 非空（有数据行无对应条目） | 同 R7 |
-| **R9** | 某 segment 同时含「牛奶」与「阳性(+)」但不在 `A` 中 | 同 R7；`allergenPositiveUncoveredCount` +1 |
+| **R9** | 某 segment 同时含「牛奶」与「阳性(+)」但不在 `A` 中 | 同 R7 |
 | **R10** | **同上但名称与结果分属两个 segment** | **不触发**——这是 §6.5-C 的已知盲区，用例存在是为了锁住行为不被「优化」成坐标配对 |
 | **R11** | `allergens` 条目来源校验失败 | 该条丢弃 **且**触发 `ALLERGEN_SUSPECT_MISS` |
-| **R12** | `resultStatus` 分别为 `NEGATIVE` / `UNKNOWN` | 都不进链路；`NEGATIVE` 不计数，`UNKNOWN` 计入 `allergenUnknownCount` |
+| **R12** | `resultStatus` 分别为 `NEGATIVE` / `UNKNOWN` | 都不进链路 |
 | **R13** | 某菜在生效过敏维度为 `TAG_MISSING`，在营养维度为 `RECOMMEND` | 裁决为 `HIDDEN`——**不进推荐列表，也不进不推荐列表** |
 | **R14** | 遍历 `AllergenGroups` 全部组 | `avoidIngredients ∩ hiddenFoods = ∅`；两者 `matchWord` 并集 == 该 key 全部 `matchWord` |
 | **R15** | 高危表述「低蛋白饮食」映射到 `PROTEIN` | `structuredOutputSuppressed=true`、走 `OTHER` 路径、**`enumKey` 原值保留未被覆写** |
+| **R15a** | `applicability=CURRENT_PATIENT` + `structuredSafety=NORMAL` 的常规建议 | 正常进入结构化链路 |
+| **R15b** | 邻句含「儿童」但 `adviceQuote` 只摘了「低脂、低糖饮食」 | **不得抑制**——F3 的误杀现场，词表已不含人群裸词且只扫 `adviceQuote` |
+| **R15c** | `applicability=GENERAL_INFORMATION`（科普段落里的饮食表述） | 抑制；靠适用范围而不是词表 |
+| **R15d** | `applicability=CURRENT_PATIENT` + `structuredSafety=SPECIAL_POPULATION` | 抑制；建议确实给本人但涉特殊人群 |
+| **R15e** | 任一枚举为 `UNCERTAIN` 或缺失 | 抑制（fail-closed） |
+| **R15f** | 模型判 `NORMAL` 但 `adviceQuote` 含「优质低蛋白」 | 抑制；词表兜底不可被模型推翻 |
+| **R15g** | `adviceQuote` 缺失或回切不过 | 该条建议**整条丢弃**，不进任何模块 |
 | **R16** | 过敏维度 `REJECT` 的菜同时有营养 `RECOMMEND` | 只下发过敏标签，**无任何正面标签**（灰色附注也不行） |
+| **R16a** | `LOW_PURINE` 生效、LLM-B 判 `NEUTRAL`、菜品主料命中低嘌呤白名单 | 产出 `DIET_OK`「低嘌呤」推荐，理由带命中主料与报告原文；候选上有**两条** `Match`（安全 + 正向） |
+| **R16b** | 同一维度 LLM-B 判 `REJECT` / `UNKNOWN` / `TAG_MISSING`，主料仍命中白名单 | 一律**不产出**正向 `Match`：`REJECT` 进不推荐且无灰色附注，另两种裁决为 `HIDDEN` |
+| **R16c** | `LOW_FAT` 等七个未开放维度，主料命中其展示食材 | 保持 REJECT-only，正向 `Match` 不存在；`positiveMatchPolicy=NONE` |
+| **R16d** | 报告同时给出「高纤维饮食」与「补充膳食纤维」，菜品主料是燕麦 | 正面标签「高纤维」**只出现一次**、推荐理由只出一条（营养维度优先保留） |
+| **R16e** | 遍历 `DietRequirementContents` 全部维度 | 只有 `LOW_PURINE`、`HIGH_FIBER` 的 `positiveRecommendEnabled()` 为真；`HIGH_FIBER.recommendableFoodList` == `DIETARY_FIBER.recommendableFoodList`（不含白菜）；推荐食材与本维度 `avoidFoodList` 不相交 |
 
 #### 契约与确定性
 
@@ -3791,8 +3862,26 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R18c** | xxl-job Handler 注册数 | `dish` 包内只有**一个** `@XxlJob` Handler，打标与清理是它的两步（防止有人拆成两个 Handler 后 `bizDate` 又分叉） |
 | **R19** | `blockRefs` 传字符串 / 越界 / 重复 / 33 条 | Schema 或展开层拒绝，行为符合 §6.3 |
 | **R20** | `sections[i].sectionIndex != i` | 整批 `FAILED / SERVER_ERROR` |
-| **R21** | 条目 `sectionIndex` 指向不存在的章节 | 该条目整条丢弃、`sectionRefMissCount` +1、**其余条目不受影响** |
-| **R21a** | 构造「有数值无结论」的指标行 | **不出现在任何模块**；Java 不得为对齐总览数字把它补回来（§6.3.1） |
+| **R21** | 条目 `sectionIndex` 指向不存在的章节 | 该条目整条丢弃、**其余条目不受影响** |
+| **R21a** | 构造「有数值无结论**且无参考值**」的指标行 | **不出现在任何模块**；Java 不得为对齐总览数字把它补回来（§6.3.1） |
+| **R21b** | 「有数值无结论**但有参考值**」且结果落在范围内 | 进模块一，`conclusionBasis=REFERENCE_RANGE_IN_RANGE`、`status=NORMAL`、`conclusionText=null`、卡片 `conclusionGenerated=true` |
+| **R21c** | 同上但结果**超出**参考范围 | **不展示**；不得改判为 `HIGH`/`LOW`——报告没写的结论系统不生成 |
+| **R21d** | 报告印 `4.0~10.0`，模型只报下界 `4.0`、上界给 `null`，结果 12.5 | **不展示**——省略一侧边界等于那一侧不设限，任何大值都会被判成正常 |
+| **R21e** | 报告印 `14.0~20.0`，模型报下界 `4.0`（恰好是原文子串）、上界 `20.0` | **不展示**——子串核验拦不住它，整组区间必须与原文解析结果一致 |
+| **R21f** | 报告印 `<3.0`，模型报成闭区间，结果正好 `3.0` | **不展示**——开闭标志参与核验；如实报开区间且结果在范围内时照常展示 |
+| **R21g** | `refRange` 是 `阴性`、`详见报告` 等解析不出区间的写法 | **不展示**（fail-closed），不得对着猜出来的范围宣布正常 |
+| **R21h** | `refRange`、`title` 等短字段给成 `""` 或全空白 | Schema 直接判整批作废；Java 侧来源校验对空白字段一律返回 false——空串是任意原文的子串 |
+| **R15h** | 原文「建议低蛋白、低脂饮食」，模型摘成「低脂饮食」并判 `NORMAL` | **抑制**——`adviceQuote` 与证据段原文两处都扫，任一命中即抑制，摘句绕不过方向性限制 |
+| **R15i** | 证据段被 OCR 漏识一字（「低蛋日」），而 `adviceQuote` 写着「低蛋白」 | **抑制**——两个入参各自独立命中 |
+| **R15j** | F3 原文整块（含「儿童除外」）作为证据段，建议是「低脂、低糖饮食」 | **不抑制**——扫原文不得变成新的误杀来源，词表里已无人群裸词 |
+| **R21d** | 模型给的上下界在 `refRange` 原文里找不到 | 整条丢弃（防凭空报宽区间） |
+| **R21e** | 参考值有多套人群范围、单位不一致或非数值 | 模型给 `rangeComparison=null`，该指标不展示 |
+| **R21f** | 结果恰好等于开/闭边界；`1.10` 对上界 `1.1` | 按开闭标志判定；标度差异必须判等（`compareTo` 而非 `equals`） |
+| **R21g** | 定性结果「阴性」对参考值「阴性」 | 进模块一，`conclusionBasis=REFERENCE_VALUE_MATCH`、卡片文案「符合报告参考值」 |
+| **R21g2** | 定性结果「阴性」对参考值「阴性或弱」（尿胆原真实场景） | 展开为 `["NEGATIVE","WEAK_POSITIVE"]`，结果在集合内 → 展示 |
+| **R21g3** | 定性结果「阳性」对参考值「弱阳性」 | **不展示**；不得因「阳性」是「弱阳性」的子串而放行 |
+| **R21h** | 定性结果 `NEGATIVE` 对参考值 `NOT_DETECTED` | **不展示**；Java 不得把两者当同义词 |
+| **R21i** | 归一化取值落在四态枚举之外（如 `NEG`） | **Schema 直接拒绝、整批契约失败**；枚举是契约的一部分，不是悄悄丢一条 |
 | **R22** | LLM-B 返回缺一个 `dishId` / 多一个 / 三个列表有交集 | 整批作废，不写库、不重试 |
 | **R23** | 用 `schema/*.json` 校验文档 §4.2 与 §8.2 的示例 | 全部 PASS；两个 Schema 自身通过 `check_schema` |
 | **R24** | `patient.name` 非空但证据数组为空 | Schema 拒绝 |
@@ -3804,7 +3893,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 |---|---|---|
 | **R26** | 同页两个章节，各自第 1 条 `sourceOrder` 都是 0 | 顺序由 `groupOrder` 分开，**不乱序** |
 | **R27** | 同一章节跨两批（前批 `CURRENT`、后批 `CONTINUATION`） | 合并为一组；后批**没有**返回相同 `sectionSegmentId` |
-| **R28** | 文件第一批就报 `CONTINUATION` | 按 `UNKNOWN` 处理、`sectionUnknownCount` +1、**不向前跨文件继承** |
+| **R28** | 文件第一批就报 `CONTINUATION` | 按 `UNKNOWN` 处理、**不向前跨文件继承** |
 | **R29** | 一个条目跨页引用（`blockRefs` 含 p2 和 p3） | `item.page = 2`（取 min） |
 | **R30** | 两份报告都有「血脂检查」 | 展示为**两个独立分组**，不合并 |
 | **R31** | `problemName = null` 的指标 | `displayName = "甘油三酯 ↑"`（两段原文拼接），**不出现「偏高」**；`displayNameGenerated=true` |
@@ -3832,7 +3921,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R42** | PDF 每页 segment 数 > 400 | 该文件整体改走 OCR，`textSource=OCR`，`glyphLevelPdfCount` +1 |
+| **R42** | PDF 每页 segment 数 > 400 | 该文件整体改走 OCR，`textSource=OCR` |
 | **R43** | OCR 某页识别块 > 400 | **整任务 `FAILED/UNREADABLE`**，不做局部截断，不新增 `partial_reason` |
 | **R43a** | 精确 `totalPages` = 45（三档中的 31~60） | 只处理前 30 等效页；`processedPages=30`、`totalPages=45`；`PAGE_TRUNCATED`；模块三四不输出 |
 | **R43b** | 不含 Word，上传文件的 `precheck_pages` 累计为 61 | analyze 直接拒绝 `PAGE_LIMIT_EXCEEDED`，**不建任务行、不绑文件** |
@@ -3854,7 +3943,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R43e** | 三个降级原因全部命中 | 三个布尔全 `true`；`partialReason=PAGE_TRUNCATED`；模块三四都不输出 |
 | **R44** | 一批 `UNREADABLE`、其余正常 | 该批丢弃，`partial_reason=BATCH_UNREADABLE`，模块三四不输出 |
 | **R45** | 全部批次 `NO_REPORT_FEATURE` | `FAILED/NOT_HEALTH_REPORT`（**不是 `UNREADABLE`**） |
-| **R46** | OCR 文本把 `2.8` 认成 `2.6`，模型给 `2.8` | 放宽档通过（编辑距离 1），`ocrFuzzyMatchCount` +1；`NATIVE` 档同样输入应拒绝 |
+| **R46** | OCR 文本把 `2.8` 认成 `2.6`，模型给 `2.8` | 放宽档通过（编辑距离 1）；`NATIVE` 档同样输入应拒绝 |
 | **R47** | DOCX 解压炸弹 | 流式计数中断，不信 `getSize()` |
 
 #### 数据生命周期与日志
@@ -3866,7 +3955,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R50** | `SUCCEEDED` 后跑清理 | 原文件与 file 行立即删；task 行保留至顺延后的 `expire_at` |
 | **R51** | `FAILED` 且 `reanalyzable=1` 后跑清理 | 原文件**保留**至 `expire_at`（否则「重新解析」形同虚设） |
 | **R52** | 任意实体的 insert / update | SQL 中**不出现** `create_time` / `update_time` |
-| **R53** | 一批指标中 `statusJudgedByModel` 有 true 有 false | `statusJudgedByModelCount` 只数 true 的条数 |
+| **R53** | 一批指标中 `statusJudgedByModel` 有 true 有 false | 字段原样透传，Java **不做任何 status 校验**，两种取值都不影响输出 |
 
 #### LLM-A 直连红线（§6.2.1）
 
@@ -4105,7 +4194,9 @@ LLM-B 契约校验（§8.2）
 
 **验收**：R13、R16、R33 通过。
 **`MOLLUSK` / `SESAME` 的工程补齐已完成**（§0.4）；部署该版本时必须按
-`tagRuleVersion=tag-1.0.0` 全量重打，不能沿用旧缓存。
+`tagRuleVersion=tag-1.1.0` 全量重打，不能沿用旧缓存。
+`tag-1.1.0` 只新增了 Java 侧正向匹配内容（设计方案 §8.7.1），提示词与离线标签语义没变，
+这一次重打标是版本口径的代价，不是模型行为变化。
 
 ### 批次 9 — 收口
 

@@ -9,7 +9,11 @@ package com.example.healthreport.constants;
  * <li>{@link AllergenGroups} 的任何词条</li>
  * <li>{@link AllergenExceptions} 的任何例外</li>
  * <li>{@link NutritionContents} 的 recommendableFoodList</li>
- * <li>{@link DietRequirementContents} 的 avoidFoodList / avoidDishPatternList</li>
+ * <li>{@link DietRequirementContents} 的 avoidFoodList / avoidDishPatternList / cookingTipList
+ * ——前两项与 cookingTipList 都会随维度批次进入 LLM-B 提示词</li>
+ * <li>{@link DietRequirementContents} 的 positiveMatchPolicy / recommendableFoodList /
+ * recommendTagText / positiveReviewStatus ——它们不进提示词，只驱动 Java 正向匹配，
+ * 但与 {@link NutritionContents} 的 recommendableFoodList 同理：能改变用户可见结论的内容一律版本钉住</li>
  * </ul>
  * <p>
  * <b>忘记 bump 的后果是静默的</b>：菜和食材都没变，凌晨预热的 diff 会认为标签已存在而跳过， 新规则永远不生效，且不报错、不告警。建议在 CI
@@ -23,8 +27,8 @@ package com.example.healthreport.constants;
  */
 public final class TagRuleVersion {
 
-	/** 2026-08-27 全量内容裁决并补齐软体动物、芝麻后的首个发布候选版本。 */
-	public static final String VALUE = "tag-1.0.0";
+	/** 2026-08-28 饮食注意维度开放 LOW_PURINE、HIGH_FIBER 的 Java 确定性推荐后的版本。 */
+	public static final String VALUE = "tag-1.1.0";
 
 	private TagRuleVersion() {
 	}

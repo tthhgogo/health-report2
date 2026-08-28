@@ -149,12 +149,12 @@ class ExtractionStageServiceTest {
         ValidatedExtractionOutput.Indicator abnormalIndicator =
                 new ValidatedExtractionOutput.Indicator(0, 0, 0, 0, 0, 1,
                         Collections.singletonList(segmentId), "甘油三酯隐私标记", "2.8",
-                        "mmol/L", "0.45-1.69", "偏高", IndicatorStatus.HIGH,
+                        "mmol/L", "0.45-1.69", "偏高", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.HIGH,
                         false, true, "血脂异常隐私标记");
         ValidatedExtractionOutput.Indicator normalIndicator =
                 new ValidatedExtractionOutput.Indicator(0, 0, 0, 1, 1, 1,
                         Collections.singletonList(segmentId), "正常指标隐私标记", "1.0",
-                        "mmol/L", "0.45-1.69", "正常", IndicatorStatus.NORMAL,
+                        "mmol/L", "0.45-1.69", "正常", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL,
                         false, false, null);
         ValidatedExtractionOutput.TextualFinding textualFinding =
                 new ValidatedExtractionOutput.TextualFinding(0, 0, 0, 2, 2, 1,

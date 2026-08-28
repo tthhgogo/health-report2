@@ -80,18 +80,15 @@ public class WordSegmentParser {
             embeddedImageCount = parseDoc(contentBytes, pendingSegmentList);
         }
         List<Segment> segmentList = new ArrayList<Segment>(pendingSegmentList.size());
-        int residualCount = 0;
         for (int index = 0; index < pendingSegmentList.size(); index++) {
             PendingSegment pendingSegment = pendingSegmentList.get(index);
             TextNormalizationResult normalizationResult = textNormalizer.normalize(pendingSegment.rawText);
-            residualCount += normalizationResult.getResidualNonStandardCount();
-            textNormalizer.recordResidualSegment(normalizationResult);
             int pageNumber = index / WordCapacityGuard.SEGMENTS_PER_PAGE + 1;
             segmentList.add(new Segment(Segment.id(fileIndex, pageNumber, index), pendingSegment.rawText,
                     normalizationResult.getNormalizedText(), pendingSegment.textSource, null));
         }
         WordCapacityResult capacity = wordCapacityGuard.check(segmentList, embeddedImageCount);
-        return new WordParseResult(segmentList, capacity, residualCount);
+        return new WordParseResult(segmentList, capacity);
     }
 
     private int parseDocx(byte[] contentBytes, List<PendingSegment> pendingSegmentList) throws IOException {

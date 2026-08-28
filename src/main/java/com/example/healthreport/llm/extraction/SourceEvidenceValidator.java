@@ -23,25 +23,26 @@ public class SourceEvidenceValidator {
     private static final int OCR_MAX_EDIT_DISTANCE = 1;
 
     private final TextNormalizer textNormalizer;
-    private final ExtractionValidationCounters counters;
 
-    public SourceEvidenceValidator(TextNormalizer textNormalizer, ExtractionValidationCounters counters) {
-        if (textNormalizer == null || counters == null) {
+    public SourceEvidenceValidator(TextNormalizer textNormalizer) {
+        if (textNormalizer == null) {
             throw new IllegalArgumentException("来源校验依赖不能为空");
         }
         this.textNormalizer = textNormalizer;
-        this.counters = counters;
     }
 
     /**
      * 校验一个短字段是否能在证据段合并文本中回切。
      *
-     * @return 严格或 OCR 放宽匹配成功时为 true；证据不存在时为 false
+     * <p><b>空白字段一律不通过</b>：空串是任意文本的子串，放行等于对这个字段取消来源校验
+     * ——模型只要把 refRange、title 之类的字段给成 {@code ""}，就能带着一个查无实据的字段进入展示。</p>
+     *
+     * @return 严格或 OCR 放宽匹配成功时为 true；字段为空白或证据不存在时为 false
      */
     public boolean matches(String fieldValue, List<String> segmentIdList,
                            Map<String, Segment> segmentByIdMap) {
-        if (fieldValue == null || segmentIdList == null || segmentIdList.isEmpty()
-                || segmentByIdMap == null) {
+        if (fieldValue == null || fieldValue.trim().isEmpty() || segmentIdList == null
+                || segmentIdList.isEmpty() || segmentByIdMap == null) {
             return false;
         }
         StringBuilder evidenceBuilder = new StringBuilder();
@@ -67,7 +68,6 @@ public class SourceEvidenceValidator {
             return true;
         }
         if (containsSubstringWithinOneEdit(compactEvidence, compactField)) {
-            counters.recordOcrFuzzyMatch();
             return true;
         }
         return false;

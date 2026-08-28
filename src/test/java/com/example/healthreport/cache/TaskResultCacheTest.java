@@ -3,15 +3,16 @@ package com.example.healthreport.cache;
 import com.example.healthreport.assemble.indicator.IndicatorAssembler;
 import com.example.healthreport.assemble.problem.ProblemAssembler;
 import com.example.healthreport.assemble.dietadvice.DietAdviceAssembler;
-import com.example.healthreport.assemble.dietadvice.DietAdviceCounters;
 import com.example.healthreport.assemble.dietadvice.DietAdviceInputFactory;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendAssembler;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendInput;
 import com.example.healthreport.assemble.sort.DisplayOrder;
 import com.example.healthreport.dish.TagStateResolver;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
+import com.example.healthreport.parse.segment.TextNormalizer;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutputTestFactory;
 import com.example.healthreport.safety.HighRiskAdviceGate;
+import com.example.healthreport.safety.StructuredAdmission;
 import com.example.healthreport.task.DegradeAccumulator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,7 +54,7 @@ class TaskResultCacheTest {
         IndicatorAssembler.Result moduleOne = new IndicatorAssembler(displayOrder).assemble(output, 1);
         ProblemAssembler.Result moduleTwo = new ProblemAssembler(displayOrder).assemble(output, 1);
         DietAdviceAssembler.Result moduleThree = new DietAdviceAssembler(
-                new HighRiskAdviceGate(), new DietAdviceCounters()).assemble(
+                new StructuredAdmission(new HighRiskAdviceGate(new TextNormalizer()))).assemble(
                 new DietAdviceInputFactory(displayOrder).create(output, 1));
         DishRecommendAssembler.Result moduleFour = new DishRecommendAssembler(
                 new TagStateResolver(), displayOrder).assemble(new DishRecommendInput(false, false,

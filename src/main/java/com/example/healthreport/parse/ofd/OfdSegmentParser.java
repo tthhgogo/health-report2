@@ -40,7 +40,6 @@ public class OfdSegmentParser {
     public OfdParseResult parse(byte[] contentBytes, int fileIndex) throws IOException {
         zipBombGuard.inspect(contentBytes);
         List<Segment> segmentList = new ArrayList<Segment>();
-        int residualCount = 0;
         int sequence = 0;
         try (OFDReader reader = new OFDReader(new ByteArrayInputStream(contentBytes))) {
             int pageCount = reader.getNumberOfPages();
@@ -58,14 +57,12 @@ public class OfdSegmentParser {
                         continue;
                     }
                     TextNormalizationResult normalizationResult = textNormalizer.normalize(rawText);
-                    residualCount += normalizationResult.getResidualNonStandardCount();
-                    textNormalizer.recordResidualSegment(normalizationResult);
                     segmentList.add(new Segment(Segment.id(fileIndex, pageNumber, sequence++), rawText,
                             normalizationResult.getNormalizedText(), TextSource.NATIVE,
                             pageScale.toRenderedBox(textObject.getBoundary())));
                 }
             }
-            return new OfdParseResult(segmentList, pageCount, residualCount);
+            return new OfdParseResult(segmentList, pageCount);
         }
     }
 

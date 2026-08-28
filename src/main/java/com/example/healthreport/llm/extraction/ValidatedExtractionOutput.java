@@ -215,7 +215,11 @@ public final class ValidatedExtractionOutput {
 
 		private final String refRange;
 
+		/** 报告印出的结论原文；报告没印结论时为 null，此时 conclusionBasis 必为参考范围准入。 */
 		private final String conclusionText;
+
+		/** 结论来源；决定展示层是「引用报告原文」还是「系统按参考范围判定」。 */
+		private final IndicatorConclusionBasis conclusionBasis;
 
 		private final IndicatorStatus status;
 
@@ -227,8 +231,8 @@ public final class ValidatedExtractionOutput {
 
 		Indicator(int fileIndex, int batchIndex, int sectionIndex, int orderInSection, int itemIndex, int page,
 				List<String> segmentIdList, String name, String value, String unit, String refRange,
-				String conclusionText, IndicatorStatus status, boolean statusJudgedByModel,
-				boolean includeInHealthProblems, String problemName) {
+				String conclusionText, IndicatorConclusionBasis conclusionBasis, IndicatorStatus status,
+				boolean statusJudgedByModel, boolean includeInHealthProblems, String problemName) {
 			this.fileIndex = fileIndex;
 			this.batchIndex = batchIndex;
 			this.sectionIndex = sectionIndex;
@@ -241,6 +245,7 @@ public final class ValidatedExtractionOutput {
 			this.unit = unit;
 			this.refRange = refRange;
 			this.conclusionText = conclusionText;
+			this.conclusionBasis = conclusionBasis;
 			this.status = status;
 			this.statusJudgedByModel = statusJudgedByModel;
 			this.includeInHealthProblems = includeInHealthProblems;
@@ -403,8 +408,18 @@ public final class ValidatedExtractionOutput {
 
 		private final T enumKey;
 
+		/** 建议本身那一句原文；安全检查只扫它，不扫用于展示的整段原文。 */
+		private final String adviceQuote;
+
+		/** 这条建议给谁的，由模型判断。 */
+		private final AdviceApplicability applicability;
+
+		/** 这条建议是什么性质，由模型判断。 */
+		private final AdviceStructuredSafety structuredSafety;
+
 		AdviceItem(int fileIndex, int batchIndex, int sectionIndex, int sourceOrder, Integer itemNo, int itemIndex,
-				int page, List<String> segmentIdList, T enumKey) {
+				int page, List<String> segmentIdList, T enumKey, String adviceQuote,
+				AdviceApplicability applicability, AdviceStructuredSafety structuredSafety) {
 			this.fileIndex = fileIndex;
 			this.batchIndex = batchIndex;
 			this.sectionIndex = sectionIndex;
@@ -414,6 +429,9 @@ public final class ValidatedExtractionOutput {
 			this.page = page;
 			this.segmentIdList = immutableList(segmentIdList);
 			this.enumKey = enumKey;
+			this.adviceQuote = adviceQuote;
+			this.applicability = applicability;
+			this.structuredSafety = structuredSafety;
 		}
 
 	}

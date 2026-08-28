@@ -48,7 +48,7 @@ class PromptAndArchitectureContractTest {
 
 	@Test
 	void promptConstantsHeadersHistoryAndDigestsShouldStayAligned() throws Exception {
-		assertThat(PromptVersions.EXTRACTION).isEqualTo("extraction-2.3.2");
+		assertThat(PromptVersions.EXTRACTION).isEqualTo("extraction-2.4.0");
 		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.2");
 		assertPromptVersion("prompt/extraction.md", PromptVersions.EXTRACTION);
 		assertPromptVersion("prompt/dish_tag.md", PromptVersions.DISH_TAG);

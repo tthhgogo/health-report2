@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://health-report/schema/dish_tag_output.schema.json",
   "title": "菜品维度打标输出（紧凑格式）",
-  "description": "菜品打标的批次输出。一次调用处理一个 enumKey × 一批菜品（≤40 道）。只用于食入性过敏原与饮食注意两类维度共 22 个，不产生 RECOMMEND；营养补充 9 个维度由 Java 确定性交集匹配，不调本模型。结论三态：REJECT（有成分依据）/ UNKNOWN（数据不足判不出）/ NEUTRAL（能确认不含）。【食材表不含调味料，所以过敏维度的 NEUTRAL 应当罕见——判不出就是 UNKNOWN，不要写成 NEUTRAL】。NEUTRAL 与 UNKNOWN 只回 ID，但 neutralDishIds ∪ unknownDishIds ∪ hitList 必须精确等于本批全部输入 dishId，且三者两两不相交——【这条覆盖与互斥断言 JSON Schema 表达不了】（输入的 dishId 集合不在文档里），由 Java 在写库前断言，不满足则整批作废、不写库、不重试。 本 Schema 与 Java 常量类（com.example.healthreport.constants）手工保持一致，由契约测试拦截漂移——没有生成器、没有 CSV。",
+  "description": "菜品打标的批次输出。一次调用处理一个 enumKey × 一批菜品（≤40 道）。只用于食入性过敏原与饮食注意两类维度共 22 个，本模型不产生 RECOMMEND；营养补充 9 个维度由 Java 确定性交集匹配，不调本模型。结论三态：REJECT（有成分依据）/ UNKNOWN（数据不足判不出）/ NEUTRAL（能确认不含）。【食材表不含调味料，所以过敏维度的 NEUTRAL 应当罕见——判不出就是 UNKNOWN，不要写成 NEUTRAL】。NEUTRAL 与 UNKNOWN 只回 ID，但 neutralDishIds ∪ unknownDishIds ∪ hitList 必须精确等于本批全部输入 dishId，且三者两两不相交——【这条覆盖与互斥断言 JSON Schema 表达不了】（输入的 dishId 集合不在文档里），由 Java 在写库前断言，不满足则整批作废、不写库、不重试。 本 Schema 与 Java 常量类（com.example.healthreport.constants）手工保持一致，由契约测试拦截漂移——没有生成器、没有 CSV。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -63,7 +63,7 @@
     "hitList": {
       "type": "array",
       "maxItems": 40,
-      "description": "只放 REJECT 的菜品，因为只有 REJECT 需要携带证据。NEUTRAL 进 neutralDishIds，UNKNOWN 进 unknownDishIds。任何维度都不产生 RECOMMEND，见 verdict 说明。",
+      "description": "只放 REJECT 的菜品，因为只有 REJECT 需要携带证据。NEUTRAL 进 neutralDishIds，UNKNOWN 进 unknownDishIds。本模型任何维度都不产生 RECOMMEND，见 verdict 说明。",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -84,7 +84,7 @@
             "enum": [
               "REJECT"
             ],
-            "description": "22 个打标维度【一条 RECOMMEND 规则都没有】：DietRequirementRule 结构上没有可推荐字段，营养维度的可推荐食材在 NutritionContents 且由 Java 确定性交集计算，不走本模型。因此本枚举是 REJECT-only，这是类型保证而非约定。若将来给 DietRequirementRule 加上可推荐字段，维度枚举与规则字段的契约测试会立即失败，提醒同步放开本枚举。"
+            "description": "22 个打标维度【模型侧一条 RECOMMEND 规则都没有】：正面标签是对用户的健康承诺，不由模型生成。营养维度的可推荐食材在 NutritionContents，饮食注意的可推荐食材在 DietRequirementRule.recommendableFoodList，两者都由 Java 按主料交集确定性计算，不走本模型（设计方案 §8.7.1）。因此本枚举是 REJECT-only，这是类型保证而非约定：模型永远只回答安全问题，Java 才回答推荐问题。"
           },
           "evidenceType": {
             "type": "string",

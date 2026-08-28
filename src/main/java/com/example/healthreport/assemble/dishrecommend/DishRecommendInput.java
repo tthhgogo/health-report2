@@ -87,7 +87,7 @@ public final class DishRecommendInput {
         /** 饮食注意拒绝标签。 */
         DIET_AVOID,
 
-        /** 当前不产生，仅为公开枚举兼容保留。 */
+        /** 饮食注意正面标签，由 Java 确定性主料交集产出，与 LLM-B 的安全结论无关。 */
         DIET_OK
     }
 }

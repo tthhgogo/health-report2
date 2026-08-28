@@ -119,7 +119,6 @@ class PdfSegmentParserTest {
             PdfParseResult result = parser.parse(exceeded, 0);
             assertThat(result.isOcrRequired()).isTrue();
             assertThat(result.getSegmentList()).isEmpty();
-            assertThat(densityGate.glyphLevelPdfCount()).isEqualTo(1L);
         }
     }
 

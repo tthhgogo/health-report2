@@ -11,7 +11,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -36,6 +38,7 @@ class ContentConstantsReviewTest {
 		}
 		for (DietRequirementRule rule : DietRequirementContents.ALL.values()) {
 			assertThat(rule.getReviewStatus()).isNotEqualTo(ReviewStatus.DRAFT);
+			assertThat(rule.getPositiveReviewStatus()).isNotEqualTo(ReviewStatus.DRAFT);
 		}
 	}
 
@@ -153,6 +156,63 @@ class ContentConstantsReviewTest {
 		assertThat(fallback.matches(AllergenGroups.MOLLUSK, dish(5L, "素蚝油生菜"))).isFalse();
 		Dish explicitOyster = new Dish(6L, "素蚝油生菜", Collections.singletonList(new DishIngredient("牡蛎", null)));
 		assertThat(fallback.matches(AllergenGroups.MOLLUSK, explicitOyster)).isTrue();
+	}
+
+	/** 第一期只放开可从主料确证的两个维度，其余七个必须保持 REJECT-only。 */
+	@Test
+	void onlyPurineAndFiberShouldOpenDeterministicRecommendation() {
+		Set<DietRequirementKey> openedKeySet = new HashSet<DietRequirementKey>();
+		for (Map.Entry<DietRequirementKey, DietRequirementRule> entry : DietRequirementContents.ALL.entrySet()) {
+			DietRequirementRule rule = entry.getValue();
+			if (rule.positiveRecommendEnabled()) {
+				openedKeySet.add(entry.getKey());
+				assertThat(rule.getPositiveMatchPolicy())
+						.isEqualTo(PositiveMatchPolicy.MAIN_INGREDIENT_INTERSECTION);
+				assertThat(rule.getRecommendableFoodList()).isNotEmpty();
+				assertThat(rule.getRecommendTagText()).isNotEmpty();
+			}
+			else {
+				assertThat(rule.getPositiveMatchPolicy()).isEqualTo(PositiveMatchPolicy.NONE);
+				assertThat(rule.getRecommendableFoodList()).isEmpty();
+				assertThat(rule.getRecommendTagText()).isEmpty();
+			}
+		}
+		assertThat(openedKeySet).containsExactlyInAnyOrder(DietRequirementKey.LOW_PURINE,
+				DietRequirementKey.HIGH_FIBER);
+	}
+
+	/** 限酒靠「食材表里没有酒」推不出推荐：配料表不含调味料，缺证据不是安全证据。 */
+	@Test
+	void alcoholAndSeasoningDependentDimensionsShouldNeverCarryPositiveContent() {
+		for (DietRequirementKey key : Arrays.asList(DietRequirementKey.LIMIT_ALCOHOL,
+				DietRequirementKey.LIGHT_DIET, DietRequirementKey.LOW_FAT, DietRequirementKey.LOW_SODIUM,
+				DietRequirementKey.LOW_ADDED_SUGAR, DietRequirementKey.LOW_CHOLESTEROL,
+				DietRequirementKey.LOW_CALORIE)) {
+			DietRequirementRule rule = DietRequirementContents.ALL.get(key);
+			assertThat(rule.positiveRecommendEnabled()).isFalse();
+			assertThat(rule.getPositiveReviewStatus()).isEqualTo(ReviewStatus.REJECTED);
+		}
+	}
+
+	/** 高纤维的推荐食材必须与营养侧同一份已审核清单一致，白菜只展示不推荐。 */
+	@Test
+	void fiberRecommendationShouldReuseTheAuditedNutritionFoodListWithoutCabbage() {
+		assertThat(DietRequirementContents.HIGH_FIBER.getRecommendableFoodList())
+				.isEqualTo(NutritionContents.DIETARY_FIBER.getRecommendableFoodList());
+		assertThat(DietRequirementContents.HIGH_FIBER.getRecommendableFoodList())
+				.doesNotContain("白菜");
+		assertThat(DietRequirementContents.HIGH_FIBER.getDisplayOnlyFoodList()).contains("白菜");
+	}
+
+	/** 同一维度的推荐食材不得同时出现在该维度的拒绝词里，否则规则自相矛盾。 */
+	@Test
+	void recommendableFoodShouldNeverOverlapAvoidWordsOfTheSameDimension() {
+		for (DietRequirementRule rule : DietRequirementContents.ALL.values()) {
+			for (String food : rule.getRecommendableFoodList()) {
+				assertThat(rule.getAvoidFoodList()).doesNotContain(food);
+				assertThat(rule.getAvoidDishPatternList()).doesNotContain(food);
+			}
+		}
 	}
 
 	/** 高风险补钾只展示不推荐，高纤维也不以模糊菜式生成自动拒绝。 */

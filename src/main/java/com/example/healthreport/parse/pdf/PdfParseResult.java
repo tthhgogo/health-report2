@@ -14,13 +14,11 @@ public final class PdfParseResult {
     private final List<Segment> segmentList;
     private final boolean ocrRequired;
     private final int pageCount;
-    private final int residualNonStandardCount;
 
     public PdfParseResult(List<Segment> segmentList, boolean ocrRequired,
-                          int pageCount, int residualNonStandardCount) {
+                          int pageCount) {
         this.segmentList = Collections.unmodifiableList(new ArrayList<Segment>(segmentList));
         this.ocrRequired = ocrRequired;
         this.pageCount = pageCount;
-        this.residualNonStandardCount = residualNonStandardCount;
     }
 }

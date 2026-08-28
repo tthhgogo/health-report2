@@ -16,8 +16,7 @@ class SourceEvidenceValidatorTest {
 
     @Test
     void shouldAllowOneOcrEditButRejectSameNativeMismatch() {
-        ExtractionValidationCounters counters = new ExtractionValidationCounters();
-        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer(), counters);
+        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer());
         Segment ocrSegment = segment("f0-p1-s0", "AB6", TextSource.OCR);
         Segment nativeSegment = segment("f0-p1-s1", "AB6", TextSource.NATIVE);
         Map<String, Segment> segmentByIdMap = new LinkedHashMap<String, Segment>();
@@ -28,43 +27,55 @@ class SourceEvidenceValidatorTest {
                 segmentByIdMap)).isTrue();
         assertThat(validator.matches("AB8", Collections.singletonList(nativeSegment.getSegmentId()),
                 segmentByIdMap)).isFalse();
-        assertThat(counters.getOcrFuzzyMatchCount().get()).isEqualTo(1L);
     }
 
     @Test
     void shouldAcceptWhitespaceInsensitiveOcrWithoutCountingFuzzyMatch() {
-        ExtractionValidationCounters counters = new ExtractionValidationCounters();
-        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer(), counters);
+        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer());
         Segment segment = segment("f0-p1-s0", "A B C", TextSource.OCR);
         Map<String, Segment> segmentByIdMap = Collections.singletonMap(segment.getSegmentId(), segment);
 
         assertThat(validator.matches("ABC", Collections.singletonList(segment.getSegmentId()),
                 segmentByIdMap)).isTrue();
-        assertThat(counters.getOcrFuzzyMatchCount().get()).isZero();
+    }
+
+    /**
+     * 空白字段一律不通过：空串是任意文本的子串。
+     * <p>放行等于对这个字段取消来源校验——模型把 refRange、title 给成 {@code ""}
+     * 就能带着一个查无实据的字段进入展示。</p>
+     */
+    @Test
+    void shouldRejectBlankFieldValueBecauseEmptyTextMatchesEverything() {
+        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer());
+        Segment segment = segment("f0-p1-s0", "项目甲 6.2 4.0~10.0", TextSource.NATIVE);
+        Map<String, Segment> segmentByIdMap = Collections.singletonMap(segment.getSegmentId(), segment);
+
+        assertThat(validator.matches("", Collections.singletonList(segment.getSegmentId()),
+                segmentByIdMap)).isFalse();
+        assertThat(validator.matches("   ", Collections.singletonList(segment.getSegmentId()),
+                segmentByIdMap)).isFalse();
+        assertThat(validator.matches("4.0~10.0", Collections.singletonList(segment.getSegmentId()),
+                segmentByIdMap)).as("有实据的字段照常通过").isTrue();
     }
 
     @Test
     void shouldRejectSingleCharacterAgainstUnrelatedOcrEvidenceWithoutCountingFuzzyMatch() {
-        ExtractionValidationCounters counters = new ExtractionValidationCounters();
-        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer(), counters);
+        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer());
         Segment segment = segment("f0-p1-s0", "检查项目", TextSource.OCR);
         Map<String, Segment> segmentByIdMap = Collections.singletonMap(segment.getSegmentId(), segment);
 
         assertThat(validator.matches("男", Collections.singletonList(segment.getSegmentId()),
                 segmentByIdMap)).isFalse();
-        assertThat(counters.getOcrFuzzyMatchCount().get()).isZero();
     }
 
     @Test
     void shouldRejectSingleCharacterAgainstEmptyOcrEvidence() {
-        ExtractionValidationCounters counters = new ExtractionValidationCounters();
-        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer(), counters);
+        SourceEvidenceValidator validator = new SourceEvidenceValidator(new TextNormalizer());
         Segment segment = segment("f0-p1-s0", "", TextSource.OCR);
         Map<String, Segment> segmentByIdMap = Collections.singletonMap(segment.getSegmentId(), segment);
 
         assertThat(validator.matches("女", Collections.singletonList(segment.getSegmentId()),
                 segmentByIdMap)).isFalse();
-        assertThat(counters.getOcrFuzzyMatchCount().get()).isZero();
     }
 
     private Segment segment(String segmentId, String text, TextSource source) {

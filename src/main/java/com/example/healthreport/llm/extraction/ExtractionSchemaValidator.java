@@ -23,15 +23,13 @@ public class ExtractionSchemaValidator {
     private static final String SCHEMA_PATH = "schema/extraction_output.schema.json";
 
     private final ObjectMapper objectMapper;
-    private final ExtractionValidationCounters counters;
     private final JsonSchema jsonSchema;
 
-    public ExtractionSchemaValidator(ObjectMapper objectMapper, ExtractionValidationCounters counters) {
-        if (objectMapper == null || counters == null) {
+    public ExtractionSchemaValidator(ObjectMapper objectMapper) {
+        if (objectMapper == null) {
             throw new IllegalArgumentException("Schema 校验依赖不能为空");
         }
         this.objectMapper = objectMapper;
-        this.counters = counters;
         this.jsonSchema = loadSchema(objectMapper);
     }
 
@@ -62,7 +60,6 @@ public class ExtractionSchemaValidator {
     }
 
     private JsonNode failSchema() {
-        counters.recordSchemaMiss();
         throw new HealthReportException(FailCode.SERVER_ERROR, 500);
     }
 

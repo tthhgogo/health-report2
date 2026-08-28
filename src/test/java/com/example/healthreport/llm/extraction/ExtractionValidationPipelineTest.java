@@ -30,22 +30,267 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ExtractionValidationPipelineTest {
 
     private ObjectMapper objectMapper;
-    private ExtractionValidationCounters counters;
     private ExtractionValidationPipeline pipeline;
 
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        counters = new ExtractionValidationCounters();
         TextNormalizer textNormalizer = new TextNormalizer();
-        ExtractionSchemaValidator schemaValidator = new ExtractionSchemaValidator(objectMapper, counters);
+        ExtractionSchemaValidator schemaValidator = new ExtractionSchemaValidator(objectMapper);
         SourceEvidenceValidator evidenceValidator =
-                new SourceEvidenceValidator(textNormalizer, counters);
-        AllergenAdmissionFilter admissionFilter = new AllergenAdmissionFilter(counters);
+                new SourceEvidenceValidator(textNormalizer);
+        AllergenAdmissionFilter admissionFilter = new AllergenAdmissionFilter();
         pipeline = new ExtractionValidationPipeline(schemaValidator, evidenceValidator,
-                new AllergenSuspectScanner(counters), new AllergenCoverageScanner(counters),
-                new PositiveRowCoverageScanner(counters),
-                admissionFilter, counters, textNormalizer);
+                new AllergenSuspectScanner(), new AllergenCoverageScanner(),
+                new PositiveRowCoverageScanner(),
+                admissionFilter, new ReferenceRangeParser(textNormalizer), textNormalizer);
+    }
+
+    /** 报告没印结论但结果落在参考范围内：准入，标为系统判定的正常。 */
+    /** 定性结果与定性参考值一致：准入，结论依据为参考值匹配。 */
+    @Test
+    void qualitativeResultMatchingReferenceValueShouldBeAdmitted() {
+        Segment segment = segment("f0-p1-s0", "项目甲 亚硝酸盐 阴性");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                valueMatchedIndicator("阴性", "阴性", "NEGATIVE", "NEGATIVE"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).hasSize(1);
+        ValidatedExtractionOutput.Indicator indicator = output.getIndicatorList().get(0);
+        assertThat(indicator.getConclusionBasis())
+                .isEqualTo(IndicatorConclusionBasis.REFERENCE_VALUE_MATCH);
+        assertThat(indicator.getConclusionText()).isNull();
+        assertThat(indicator.getStatus()).isEqualTo(IndicatorStatus.NORMAL);
+    }
+
+    /**
+     * 参考值不是单值时，结果落在允许集合内即算符合。
+     * <p>真实场景：尿常规的尿胆原，检查结果「阴性」、参考值「阴性或弱」。</p>
+     */
+    @Test
+    void qualitativeResultShouldMatchWhenReferenceValueAllowsSeveralOutcomes() {
+        Segment segment = segment("f0-p1-s0", "项目甲 尿胆原 阴性或弱");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(valueMatchedIndicator("阴性", "阴性或弱",
+                "NEGATIVE", "NEGATIVE", "WEAK_POSITIVE"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).hasSize(1);
+        assertThat(output.getIndicatorList().get(0).getConclusionBasis())
+                .isEqualTo(IndicatorConclusionBasis.REFERENCE_VALUE_MATCH);
+    }
+
+    /**
+     * 结果不在允许集合内就是不符合，<b>绝不按字面子串放行</b>。
+     * <p>「阳性」是「弱阳性」的子串——按字面包含判定会把阳性结果判成「符合参考值」，
+     * 那是把异常判成正常，最危险的错法。把参考值展开成枚举集合正是为了根除它。</p>
+     */
+    @Test
+    void positiveResultMustNotMatchWeakPositiveReferenceBySubstring() {
+        Segment segment = segment("f0-p1-s0", "项目甲 弱阳性");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                valueMatchedIndicator("阳性", "弱阳性", "POSITIVE", "WEAK_POSITIVE"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).isEmpty();
+    }
+
+    /**
+     * 归一化取值不同就是不匹配，Java 不认任何同义词。
+     * <p>「阴性」与「未检出」是否等价属于医学判断——要认，也得由 LLM-A 在归一化时
+     * 把两者统一成同一个枚举，而不是让 Java 在这里补一张同义词表。</p>
+     */
+    @Test
+    void differentComparableValuesMustNotBeTreatedAsSynonyms() {
+        Segment segment = segment("f0-p1-s0", "项目甲 阴性 未检出");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                valueMatchedIndicator("阴性", "未检出", "NEGATIVE", "NOT_DETECTED"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).isEmpty();
+    }
+
+    /**
+     * 归一化枚举之外的取值由 Schema 直接拦下，整批按契约失败。
+     * <p>枚举是契约的一部分，写错就是模型没遵守契约，比「悄悄丢一条指标」更该早暴露。</p>
+     */
+    @Test
+    void comparableValuesOutsideTheApprovedEnumMustFailTheContract() {
+        Segment segment = segment("f0-p1-s0", "项目甲 阴性");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                valueMatchedIndicator("阴性", "阴性", "NEG", "NEG"));
+
+        assertServerError(plan, root, Collections.singletonList(segment));
+    }
+
+    @Test
+    void indicatorWithoutReportConclusionShouldBeAdmittedWhenValueFallsInReferenceRange() {
+        Segment segment = segment("f0-p1-s0", "项目甲 6.2 4.0~10.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                rangeAdmittedIndicator("6.2", "4.0~10.0", "6.2", "4.0", "10.0"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).hasSize(1);
+        ValidatedExtractionOutput.Indicator indicator = output.getIndicatorList().get(0);
+        assertThat(indicator.getConclusionBasis())
+                .isEqualTo(IndicatorConclusionBasis.REFERENCE_RANGE_IN_RANGE);
+        assertThat(indicator.getConclusionText()).as("报告没印结论，不许编一个填进来").isNull();
+        assertThat(indicator.getStatus()).isEqualTo(IndicatorStatus.NORMAL);
+    }
+
+    /** 结果超出参考范围而报告没给结论：不展示，绝不自动生成异常结论。 */
+    @Test
+    void indicatorOutsideReferenceRangeWithoutReportConclusionMustNotBeAdmitted() {
+        Segment segment = segment("f0-p1-s0", "项目甲 12.5 4.0~10.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                rangeAdmittedIndicator("12.5", "4.0~10.0", "12.5", "4.0", "10.0"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).isEmpty();
+    }
+
+    /**
+     * 模型给的上下界必须能在参考范围原文里逐字找到。
+     * <p>没有这条核验，模型可以凭空报一个宽区间让任何值都「正常」，
+     * Java 比得再准也拦不住。</p>
+     */
+    @Test
+    void fabricatedBoundsThatCannotBeQuotedFromReferenceRangeMustBeRejected() {
+        Segment segment = segment("f0-p1-s0", "项目甲 12.5 4.0~10.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        // 报告写的是 4.0~10.0，模型却报了一个能把 12.5 装进去的假区间。
+        root.putArray("indicators").add(
+                rangeAdmittedIndicator("12.5", "4.0~10.0", "12.5", "1.0", "99.0"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).isEmpty();
+    }
+
+    /**
+     * <b>省略一侧边界</b>不得放行：只报下界时上方就不设限，任何大值都会算成「在参考范围内」。
+     * <p>报告写的是 4.0~10.0，结果 12.5 明显偏高；模型把上界报成 null 就能让它显示为正常。</p>
+     */
+    @Test
+    void omittingOneBoundThatTheReferenceRangeActuallyPrintsMustBeRejected() {
+        Segment segment = segment("f0-p1-s0", "项目甲 12.5 4.0~10.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                rangeAdmittedIndicator("12.5", "4.0~10.0", "12.5", "4.0", null));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).isEmpty();
+    }
+
+    /**
+     * <b>边界数字恰好是原文子串</b>也不得放行：子串核验拦不住这一手。
+     * <p>报告写的是 14.0~20.0，「4.0」正好是它的子串；配上一个同样能找到的上界，
+     * 12.5 就被装进了一个报告从没写过的区间。</p>
+     */
+    @Test
+    void boundThatIsOnlyASubstringOfTheReferenceRangeMustBeRejected() {
+        Segment segment = segment("f0-p1-s0", "项目甲 12.5 14.0~20.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                rangeAdmittedIndicator("12.5", "14.0~20.0", "12.5", "4.0", "20.0"));
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), new DegradeAccumulator());
+
+        assertThat(output.getIndicatorList()).isEmpty();
+    }
+
+    /** <b>开闭符号被改</b>也不得放行：报告写 <3.0，结果正好 3.0 时闭区间会判成正常。 */
+    @Test
+    void flippedInclusivenessAgainstTheReferenceRangeMustBeRejected() {
+        Segment segment = segment("f0-p1-s0", "项目甲 3.0 <3.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode closed = validRoot(plan);
+        closed.putArray("indicators").add(
+                rangeAdmittedIndicator("3.0", "<3.0", "3.0", null, false, "3.0", true));
+        assertThat(validate(Collections.singletonList(result(plan, closed)),
+                Collections.singletonList(segment), new DegradeAccumulator())
+                .getIndicatorList()).as("原文是开区间，不许报成闭区间").isEmpty();
+
+        Segment lowerSegment = segment("f0-p1-s0", "项目甲 2.5 <3.0");
+        ExtractionBatchPlan lowerPlan = plan(0, 0, 1, lowerSegment);
+        ObjectNode open = validRoot(lowerPlan);
+        open.putArray("indicators").add(
+                rangeAdmittedIndicator("2.5", "<3.0", "2.5", null, false, "3.0", false));
+        assertThat(validate(Collections.singletonList(result(lowerPlan, open)),
+                Collections.singletonList(lowerSegment), new DegradeAccumulator())
+                .getIndicatorList()).as("如实报开区间且结果在范围内时照常展示").hasSize(1);
+    }
+
+    /**
+     * 参考范围给成空串时整批作废：空串是任意原文的子串，能通过一切子串式核验，
+     * 等于让该指标带着一个查无实据的参考值进入展示。Schema 的 minLength 是第一道，
+     * Java 侧的空白按缺失是第二道。
+     */
+    @Test
+    void blankReferenceRangeMustNeverBeAdmitted() {
+        Segment segment = segment("f0-p1-s0", "项目甲 6.2");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        root.putArray("indicators").add(
+                rangeAdmittedIndicator("6.2", "", "6.2", "4.0", "10.0"));
+        assertServerError(plan, root, Collections.singletonList(segment));
+
+        ObjectNode qualitative = validRoot(plan);
+        qualitative.putArray("indicators").add(
+                valueMatchedIndicator("阴性", "", "NEGATIVE", "NEGATIVE"));
+        assertServerError(plan, qualitative, Collections.singletonList(segment));
+    }
+
+    /** 比较用的结果值必须与 value 字段是同一个数，允许 6.2 与 6.20 的标度差异。 */
+    @Test
+    void measuredValueMustMatchTheDeclaredValueNumerically() {
+        Segment segment = segment("f0-p1-s0", "项目甲 6.2 4.0~10.0");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode sameNumber = validRoot(plan);
+        sameNumber.putArray("indicators").add(
+                rangeAdmittedIndicator("6.2", "4.0~10.0", "6.20", "4.0", "10.0"));
+        assertThat(validate(Collections.singletonList(result(plan, sameNumber)),
+                Collections.singletonList(segment), new DegradeAccumulator())
+                .getIndicatorList()).as("6.20 与 6.2 是同一个数").hasSize(1);
+
+        ObjectNode differentNumber = validRoot(plan);
+        differentNumber.putArray("indicators").add(
+                rangeAdmittedIndicator("6.2", "4.0~10.0", "9.9", "4.0", "10.0"));
+        assertThat(validate(Collections.singletonList(result(plan, differentNumber)),
+                Collections.singletonList(segment), new DegradeAccumulator())
+                .getIndicatorList()).as("比较用的数与 value 对不上就丢弃").isEmpty();
     }
 
     @Test
@@ -66,7 +311,6 @@ class ExtractionValidationPipelineTest {
         assertThat(output.getIndicatorList().get(0).getStatus()).isEqualTo(IndicatorStatus.HIGH);
         assertThat(output.getIndicatorList().get(0).isIncludeInHealthProblems()).isFalse();
         assertThat(output.getIndicatorList().get(0).isStatusJudgedByModel()).isTrue();
-        assertThat(counters.getStatusJudgedByModelCount().get()).isEqualTo(1L);
         assertThat(output.rawTextList(output.getIndicatorList().get(0).getSegmentIdList()))
                 .containsExactly(segment.getRawText());
     }
@@ -89,7 +333,6 @@ class ExtractionValidationPipelineTest {
                 Collections.singletonList(segment), new DegradeAccumulator());
 
         assertThat(output.getIndicatorList()).hasSize(2);
-        assertThat(counters.getStatusJudgedByModelCount().get()).isEqualTo(1L);
     }
 
     @Test
@@ -180,7 +423,6 @@ class ExtractionValidationPipelineTest {
         for (ObjectNode invalidRoot : invalidRootList) {
             assertServerError(plan, invalidRoot, Collections.singletonList(segment));
         }
-        assertThat(counters.getSchemaMissCount().get()).isEqualTo(4L);
     }
 
     @Test
@@ -196,7 +438,6 @@ class ExtractionValidationPipelineTest {
                 Collections.singletonList(segment), new DegradeAccumulator());
 
         assertThat(output.getIndicatorList()).isEmpty();
-        assertThat(counters.getEvidenceMissCount().get()).isEqualTo(1L);
     }
 
     @Test
@@ -222,7 +463,6 @@ class ExtractionValidationPipelineTest {
 
         assertThat(output.getIndicatorList()).hasSize(1);
         assertThat(output.getIndicatorList().get(0).getItemIndex()).isEqualTo(1);
-        assertThat(counters.getSectionRefMissCount().get()).isEqualTo(1L);
     }
 
     @Test
@@ -237,7 +477,6 @@ class ExtractionValidationPipelineTest {
                 Collections.singletonList(segment), accumulator);
 
         assertThat(output.getAllergenList()).isEmpty();
-        assertThat(counters.getSectionRefMissCount().get()).isEqualTo(1L);
         assertThat(accumulator.primaryReason()).isEqualTo(PartialReason.ALLERGEN_SUSPECT_MISS);
     }
 
@@ -302,7 +541,6 @@ class ExtractionValidationPipelineTest {
 
         assertThat(output.getAllergenList()).isEmpty();
         assertThat(accumulator.primaryReason()).isEqualTo(PartialReason.ALLERGEN_SUSPECT_MISS);
-        assertThat(counters.getEvidenceMissCount().get()).isEqualTo(1L);
     }
 
     @Test
@@ -370,6 +608,7 @@ class ExtractionValidationPipelineTest {
 
     @Test
     void shouldNullDifferentOcrGendersWithoutEvidenceAndAvoidIdentityConflict() {
+        DegradeAccumulator identityAccumulator = new DegradeAccumulator();
         Segment first = segment("f0-p1-s0", "检查项目", TextSource.OCR);
         Segment second = segment("f1-p1-s0", "检查项目", TextSource.OCR);
         ExtractionBatchPlan firstPlan = plan(0, 0, 2, first);
@@ -381,10 +620,12 @@ class ExtractionValidationPipelineTest {
 
         ValidatedExtractionOutput output = validate(Arrays.asList(result(firstPlan, firstRoot),
                         result(secondPlan, secondRoot)), Arrays.asList(first, second),
-                new DegradeAccumulator());
+                identityAccumulator);
 
+        // 两份 OCR 性别都没有证据支撑，应各自降为 null 而不是互相冲突。
         assertThat(output).isNotNull();
-        assertThat(counters.getOcrFuzzyMatchCount().get()).isZero();
+        assertThat(identityAccumulator.partial())
+                .as("无证据的性别不参与同一性判断，不得因此触发降级").isFalse();
     }
 
     @Test
@@ -396,7 +637,6 @@ class ExtractionValidationPipelineTest {
         patient.put("name", "样本甲");
 
         assertServerError(plan, root, Collections.singletonList(segment));
-        assertThat(counters.getSchemaMissCount().get()).isEqualTo(1L);
     }
 
     @Test
@@ -519,7 +759,6 @@ class ExtractionValidationPipelineTest {
 
         assertThat(output.getSectionList().get(0).getRelation()).isEqualTo(SectionRelation.UNKNOWN);
         assertThat(output.getSectionList().get(0).getDisplayName()).isEqualTo("未标注章节");
-        assertThat(counters.getSectionUnknownCount().get()).isEqualTo(1L);
     }
 
     @Test
@@ -544,7 +783,6 @@ class ExtractionValidationPipelineTest {
         assertThat(output.getSectionList().get(1).getDisplayName()).isEqualTo("未标注章节");
         assertThat(output.getSectionList().get(1).getSectionSegmentId())
                 .isNotEqualTo(output.getSectionList().get(0).getSectionSegmentId());
-        assertThat(counters.getSectionUnknownCount().get()).isEqualTo(1L);
     }
 
     private ValidatedExtractionOutput validate(List<ExtractionBatchResult> resultList,
@@ -597,6 +835,9 @@ class ExtractionValidationPipelineTest {
         node.putNull("unit");
         node.putNull("refRange");
         node.put("conclusionText", "结论甲");
+        node.put("conclusionBasis", "REPORT_TEXT");
+        node.putNull("rangeComparison");
+        node.putNull("valueMatch");
         node.put("status", "NORMAL");
         node.put("statusJudgedByModel", false);
         node.put("includeInHealthProblems", true);
@@ -605,6 +846,71 @@ class ExtractionValidationPipelineTest {
         node.put("orderInSection", 0);
         node.put("itemIndex", itemIndex);
         node.putArray("blockRefs").add(0);
+        return node;
+    }
+
+    /**
+     * 造一条走参考范围准入的指标：报告只印了结果与参考值，没印结论。
+     *
+     * @param value 检查结果，必须能在证据段里回切
+     * @param refRange 参考范围原文，必须能在证据段里回切
+     */
+    private ObjectNode rangeAdmittedIndicator(String value, String refRange, String measuredValue,
+                                              String lowerBound, String upperBound) {
+        return rangeAdmittedIndicator(value, refRange, measuredValue, lowerBound,
+                lowerBound != null, upperBound, upperBound != null);
+    }
+
+    /** 开闭由用例显式指定，用于核验模型篡改开闭符号的情形。 */
+    private ObjectNode rangeAdmittedIndicator(String value, String refRange, String measuredValue,
+                                              String lowerBound, boolean lowerInclusive,
+                                              String upperBound, boolean upperInclusive) {
+        ObjectNode node = indicator(0, 0);
+        node.put("value", value);
+        node.put("refRange", refRange);
+        node.putNull("conclusionText");
+        node.put("conclusionBasis", "REFERENCE_RANGE_IN_RANGE");
+        node.put("status", "NORMAL");
+        node.put("includeInHealthProblems", false);
+        ObjectNode comparison = node.putObject("rangeComparison");
+        comparison.put("measuredValue", measuredValue);
+        if (lowerBound == null) {
+            comparison.putNull("lowerBound");
+        } else {
+            comparison.put("lowerBound", lowerBound);
+        }
+        comparison.put("lowerInclusive", lowerInclusive);
+        if (upperBound == null) {
+            comparison.putNull("upperBound");
+        } else {
+            comparison.put("upperBound", upperBound);
+        }
+        comparison.put("upperInclusive", upperInclusive);
+        return node;
+    }
+
+    /**
+     * 造一条走定性参考值准入的指标。
+     *
+     * @param acceptableReferenceValues 参考值允许的全部取值，可为多个（如「阴性或弱」）
+     */
+    private ObjectNode valueMatchedIndicator(String value, String refRange,
+                                             String resultComparable,
+                                             String... acceptableReferenceValues) {
+        ObjectNode node = indicator(0, 0);
+        node.put("value", value);
+        node.put("refRange", refRange);
+        node.putNull("conclusionText");
+        node.put("conclusionBasis", "REFERENCE_VALUE_MATCH");
+        node.put("status", "NORMAL");
+        node.put("includeInHealthProblems", false);
+        node.putNull("rangeComparison");
+        ObjectNode match = node.putObject("valueMatch");
+        match.put("resultComparableValue", resultComparable);
+        ArrayNode acceptableArray = match.putArray("acceptableReferenceValues");
+        for (String acceptableValue : acceptableReferenceValues) {
+            acceptableArray.add(acceptableValue);
+        }
         return node;
     }
 
@@ -637,15 +943,6 @@ class ExtractionValidationPipelineTest {
 
     private void assertNoValidationSideEffects(DegradeAccumulator accumulator) {
         assertThat(accumulator.partial()).isFalse();
-        assertThat(counters.getSchemaMissCount().get()).isZero();
-        assertThat(counters.getEvidenceMissCount().get()).isZero();
-        assertThat(counters.getOcrFuzzyMatchCount().get()).isZero();
-        assertThat(counters.getAllergenSuspectMissCount().get()).isZero();
-        assertThat(counters.getAllergenPositiveUncoveredCount().get()).isZero();
-        assertThat(counters.getAllergenUnknownCount().get()).isZero();
-        assertThat(counters.getSectionRefMissCount().get()).isZero();
-        assertThat(counters.getStatusJudgedByModelCount().get()).isZero();
-        assertThat(counters.getSectionUnknownCount().get()).isZero();
     }
 
     private void overview(ObjectNode root, int totalCount, int abnormalCount, int blockRef) {

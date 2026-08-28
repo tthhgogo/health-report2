@@ -2,6 +2,7 @@ package com.example.healthreport.assemble.indicator;
 
 import com.example.healthreport.assemble.sort.DisplayOrder;
 import com.example.healthreport.constants.DisclaimerConstants;
+import com.example.healthreport.llm.extraction.IndicatorConclusionBasis;
 import com.example.healthreport.constants.EmptyStateConstants;
 import com.example.healthreport.llm.extraction.IndicatorStatus;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
@@ -71,8 +72,22 @@ public class IndicatorAssembler {
         String rawRefRange = indicator.getRefRange();
         String refRange = rawRefRange == null || rawRefRange.trim().isEmpty()
                 ? REF_RANGE_NOT_PROVIDED : rawRefRange;
+        // 报告没印结论的指标走参考值准入，展示固定文案并标明是系统判定的，
+        // 不把系统推导冒充成报告原文（需求 §5-3 要求结论直接引用原文）。
+        // 两种依据给不同文案：数值说「在参考范围内」，定性说「符合报告参考值」，
+        // 都只陈述「与报告给的参考值一致」这个事实，不做任何医学结论。
+        String conclusionText = indicator.getConclusionText();
+        boolean conclusionGenerated = false;
+        if (indicator.getConclusionBasis() == IndicatorConclusionBasis.REFERENCE_RANGE_IN_RANGE) {
+            conclusionText = DisclaimerConstants.INDICATOR_IN_REFERENCE_RANGE;
+            conclusionGenerated = true;
+        } else if (indicator.getConclusionBasis()
+                == IndicatorConclusionBasis.REFERENCE_VALUE_MATCH) {
+            conclusionText = DisclaimerConstants.INDICATOR_MATCHES_REFERENCE_VALUE;
+            conclusionGenerated = true;
+        }
         return new Card(indicatorId, indicator.getName(), indicator.getValue(), indicator.getUnit(),
-                refRange, indicator.getConclusionText(), indicator.getStatus());
+                refRange, conclusionText, conclusionGenerated, indicator.getStatus());
     }
 
     private Overview overview(List<ValidatedExtractionOutput.ReportOverview> reportOverviewList,
@@ -159,7 +174,13 @@ public class IndicatorAssembler {
         }
     }
 
-    /** 健康指标卡片；标签颜色由 status 决定，标签文字直接使用 conclusionText。 */
+    /**
+     * 健康指标卡片；标签颜色由 status 决定。
+     *
+     * <p>标签文字优先使用报告结论原文；报告没印结论、经参考范围比较准入的指标，
+     * 使用固定文案并把 {@code conclusionGenerated} 置为 true，
+     * <b>前端必须据此在视觉上区分</b>——否则用户会以为那句话是报告上写的。</p>
+     */
     @Getter
     public static final class Card {
         private final String indicatorId;
@@ -168,16 +189,19 @@ public class IndicatorAssembler {
         private final String unit;
         private final String refRange;
         private final String conclusionText;
+        /** true 表示结论由系统按参考范围判定，不是报告原文。 */
+        private final boolean conclusionGenerated;
         private final IndicatorStatus status;
 
         private Card(String indicatorId, String name, String value, String unit, String refRange,
-                     String conclusionText, IndicatorStatus status) {
+                     String conclusionText, boolean conclusionGenerated, IndicatorStatus status) {
             this.indicatorId = indicatorId;
             this.name = name;
             this.value = value;
             this.unit = unit;
             this.refRange = refRange;
             this.conclusionText = conclusionText;
+            this.conclusionGenerated = conclusionGenerated;
             this.status = status;
         }
     }

@@ -3,7 +3,6 @@ package com.example.healthreport.llm.extraction;
 import com.example.healthreport.assemble.indicator.IndicatorAssembler;
 import com.example.healthreport.assemble.problem.ProblemAssembler;
 import com.example.healthreport.assemble.dietadvice.DietAdviceAssembler;
-import com.example.healthreport.assemble.dietadvice.DietAdviceCounters;
 import com.example.healthreport.assemble.dietadvice.DietAdviceInput;
 import com.example.healthreport.assemble.dietadvice.DietAdviceInputFactory;
 import com.example.healthreport.assemble.sort.DisplayOrder;
@@ -12,8 +11,10 @@ import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.EmptyStateConstants;
 import com.example.healthreport.constants.NutritionKey;
 import com.example.healthreport.parse.segment.Segment;
+import com.example.healthreport.parse.segment.TextNormalizer;
 import com.example.healthreport.parse.segment.TextSource;
 import com.example.healthreport.safety.HighRiskAdviceGate;
+import com.example.healthreport.safety.StructuredAdmission;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -98,8 +99,7 @@ class DisplayAndModuleAssemblerTest {
         DisplayOrder displayOrder = new DisplayOrder();
         DietAdviceInput input = new DietAdviceInputFactory(displayOrder)
                 .create(fixture.output, TWO_REPORTS);
-        DietAdviceCounters counters = new DietAdviceCounters();
-        DietAdviceAssembler.Result result = new DietAdviceAssembler(new HighRiskAdviceGate(), counters)
+        DietAdviceAssembler.Result result = new DietAdviceAssembler(new StructuredAdmission(new HighRiskAdviceGate(new TextNormalizer())))
                 .assemble(input);
 
         DietAdviceAssembler.NutritionCard card = result.getNutritionSection().getCardList().get(0);
@@ -111,8 +111,6 @@ class DisplayAndModuleAssemblerTest {
         // R32：itemNo 为空时不显示条号，更不能拿 sourceOrder=9 冒充。
         assertThat(card.getSourceLabel()).isEqualTo("报告1-检查章节");
         assertThat(card.getSourceLabel()).doesNotContain("第9条");
-        assertThat(counters.getHighRiskSuppressedCount().get()).isEqualTo(1L);
-        assertThat(counters.getAdviceOtherCount().get()).isEqualTo(1L);
 
         // 内容审核快照已激活，非高危且非 OTHER 的结构化内容应进入输出。
         assertThat(result.getDietSection().getCardList().get(0).isStructuredContentAvailable())
@@ -123,37 +121,37 @@ class DisplayAndModuleAssemblerTest {
 
     /**
      * 高危表述安全闸【不作用于过敏原】（2026-08-26 产品确认）。
-     * 过敏忌口本身就是要展示的安全信息，被「妊娠 / 儿童」这类无关词连带抑制方向就反了；
-     * 同时 adviceOtherCount 只统计建议条数，过敏原不得计入。
+     * 过敏忌口本身就是要展示的安全信息，被「妊娠 / 儿童」这类无关词连带抑制方向就反了。
      */
     @Test
-    void allergenCardsMustNotBeSuppressedByHighRiskGateNorCountedAsAdviceOther() {
+    void allergenCardsMustNotBeSuppressedByHighRiskGate() {
         Fixture fixture = fixture();
         DisplayOrder displayOrder = new DisplayOrder();
         DietAdviceInput input = new DietAdviceInputFactory(displayOrder)
                 .create(fixture.output, TWO_REPORTS);
-        DietAdviceCounters counters = new DietAdviceCounters();
-        DietAdviceAssembler.Result result = new DietAdviceAssembler(new HighRiskAdviceGate(), counters)
+        DietAdviceAssembler.Result result = new DietAdviceAssembler(new StructuredAdmission(new HighRiskAdviceGate(new TextNormalizer())))
                 .assemble(input);
 
         for (DietAdviceAssembler.AllergenCard card : result.getAllergenSection().getCardList()) {
             assertThat(card.isStructuredOutputSuppressed())
                     .as("过敏原卡片不得被高危闸抑制").isFalse();
         }
-        // 计数只应来自营养/饮食那一条，过敏原不进 adviceOtherCount。
-        assertThat(counters.getAdviceOtherCount().get()).isEqualTo(1L);
-        assertThat(counters.getHighRiskSuppressedCount().get()).isEqualTo(1L);
     }
 
     @Test
     void highRiskGateShouldFailSafeWithoutBroadeningMedicalSemantics() {
-        HighRiskAdviceGate gate = new HighRiskAdviceGate();
+        HighRiskAdviceGate gate = new HighRiskAdviceGate(new TextNormalizer());
+        List<String> noEvidenceList = Collections.<String>emptyList();
 
-        assertThat(gate.shouldSuppress(null)).isTrue();
-        assertThat(gate.shouldSuppress(Collections.singletonList(null))).isTrue();
-        assertThat(gate.shouldSuppress(Collections.singletonList("孕期饮食"))).isTrue();
-        assertThat(gate.shouldSuppress(Collections.singletonList("一般饮食建议"))).isFalse();
-        assertThat(gate.shouldSuppress(Collections.<String>emptyList())).isFalse();
+        assertThat(gate.shouldSuppress(null, noEvidenceList)).as("没有可检查的对象时 fail-safe").isTrue();
+        assertThat(gate.shouldSuppress("低脂饮食", null)).as("证据原文缺失同样 fail-safe").isTrue();
+        assertThat(gate.shouldSuppress("优质低蛋白饮食", noEvidenceList)).as("方向性限制必须命中").isTrue();
+        assertThat(gate.shouldSuppress("低钾饮食", noEvidenceList)).isTrue();
+        assertThat(gate.shouldSuppress("一般饮食建议", noEvidenceList)).isFalse();
+        assertThat(gate.shouldSuppress("", noEvidenceList)).isFalse();
+        // 人群名词已移出词表：它不是限制表述，指向谁由 LLM-A 判断（见 StructuredAdmissionTest）。
+        assertThat(gate.shouldSuppress("孕期饮食", noEvidenceList)).as("人群名词不再由词表兜底").isFalse();
+        assertThat(gate.shouldSuppress("14岁以下儿童除外", noEvidenceList)).isFalse();
     }
 
     @Test
@@ -166,8 +164,7 @@ class DisplayAndModuleAssemblerTest {
                 .assemble(overviewWithoutCardsOutput(), 1);
         ProblemAssembler.Result moduleTwo = new ProblemAssembler(displayOrder)
                 .assemble(emptyOutput, 1);
-        DietAdviceAssembler.Result moduleThree = new DietAdviceAssembler(
-                new HighRiskAdviceGate(), new DietAdviceCounters())
+        DietAdviceAssembler.Result moduleThree = new DietAdviceAssembler(new StructuredAdmission(new HighRiskAdviceGate(new TextNormalizer())))
                 .assemble(new DietAdviceInputFactory(displayOrder).create(emptyOutput, 1));
 
         assertThat(moduleOne.getOverview().getTotalCount()).isZero();
@@ -219,13 +216,13 @@ class DisplayAndModuleAssemblerTest {
 
         ValidatedExtractionOutput.Indicator primaryIndicator = new ValidatedExtractionOutput.Indicator(
                 0, 0, 0, 0, 0, 1, Arrays.asList(firstId, laterId), "甘油三酯", "1.0", "u",
-                null, "↑", IndicatorStatus.NORMAL, true, true, null);
+                null, "↑", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL, true, true, null);
         ValidatedExtractionOutput.Indicator continuationIndicator = new ValidatedExtractionOutput.Indicator(
                 0, 1, 0, 0, 0, 2, Collections.singletonList(continuationId), "续页项", "2.0", "u",
-                "0-3", "原文结论", IndicatorStatus.HIGH, false, false, null);
+                "0-3", "原文结论", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.HIGH, false, false, null);
         ValidatedExtractionOutput.Indicator otherFileIndicator = new ValidatedExtractionOutput.Indicator(
                 1, 0, 0, 0, 0, 1, Collections.singletonList(otherFileId), "另一项", "3.0", "u",
-                "0-4", "原文结论", IndicatorStatus.NORMAL, false, false, null);
+                "0-4", "原文结论", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL, false, false, null);
         ValidatedExtractionOutput.TextualFinding textualFinding = new ValidatedExtractionOutput.TextualFinding(
                 0, 0, 0, 1, 0, 1, Collections.singletonList(textualId), "文字检查",
                 "未见异常", IndicatorStatus.NORMAL, true);
@@ -244,10 +241,15 @@ class DisplayAndModuleAssemblerTest {
                 true, "过敏原", "阳性", AllergenResultStatus.POSITIVE);
         ValidatedExtractionOutput.AdviceItem<NutritionKey> highRiskNutrition =
                 new ValidatedExtractionOutput.AdviceItem<NutritionKey>(0, 1, 0, 9, null, 0, 2,
-                        Collections.singletonList(continuationId), NutritionKey.PROTEIN);
+                        Collections.singletonList(continuationId), NutritionKey.PROTEIN,
+                        // 面向特殊人群的建议：确实给本人，但需专业指导，不进结构化链路。
+                        "妊娠期应保证优质蛋白摄入", AdviceApplicability.CURRENT_PATIENT,
+                        AdviceStructuredSafety.SPECIAL_POPULATION);
         ValidatedExtractionOutput.AdviceItem<DietRequirementKey> diet =
                 new ValidatedExtractionOutput.AdviceItem<DietRequirementKey>(0, 0, 1, 0, 2, 0, 1,
-                        Collections.singletonList(dietId), DietRequirementKey.LOW_FAT);
+                        Collections.singletonList(dietId), DietRequirementKey.LOW_FAT,
+                        "低脂饮食", AdviceApplicability.CURRENT_PATIENT,
+                        AdviceStructuredSafety.NORMAL);
 
         ValidatedExtractionOutput output = new ValidatedExtractionOutput(
                 Collections.singletonList(new ValidatedExtractionOutput.ReportOverview(

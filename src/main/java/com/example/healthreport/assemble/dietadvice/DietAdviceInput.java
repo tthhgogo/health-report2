@@ -3,6 +3,8 @@ package com.example.healthreport.assemble.dietadvice;
 import com.example.healthreport.constants.AllergenKey;
 import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.NutritionKey;
+import com.example.healthreport.llm.extraction.AdviceApplicability;
+import com.example.healthreport.llm.extraction.AdviceStructuredSafety;
 import lombok.Getter;
 
 import java.util.ArrayList;
@@ -38,10 +40,21 @@ public final class DietAdviceInput {
     public static final class StructuredValue<T extends Enum<T>> {
         private final T enumKey;
         private final List<String> rawTextList;
+        /** 建议本身那一句原文；安全检查只扫它，过敏原没有这个字段时为 null。 */
+        private final String adviceQuote;
+        /** 这条建议给谁的；过敏原不过安全闸，为 null。 */
+        private final AdviceApplicability applicability;
+        /** 这条建议是什么性质；过敏原不过安全闸，为 null。 */
+        private final AdviceStructuredSafety structuredSafety;
 
-        StructuredValue(T enumKey, List<String> rawTextList) {
+        StructuredValue(T enumKey, List<String> rawTextList, String adviceQuote,
+                        AdviceApplicability applicability,
+                        AdviceStructuredSafety structuredSafety) {
             this.enumKey = enumKey;
             this.rawTextList = immutableList(rawTextList);
+            this.adviceQuote = adviceQuote;
+            this.applicability = applicability;
+            this.structuredSafety = structuredSafety;
         }
     }
 

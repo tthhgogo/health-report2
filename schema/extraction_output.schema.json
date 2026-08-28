@@ -66,6 +66,7 @@
             "string",
             "null"
           ],
+          "minLength": 1,
           "maxLength": 32
         },
         "nameBlockRefs": {
@@ -130,6 +131,9 @@
           "unit",
           "refRange",
           "conclusionText",
+          "conclusionBasis",
+          "rangeComparison",
+          "valueMatch",
           "status",
           "statusJudgedByModel",
           "includeInHealthProblems",
@@ -155,6 +159,7 @@
               "string",
               "null"
             ],
+            "minLength": 1,
             "maxLength": 32
           },
           "refRange": {
@@ -162,19 +167,50 @@
               "string",
               "null"
             ],
-            "maxLength": 64
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "参考范围原文，必须逐字来自报告且非空。【没印参考范围就给 null，不许给空串】——空串能通过一切子串式核验，等于让该指标绕过来源回切。"
           },
           "conclusionText": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
-            "maxLength": 64
+            "maxLength": 64,
+            "description": "报告为该指标印出的结论原文（「↑偏高」「未见异常」）。【报告没印结论时必须给 null，不许自己编一个「正常」填进来】——本字段的语义就是「报告上的原话」，编进来的字会被当成原文展示给用户。为 null 时必须给出 refRange 与 rangeComparison，走 REFERENCE_RANGE_IN_RANGE 准入。"
+          },
+          "conclusionBasis": {
+            "$ref": "#/$defs/conclusionBasis"
+          },
+          "rangeComparison": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/rangeComparison"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "把参考范围拆成可直接比较的十进制上下界。【哪个参考范围适用、单位是否对齐、性别年龄方法学怎么选，全部由模型判断】；Java 会把 refRange 原文解析一遍，要求这里拆出的下界、上界与两侧开闭与原文里写着的某一个区间完全一致，对不上整条丢弃——只核验单个边界拦不住「省略一侧」「拿子串当边界」「篡改开闭」三种绕过。拆不出唯一比较条件（多套人群范围无法确认适用、单位不一致、值非十进制）时必须给 null，该指标随之不展示——不许猜。"
+          },
+          "valueMatch": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/valueMatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "定性项目的配对结果。报告只印了定性结果与定性参考值（如「亚硝酸盐 阴性 / 参考值 阴性」）时给出。【归一化是你的活】：把「阴性」「(-)」「未见」这类写法统一到同一个枚举；Java 只对归一化后的两个枚举做 equals，绝不判断「阴性」与「未检出」是不是一回事。归不进枚举、或两侧不是同一类可比值时给 null，该指标随之不展示。"
           },
           "status": {
             "$ref": "#/$defs/indicatorStatus"
           },
           "statusJudgedByModel": {
             "type": "boolean",
-            "description": "false=报告写了明确方向标记，照抄词表口径；true=非方向性结论，由模型结合该指标临床含义判断。Java 侧【不做任何 status 校验】——原先的词表比对告警已整体下线，方向词口径落在本提示词与离线评测集。"
+            "description": "false=报告写了明确方向标记，照抄词表口径；true=非方向性结论，由模型结合该指标临床含义判断。Java 侧【不做任何 status 校验】——原先的词表比对告警已整体下线，方向词口径落在本提示词与离线评测集。【conclusionBasis=REFERENCE_RANGE_IN_RANGE 时本字段不适用，固定 false】：那种情况报告根本没印方向标记，两个取值都不贴切。"
           },
           "includeInHealthProblems": {
             "type": "boolean",
@@ -185,6 +221,7 @@
               "string",
               "null"
             ],
+            "minLength": 1,
             "maxLength": 64,
             "description": "健康问题模块展示名，只能是报告原文里的自然语言问题表述（「甘油三酯偏高」），且必须能在本条目 blockRefs 所指的块里找到。报告只有指标名加符号、没有成句表述时【必须给 null】，由 Java 拼 name + conclusionText 两段原文——不许模型自造说法，也不许 Java 补归一化结论词。"
           },
@@ -458,6 +495,104 @@
       "minimum": 0,
       "maximum": 4
     },
+    "conclusionBasis": {
+      "type": "string",
+      "enum": [
+        "REPORT_TEXT",
+        "REFERENCE_RANGE_IN_RANGE",
+        "REFERENCE_VALUE_MATCH"
+      ],
+      "description": "该指标的结论从哪来。REPORT_TEXT=报告印了结论原文，conclusionText 非空；REFERENCE_RANGE_IN_RANGE=报告只印了数值结果与参考范围，由模型拆出上下界、Java 比较后确认落在范围内；REFERENCE_VALUE_MATCH=报告只印了定性结果与定性参考值，由模型归一化后 Java 做精确 equals 确认一致。【后两态只表示「符合本报告给出的参考值」，不是对身体状况的判断】，也【只准入相符的情况】：不符而报告没给结论的一律不展示，系统不得凭空生成异常结论。"
+    },
+    "rangeComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measuredValue",
+        "lowerBound",
+        "lowerInclusive",
+        "upperBound",
+        "upperInclusive"
+      ],
+      "description": "已拆解为十进制的比较条件。四个数值字段一律用字符串承载，避免 JSON 浮点在边界值上失真；Java 侧用 BigDecimal 解析并只做 compareTo。",
+      "properties": {
+        "measuredValue": {
+          "$ref": "#/$defs/decimalString",
+          "description": "检查结果的十进制形式，必须与 value 字段数值相等（Java 用 BigDecimal.compareTo 核验，允许 6.2 与 6.20 这类标度差异）。"
+        },
+        "lowerBound": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/decimalString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "下界；单边区间（如 <3.0）时为 null。【必须与 refRange 原文写着的区间完全一致】：报一个原文没有的下界、或把原文印着的下界省略成 null，都会让整条被丢弃。"
+        },
+        "lowerInclusive": {
+          "type": "boolean",
+          "description": "下界是否闭合：a~b 为 true，>a 为 false。lowerBound 为 null 时本字段无意义，固定 false。"
+        },
+        "upperBound": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/decimalString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "上界；单边区间（如 >1.0）时为 null。约束与 lowerBound 对称，开闭标志同样参与核验：原文是 <3.0 就不许报成闭区间。"
+        },
+        "upperInclusive": {
+          "type": "boolean",
+          "description": "上界是否闭合：a~b 为 true，<b 为 false。upperBound 为 null 时本字段无意义，固定 false。"
+        }
+      }
+    },
+    "valueMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resultComparableValue",
+        "acceptableReferenceValues"
+      ],
+      "description": "已归一化的定性结果，以及参考值允许的全部取值。Java 只做集合包含判断，不做任何字面或同义词推理——「阴性」与「未检出」是否等价、「阴性或弱」到底允许哪几种，都属于语义归一化，必须在这里就展开成明确的枚举集合。",
+      "properties": {
+        "resultComparableValue": {
+          "$ref": "#/$defs/comparableQualitativeValue"
+        },
+        "acceptableReferenceValues": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/comparableQualitativeValue"
+          },
+          "description": "参考值允许的全部取值，【展开成列表而不是一个值】。报告的定性参考值常常不是单值：「阴性或弱」允许阴性与弱阳性两种。\n\n【不要让后端去做子串匹配】：「阳性」是「弱阳性」的子串，字面包含会把阳性结果判成符合参考值——那正是最危险的错法。展开成集合之后，后端只做 contains，不存在这类误判。"
+        }
+      }
+    },
+    "comparableQualitativeValue": {
+      "type": "string",
+      "enum": [
+        "NEGATIVE",
+        "POSITIVE",
+        "WEAK_POSITIVE",
+        "NOT_DETECTED"
+      ],
+      "description": "定性值的归一化枚举。【刻意只收这四个】：多一个词条就多一次医学等价判断，而等价关系（如「阴性」是否等于「未检出」）需要医学评审。归不进这四个的一律给 valueMatch=null，该指标不展示——不猜。",
+      "$comment": "新增枚举值须走医学评审，理由同 constants 包下的内容常量。"
+    },
+    "decimalString": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "maxLength": 32,
+      "description": "十进制数的字符串形式。【不用 JSON number】：number 走双精度，1.10 与 1.1 在边界比较上会出分歧。"
+    },
     "indicatorStatus": {
       "type": "string",
       "enum": [
@@ -532,6 +667,33 @@
         "OTHER"
       ]
     },
+    "adviceQuote": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "这条建议本身的原文，必须能在 blockRefs 合并文本里逐字找到。\n\n【只摘建议那一句，不要连上下文】。解析器给的是 PDF 绘制单元，块边界由排版决定——一句建议和一句毫不相干的话经常落在同一块里。本字段短、准，是安全检查的主要对象：实测有报告把「(孕妇和14岁以下儿童除外)」的后半截和「请您戒烟忌酒，低脂、低糖饮食」切进了同一块，人群裸词按整块扫会把四条正常建议全部抑制掉，因此人群归属一律由 applicability 判断、不进词表。\n\n【但别指望摘掉限制词就能放行】：方向性限制词（低蛋白、限钾、低碘等）除了本字段，还会扫证据段原文——原文写着「建议低蛋白、低脂饮食」而本字段只摘「低脂饮食」时，这条建议同样会被抑制。\n\n上限 100 字符是刚性的：填得下整块就等于没改。一条原文含多个要求时拆成多条，各自摘各自那一句。",
+      "$comment": "F3 修复（2026-08-28）：安全闸的匹配对象从整块收敛到本字段。"
+    },
+    "adviceApplicability": {
+      "type": "string",
+      "enum": [
+        "CURRENT_PATIENT",
+        "OTHER_PERSON",
+        "GENERAL_INFORMATION",
+        "UNCERTAIN"
+      ],
+      "description": "这条建议是给谁的。CURRENT_PATIENT=明确针对本次受检者；OTHER_PERSON=针对他人（家属、既往史里的人）；GENERAL_INFORMATION=通用科普或人群说明，不针对具体个人；UNCERTAIN=看不出来。\n\n【这是语义判断，只能由你来做】：「儿童」「孕期」这类词出现在文本里，可能在说受检者，也可能在说家属、病史或科普——后端只能做字面包含，分辨不了指向。拿不准一律 UNCERTAIN，后端会保守处理。"
+    },
+    "adviceStructuredSafety": {
+      "type": "string",
+      "enum": [
+        "NORMAL",
+        "DIRECTIONAL_RESTRICTION",
+        "SPECIAL_POPULATION",
+        "UNCERTAIN"
+      ],
+      "description": "这条建议本身是什么性质。NORMAL=常规饮食建议；DIRECTIONAL_RESTRICTION=方向性限制（低蛋白、限钾、限碘这类，需医嘱个体化）；SPECIAL_POPULATION=面向特殊人群（妊娠、哺乳、儿童、透析等）；UNCERTAIN=看不出来。\n\n与 applicability 正交：「您已绝经，应注意补钙」是 CURRENT_PATIENT + SPECIAL_POPULATION，建议确实给本人，但仍需专业指导，不进结构化链路。"
+    },
     "sectionIndex": {
       "type": "integer",
       "minimum": 0,
@@ -571,6 +733,9 @@
       "description": "来源三字段 sectionIndex / sourceOrder / itemNo 是饮食建议模块来源标注的唯一依据。缺了它们，Java 只能靠 blockRefs 找相邻章节或与 summaryConclusions 做文本关联——都是版面/语义推断，属抽取模型的职责；或者写死「总检结论」，而抽取范围含「专家建议」「健康指导」，会标错来源。一条原文拆出多个枚举时，这三个字段必须完全相同。",
       "required": [
         "enumKey",
+        "adviceQuote",
+        "applicability",
+        "structuredSafety",
         "sectionIndex",
         "sourceOrder",
         "itemNo",
@@ -580,6 +745,15 @@
       "properties": {
         "enumKey": {
           "$ref": "#/$defs/nutritionKey"
+        },
+        "adviceQuote": {
+          "$ref": "#/$defs/adviceQuote"
+        },
+        "applicability": {
+          "$ref": "#/$defs/adviceApplicability"
+        },
+        "structuredSafety": {
+          "$ref": "#/$defs/adviceStructuredSafety"
         },
         "sectionIndex": {
           "$ref": "#/$defs/sectionIndex"
@@ -604,6 +778,9 @@
       "description": "来源三字段 sectionIndex / sourceOrder / itemNo 是饮食建议模块来源标注的唯一依据。缺了它们，Java 只能靠 blockRefs 找相邻章节或与 summaryConclusions 做文本关联——都是版面/语义推断，属抽取模型的职责；或者写死「总检结论」，而抽取范围含「专家建议」「健康指导」，会标错来源。一条原文拆出多个枚举时，这三个字段必须完全相同。",
       "required": [
         "enumKey",
+        "adviceQuote",
+        "applicability",
+        "structuredSafety",
         "sectionIndex",
         "sourceOrder",
         "itemNo",
@@ -613,6 +790,15 @@
       "properties": {
         "enumKey": {
           "$ref": "#/$defs/dietRequirementKey"
+        },
+        "adviceQuote": {
+          "$ref": "#/$defs/adviceQuote"
+        },
+        "applicability": {
+          "$ref": "#/$defs/adviceApplicability"
+        },
+        "structuredSafety": {
+          "$ref": "#/$defs/adviceStructuredSafety"
         },
         "sectionIndex": {
           "$ref": "#/$defs/sectionIndex"
@@ -711,6 +897,126 @@
               }
             }
           ]
+        }
+      }
+    },
+    {
+      "$comment": "指标结论来源的四条联动约束。REPORT_TEXT 走报告原文，REFERENCE_RANGE_IN_RANGE 走参考范围准入，两者不得并存——并存等于同一条指标有两套结论。",
+      "properties": {
+        "indicators": {
+          "items": {
+            "allOf": [
+              {
+                "$comment": "① REPORT_TEXT：必须有结论原文，且不得携带比较条件。",
+                "if": {
+                  "properties": {
+                    "conclusionBasis": {
+                      "const": "REPORT_TEXT"
+                    }
+                  },
+                  "required": [
+                    "conclusionBasis"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "conclusionText": {
+                      "type": "string"
+                    },
+                    "rangeComparison": {
+                      "type": "null"
+                    },
+                    "valueMatch": {
+                      "type": "null"
+                    }
+                  }
+                }
+              },
+              {
+                "$comment": "② REFERENCE_RANGE_IN_RANGE：报告没印结论，必须给参考范围与比较条件；结论只可能是正常，因此 status 固定 NORMAL、不进健康问题、statusJudgedByModel 固定 false。",
+                "if": {
+                  "properties": {
+                    "conclusionBasis": {
+                      "const": "REFERENCE_RANGE_IN_RANGE"
+                    }
+                  },
+                  "required": [
+                    "conclusionBasis"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "conclusionText": {
+                      "type": "null"
+                    },
+                    "refRange": {
+                      "type": "string"
+                    },
+                    "rangeComparison": {
+                      "type": "object"
+                    },
+                    "valueMatch": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "const": "NORMAL"
+                    },
+                    "statusJudgedByModel": {
+                      "const": false
+                    },
+                    "includeInHealthProblems": {
+                      "const": false
+                    },
+                    "problemName": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+              ,
+              {
+                "$comment": "③ REFERENCE_VALUE_MATCH：定性项目，报告只印了结果与参考值。约束与 ② 对称，只是比较条件换成 valueMatch。",
+                "if": {
+                  "properties": {
+                    "conclusionBasis": {
+                      "const": "REFERENCE_VALUE_MATCH"
+                    }
+                  },
+                  "required": [
+                    "conclusionBasis"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "conclusionText": {
+                      "type": "null"
+                    },
+                    "refRange": {
+                      "type": "string"
+                    },
+                    "valueMatch": {
+                      "type": "object"
+                    },
+                    "rangeComparison": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "const": "NORMAL"
+                    },
+                    "statusJudgedByModel": {
+                      "const": false
+                    },
+                    "includeInHealthProblems": {
+                      "const": false
+                    },
+                    "problemName": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
+          }
         }
       }
     },

@@ -14,7 +14,7 @@ import com.example.healthreport.constants.NutritionContents;
 import com.example.healthreport.constants.NutritionKey;
 import com.example.healthreport.constants.NutritionRule;
 import com.example.healthreport.constants.ReviewStatus;
-import com.example.healthreport.safety.HighRiskAdviceGate;
+import com.example.healthreport.safety.StructuredAdmission;
 import lombok.Getter;
 import org.springframework.stereotype.Service;
 
@@ -33,12 +33,10 @@ public class DietAdviceAssembler {
     /** 多段报告原文保持段边界时使用的展示换行符，不改变段内原文。 */
     private static final String RAW_TEXT_SEPARATOR = "\n";
 
-    private final HighRiskAdviceGate highRiskAdviceGate;
-    private final DietAdviceCounters counters;
+    private final StructuredAdmission structuredAdmission;
 
-    public DietAdviceAssembler(HighRiskAdviceGate highRiskAdviceGate, DietAdviceCounters counters) {
-        this.highRiskAdviceGate = highRiskAdviceGate;
-        this.counters = counters;
+    public DietAdviceAssembler(StructuredAdmission structuredAdmission) {
+        this.structuredAdmission = structuredAdmission;
     }
 
     /**
@@ -114,9 +112,9 @@ public class DietAdviceAssembler {
 
     private NutritionCard nutrition(DietAdviceInput.AdviceItem<NutritionKey> item) {
         DietAdviceInput.StructuredValue<NutritionKey> value = item.getStructuredValue();
-        boolean suppressed = highRiskAdviceGate.shouldSuppress(value.getRawTextList());
+        boolean suppressed = structuredAdmission.shouldSuppress(value.getApplicability(),
+                value.getStructuredSafety(), value.getAdviceQuote(), value.getRawTextList());
         boolean otherPath = suppressed || value.getEnumKey() == NutritionKey.OTHER;
-        recordSafetyPath(suppressed, otherPath);
 
         NutritionRule rule = otherPath ? null : NutritionContents.ALL.get(value.getEnumKey());
         boolean reviewed = rule != null && rule.getReviewStatus() == ReviewStatus.REVIEWED;
@@ -131,9 +129,9 @@ public class DietAdviceAssembler {
 
     private DietCard diet(DietAdviceInput.AdviceItem<DietRequirementKey> item) {
         DietAdviceInput.StructuredValue<DietRequirementKey> value = item.getStructuredValue();
-        boolean suppressed = highRiskAdviceGate.shouldSuppress(value.getRawTextList());
+        boolean suppressed = structuredAdmission.shouldSuppress(value.getApplicability(),
+                value.getStructuredSafety(), value.getAdviceQuote(), value.getRawTextList());
         boolean otherPath = suppressed || value.getEnumKey() == DietRequirementKey.OTHER;
-        recordSafetyPath(suppressed, otherPath);
 
         DietRequirementRule rule = otherPath ? null
                 : DietRequirementContents.ALL.get(value.getEnumKey());
@@ -146,15 +144,6 @@ public class DietAdviceAssembler {
                 reviewed ? rule.getCookingTipList() : Collections.<String>emptyList(),
                 reviewed ? rule.getBehaviorTipList() : Collections.<String>emptyList(),
                 reviewed ? rule.getContraindication() : null);
-    }
-
-    private void recordSafetyPath(boolean suppressed, boolean otherPath) {
-        if (suppressed) {
-            counters.recordHighRiskSuppressed();
-        }
-        if (otherPath) {
-            counters.recordAdviceOther();
-        }
     }
 
     private String joinRawText(List<String> rawTextList) {

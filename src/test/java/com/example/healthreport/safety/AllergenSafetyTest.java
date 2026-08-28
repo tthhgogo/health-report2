@@ -2,7 +2,6 @@ package com.example.healthreport.safety;
 
 import com.example.healthreport.constants.AllergenKey;
 import com.example.healthreport.llm.extraction.AllergenResultStatus;
-import com.example.healthreport.llm.extraction.ExtractionValidationCounters;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
 import com.example.healthreport.parse.segment.Segment;
 import com.example.healthreport.parse.segment.TextSource;
@@ -24,8 +23,7 @@ class AllergenSafetyTest {
 
 	@Test
 	void shouldDetectOnlySameSegmentPositiveCandidate() {
-		ExtractionValidationCounters counters = new ExtractionValidationCounters();
-		PositiveRowCoverageScanner scanner = new PositiveRowCoverageScanner(counters);
+		PositiveRowCoverageScanner scanner = new PositiveRowCoverageScanner();
 		DegradeAccumulator accumulator = new DegradeAccumulator();
 		List<Segment> separatedSegmentList = Arrays.asList(segment("f0-p1-s0", "牛奶"), segment("f0-p1-s1", "阳性(+)"));
 
@@ -36,13 +34,11 @@ class AllergenSafetyTest {
 		assertThat(scanner.scan(Collections.singletonList(sameSegment), Collections.<String>emptySet(), accumulator))
 			.isEqualTo(1);
 		assertThat(accumulator.partial()).isTrue();
-		assertThat(counters.getAllergenPositiveUncoveredCount().get()).isEqualTo(1L);
 	}
 
 	@Test
 	void borderlineShouldEnterProductSafetyFilterWithoutAdmittingNegativeOrUnknown() {
-		ExtractionValidationCounters counters = new ExtractionValidationCounters();
-		AllergenAdmissionFilter filter = new AllergenAdmissionFilter(counters);
+		AllergenAdmissionFilter filter = new AllergenAdmissionFilter();
 		List<ValidatedExtractionOutput.Allergen> sourceList = Arrays.asList(allergen(AllergenResultStatus.NEGATIVE),
 				allergen(AllergenResultStatus.UNKNOWN), allergen(AllergenResultStatus.POSITIVE),
 				allergen(AllergenResultStatus.BORDERLINE));
@@ -51,12 +47,11 @@ class AllergenSafetyTest {
 		assertThat(admittedList).hasSize(2);
 		assertThat(admittedList.get(0).getResultStatus()).isEqualTo(AllergenResultStatus.POSITIVE);
 		assertThat(admittedList.get(1).getResultStatus()).isEqualTo(AllergenResultStatus.BORDERLINE);
-		assertThat(counters.getAllergenUnknownCount().get()).isEqualTo(1L);
 	}
 
 	@Test
 	void shouldResolveFormalFoodFlagFromGroupsAndTrustOther() {
-		AllergenAdmissionFilter filter = new AllergenAdmissionFilter(new ExtractionValidationCounters());
+		AllergenAdmissionFilter filter = new AllergenAdmissionFilter();
 
 		assertThat(filter.resolveFoodBorne(AllergenKey.MILK, false)).isTrue();
 		assertThat(filter.resolveFoodBorne(AllergenKey.DUST_MITE, true)).isFalse();
@@ -66,8 +61,7 @@ class AllergenSafetyTest {
 
 	@Test
 	void shouldDegradeWhenAllergenSectionExistsButArrayIsEmpty() {
-		ExtractionValidationCounters counters = new ExtractionValidationCounters();
-		AllergenSuspectScanner scanner = new AllergenSuspectScanner(counters);
+		AllergenSuspectScanner scanner = new AllergenSuspectScanner();
 		Segment segment = segment("f0-p1-s0", "过敏原筛查");
 		Set<String> sectionIdSet = new LinkedHashSet<String>();
 		sectionIdSet.add(segment.getSegmentId());
@@ -75,13 +69,11 @@ class AllergenSafetyTest {
 
 		assertThat(scanner.scan(Collections.singletonList(segment), sectionIdSet, 0, accumulator)).isTrue();
 		assertThat(accumulator.partial()).isTrue();
-		assertThat(counters.getAllergenSuspectMissCount().get()).isEqualTo(1L);
 	}
 
 	@Test
 	void shouldDegradeCoverageGapAndRejectSubsetViolation() {
-		ExtractionValidationCounters counters = new ExtractionValidationCounters();
-		AllergenCoverageScanner scanner = new AllergenCoverageScanner(counters);
+		AllergenCoverageScanner scanner = new AllergenCoverageScanner();
 		Set<String> sectionIdSet = new LinkedHashSet<String>(Arrays.asList("s0", "s1"));
 		Set<String> dataIdSet = new LinkedHashSet<String>(Arrays.asList("s1"));
 		DegradeAccumulator accumulator = new DegradeAccumulator();

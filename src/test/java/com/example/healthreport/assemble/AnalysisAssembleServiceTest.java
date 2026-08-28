@@ -1,7 +1,6 @@
 package com.example.healthreport.assemble;
 
 import com.example.healthreport.assemble.dietadvice.DietAdviceAssembler;
-import com.example.healthreport.assemble.dietadvice.DietAdviceCounters;
 import com.example.healthreport.assemble.dietadvice.DietAdviceInputFactory;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendAssembler;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendInputFactory;
@@ -9,16 +8,19 @@ import com.example.healthreport.assemble.indicator.IndicatorAssembler;
 import com.example.healthreport.assemble.problem.ProblemAssembler;
 import com.example.healthreport.assemble.sort.DisplayOrder;
 import com.example.healthreport.cache.AnalysisModules;
+import com.example.healthreport.dish.DietPositiveMatcher;
 import com.example.healthreport.dish.Dish;
 import com.example.healthreport.dish.DishTagReadService;
 import com.example.healthreport.dish.MainIngredientResolver;
 import com.example.healthreport.dish.NutritionMatcher;
+import com.example.healthreport.parse.segment.TextNormalizer;
 import com.example.healthreport.dish.TagStateResolver;
 import com.example.healthreport.infra.DishQueryService;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
 import com.example.healthreport.llm.extraction.ValidatedExtractionOutputTestFactory;
 import com.example.healthreport.safety.AllergenKeywordFallback;
 import com.example.healthreport.safety.HighRiskAdviceGate;
+import com.example.healthreport.safety.StructuredAdmission;
 import com.example.healthreport.task.DegradeAccumulator;
 import org.junit.jupiter.api.Test;
 
@@ -84,14 +86,16 @@ class AnalysisAssembleServiceTest {
     private AnalysisAssembleService newService(DishQueryService dishQueryService,
                                                DishTagReadService dishTagReadService) {
         DisplayOrder displayOrder = new DisplayOrder();
-        HighRiskAdviceGate highRiskAdviceGate = new HighRiskAdviceGate();
+        HighRiskAdviceGate highRiskAdviceGate = new HighRiskAdviceGate(new TextNormalizer());
+        NutritionMatcher nutritionMatcher = new NutritionMatcher(new MainIngredientResolver());
         return new AnalysisAssembleService(
                 new IndicatorAssembler(displayOrder),
                 new ProblemAssembler(displayOrder),
                 new DietAdviceInputFactory(displayOrder),
-                new DietAdviceAssembler(highRiskAdviceGate, new DietAdviceCounters()),
-                new DishRecommendInputFactory(dishTagReadService,
-                        new NutritionMatcher(new MainIngredientResolver()), new AllergenKeywordFallback(), highRiskAdviceGate),
+                new DietAdviceAssembler(new StructuredAdmission(highRiskAdviceGate)),
+                new DishRecommendInputFactory(dishTagReadService, nutritionMatcher,
+                        new DietPositiveMatcher(nutritionMatcher), new AllergenKeywordFallback(),
+                        new StructuredAdmission(highRiskAdviceGate)),
                 new DishRecommendAssembler(new TagStateResolver(), displayOrder),
                 dishQueryService,
                 Clock.fixed(BIZ_DATE.atStartOfDay(ZoneId.systemDefault()).toInstant(),

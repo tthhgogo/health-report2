@@ -28,18 +28,15 @@ public class OcrPageSegmentFactory {
         }
         List<Segment> segmentList = new ArrayList<Segment>(ocrResult.getBlockList().size());
         int sequence = firstSequence;
-        int residualCount = 0;
         for (OcrBlock block : ocrResult.getBlockList()) {
             if (block.getRawText().length() == 0) {
                 continue;
             }
             TextNormalizationResult normalizationResult = textNormalizer.normalize(block.getRawText());
-            residualCount += normalizationResult.getResidualNonStandardCount();
-            textNormalizer.recordResidualSegment(normalizationResult);
             BBox normalizedBox = bboxNormalizer.normalize(block.getBbox(), orientation, ocrResult);
             segmentList.add(new Segment(Segment.id(fileIndex, pageNumber, sequence++), block.getRawText(),
                     normalizationResult.getNormalizedText(), TextSource.OCR, normalizedBox));
         }
-        return new OcrPageSegmentResult(segmentList, sequence, residualCount);
+        return new OcrPageSegmentResult(segmentList, sequence);
     }
 }

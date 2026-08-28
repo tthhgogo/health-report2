@@ -13,11 +13,9 @@ public final class OfdParseResult {
 
     private final List<Segment> segmentList;
     private final int pageCount;
-    private final int residualNonStandardCount;
 
-    public OfdParseResult(List<Segment> segmentList, int pageCount, int residualNonStandardCount) {
+    public OfdParseResult(List<Segment> segmentList, int pageCount) {
         this.segmentList = Collections.unmodifiableList(new ArrayList<Segment>(segmentList));
         this.pageCount = pageCount;
-        this.residualNonStandardCount = residualNonStandardCount;
     }
 }
