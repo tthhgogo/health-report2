@@ -13,18 +13,20 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/health-report/result")
 public class HealthReportResultController {
 
-    private final TaskQueryService taskQueryService;
-    private final CurrentUserProvider currentUserProvider;
+	private final TaskQueryService taskQueryService;
 
-    public HealthReportResultController(TaskQueryService taskQueryService,
-                                        CurrentUserProvider currentUserProvider) {
-        this.taskQueryService = taskQueryService;
-        this.currentUserProvider = currentUserProvider;
-    }
+	private final CurrentUserProvider currentUserProvider;
 
-    /** MySQL 判定任务成功后才读取 Redis 结果。 */
-    @GetMapping("/{taskId}")
-    public AnalysisResult getResult(@PathVariable("taskId") String taskId) {
-        return taskQueryService.getResult(taskId, currentUserProvider.currentUserId());
-    }
+	public HealthReportResultController(TaskQueryService taskQueryService, CurrentUserProvider currentUserProvider) {
+		this.taskQueryService = taskQueryService;
+		this.currentUserProvider = currentUserProvider;
+	}
+
+	/** MySQL 判定任务成功后才读取 Redis 结果。 */
+	@GetMapping("/{taskId}")
+	public AnalysisResult getResult(@PathVariable("taskId") String taskId) {
+		return taskQueryService.getResult(taskId, currentUserProvider.currentUserId(),
+				currentUserProvider.currentCompanyId());
+	}
+
 }

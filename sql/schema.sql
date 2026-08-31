@@ -1,6 +1,7 @@
 -- 本文件是当前完整结构，可在空库重复执行；升级已有环境请走 sql/alter/。
 CREATE TABLE IF NOT EXISTS ct_health_report_task (
   task_id        VARCHAR(36)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务ID，UUID小写规范形式，由IdCanonicalizer生成',
+  company_id     VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属企业ID，创建任务时从可信认证上下文固化，模块四据此选择企业菜品集合',
   user_id        VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属用户ID，用于鉴权，值由上游用户系统提供',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务状态：QUEUED待执行/PARSING解析中/EXTRACTING抽取中/ASSEMBLING组装中/SUCCEEDED成功/FAILED失败',
   stage          VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '前端进度阶段，仅三个取值：UPLOADING上传中对应QUEUED/PARSING识别中对应PARSING与EXTRACTING/ASSEMBLING生成中对应ASSEMBLING',
@@ -19,7 +20,7 @@ CREATE TABLE IF NOT EXISTS ct_health_report_task (
   update_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护，代码永不赋值',
   update_by      VARCHAR(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '更新人标识，固定系统标识，绝不写用户标识',
   PRIMARY KEY (task_id),
-  KEY idx_user (user_id),
+  KEY idx_company_user (company_id, user_id),
   KEY idx_sweep (status, heartbeat_at),
   KEY idx_deadline (status, deadline_at),
   KEY idx_expire (expire_at)
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS ct_health_report_task (
 
 CREATE TABLE IF NOT EXISTS ct_health_report_file (
   file_id        VARCHAR(36)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件ID，UUID小写规范形式',
+  company_id     VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属企业ID，上传时从可信认证上下文固化，绑定任务时必须与任务企业精确一致',
   user_id        VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属用户ID，用于鉴权',
   task_id        VARCHAR(36)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '关联任务ID，未绑定任务时为NULL',
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始，即用户提交fileIds的顺序',
@@ -44,17 +46,18 @@ CREATE TABLE IF NOT EXISTS ct_health_report_file (
   update_by      VARCHAR(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '更新人标识，固定系统标识',
   PRIMARY KEY (file_id),
   KEY idx_task (task_id),
-  KEY idx_user (user_id),
+  KEY idx_company_user (company_id, user_id),
   KEY idx_expire (expire_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='上传的体检报告文件';
 
 CREATE TABLE IF NOT EXISTS ct_dish_tag (
-  dish_id             BIGINT       NOT NULL COMMENT '食堂菜品ID，全系统唯一',
+  company_id          VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '菜品所属企业ID，离线打标、查询与Redis发布的租户隔离键',
+  dishes_id           BIGINT       NOT NULL COMMENT '食堂菜品ID，在同一企业内唯一，与company_id共同确定菜品',
   tag_hash            CHAR(64)     CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '打标输入哈希：规则版本+提示词版本+模型版本+菜名+食材，四段用竖线拼接后取SHA-256，食材先按名称字典序排序',
   enum_key            VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '打标维度枚举键：13个食入性过敏原或9个饮食注意，取值见constants包',
   verdict             VARCHAR(12)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '打标结论：REJECT含或可能含/UNKNOWN数据不足判不出/NEUTRAL确认不含。RECOMMEND仅由营养维度Java计算产生不落本表，TAG_MISSING是查不到行的推导结果不入库',
   evidence_type       VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '证据类型：INGREDIENT食材表明确列出/DISH_NAME菜名明确说明/COOKING菜名直接表达且足以证明成分的工艺证据，仅REJECT时有值；通常做法推断不得产生REJECT',
-  matched_ingredients VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '命中食材名称的JSON数组字符串，随标签一起进Redis缓存，回源时一并读出',
+  matched_ingredients VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '命中食材名称的JSON数组字符串，仅供离线契约校验与排障，不写Redis、不用于推荐理由',
   reason              VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '模型返回的判定理由，仅排障用，不展示给用户',
   model_version       VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT 'LLM-B模型版本，冗余存储仅供排障，不参与任何键与查询条件',
   prompt_version      VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT 'LLM-B提示词版本，冗余存储仅供排障',
@@ -64,7 +67,7 @@ CREATE TABLE IF NOT EXISTS ct_dish_tag (
   create_by           VARCHAR(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '创建人标识，固定为DISH_TAG_JOB',
   update_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护，代码永不赋值',
   update_by           VARCHAR(50)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '更新人标识，固定为DISH_TAG_JOB',
-  UNIQUE KEY uk_dish_hash_enum (dish_id, tag_hash, enum_key),
-  KEY idx_online (enum_key, dish_id, tag_hash),
+  UNIQUE KEY uk_company_dish_hash_enum (company_id, dishes_id, tag_hash, enum_key),
+  KEY idx_build (company_id, enum_key, dishes_id, tag_hash),
   KEY idx_last_seen (last_seen_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='菜品维度打标结果';

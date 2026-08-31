@@ -12,25 +12,27 @@ import static org.mockito.Mockito.when;
 /** 删除四步顺序与不可逆标志的回归。 */
 class TaskDeleteServiceTest {
 
-    @Test
-    void shouldMarkDeletedBeforeCleaningStoresWithoutWorkerCancellation() {
-        String taskId = "123e4567-e89b-12d3-a456-426614174000";
-        String userId = "CaseSensitiveUser";
-        TaskOwnershipGuard ownershipGuard = mock(TaskOwnershipGuard.class);
-        CtHealthReportTaskService taskService = mock(CtHealthReportTaskService.class);
-        TaskResourceCleanupService cleanupService = mock(TaskResourceCleanupService.class);
-        CtHealthReportTaskEntity taskEntity = new CtHealthReportTaskEntity();
-        taskEntity.setTaskId(taskId);
-        when(ownershipGuard.assertOwned(taskId, userId)).thenReturn(taskEntity);
-        when(taskService.markDeleted(taskId, userId)).thenReturn(1);
-        TaskDeleteService deleteService = new TaskDeleteService(ownershipGuard, taskService, cleanupService);
+	@Test
+	void shouldMarkDeletedBeforeCleaningStoresWithoutWorkerCancellation() {
+		String taskId = "123e4567-e89b-12d3-a456-426614174000";
+		String userId = "CaseSensitiveUser";
+		String companyId = "company-a";
+		TaskOwnershipGuard ownershipGuard = mock(TaskOwnershipGuard.class);
+		CtHealthReportTaskService taskService = mock(CtHealthReportTaskService.class);
+		TaskResourceCleanupService cleanupService = mock(TaskResourceCleanupService.class);
+		CtHealthReportTaskEntity taskEntity = new CtHealthReportTaskEntity();
+		taskEntity.setTaskId(taskId);
+		when(ownershipGuard.assertOwned(taskId, userId, companyId)).thenReturn(taskEntity);
+		when(taskService.markDeleted(taskId, userId, companyId)).thenReturn(1);
+		TaskDeleteService deleteService = new TaskDeleteService(ownershipGuard, taskService, cleanupService);
 
-        deleteService.delete(taskId, userId);
+		deleteService.delete(taskId, userId, companyId);
 
-        InOrder order = inOrder(ownershipGuard, taskService, cleanupService);
-        order.verify(ownershipGuard).assertOwned(taskId, userId);
-        order.verify(taskService).markDeleted(taskId, userId);
-        order.verify(cleanupService).deleteFiles(taskId);
-        order.verify(cleanupService).deleteResult(taskId);
-    }
+		InOrder order = inOrder(ownershipGuard, taskService, cleanupService);
+		order.verify(ownershipGuard).assertOwned(taskId, userId, companyId);
+		order.verify(taskService).markDeleted(taskId, userId, companyId);
+		order.verify(cleanupService).deleteFiles(taskId);
+		order.verify(cleanupService).deleteResult(taskId);
+	}
+
 }

@@ -19,46 +19,45 @@ import static org.mockito.Mockito.when;
 /** REJECT 食材证据子集校验与 fail-safe 降 UNKNOWN。 */
 class DishTagWriteServiceTest {
 
-    private final CtDishTagService persistenceService = mock(CtDishTagService.class);
-    private final DishTagWriteService service = new DishTagWriteService(persistenceService,
-            new ObjectMapper());
+	private final CtDishTagService persistenceService = mock(CtDishTagService.class);
 
-    @Test
-    void allUnmatchedIngredientEvidenceShouldDowngradeToUnknown() {
-        DishTagOutput.Hit hit = hit("INGREDIENT", Collections.singletonList("不存在食材"));
-        Dish dish = new Dish(1L, "测试菜",
-                Collections.singletonList(new DishIngredient("实际食材", null)));
+	private final DishTagWriteService service = new DishTagWriteService(persistenceService, new ObjectMapper());
 
-        CtDishTagEntity entity = service.toEntity(hit, dish, "hash", "FISH", "model",
-                "prompt", "rule", LocalDate.of(2026, 8, 26));
+	@Test
+	void allUnmatchedIngredientEvidenceShouldDowngradeToUnknown() {
+		DishTagOutput.Hit hit = hit("INGREDIENT", Collections.singletonList("不存在食材"));
+		Dish dish = new Dish("company-a", 1L, "测试菜", Collections.singletonList(new DishIngredient("实际食材", null)));
 
-        assertThat(entity.getVerdict()).isEqualTo(TagState.UNKNOWN.name());
-        assertThat(entity.getEvidenceType()).isNull();
-        assertThat(entity.getMatchedIngredients()).isEqualTo("[]");
-    }
+		CtDishTagEntity entity = service.toEntity(hit, dish, "hash", "FISH", "model", "prompt", "rule",
+				LocalDate.of(2026, 8, 26));
 
-    @Test
-    void validIngredientEvidenceShouldBeWrittenOnce() {
-        when(persistenceService.insertFromJob(any(CtDishTagEntity.class))).thenReturn(1);
-        DishTagOutput.Hit hit = hit("INGREDIENT", Collections.singletonList("实际食材"));
-        Dish dish = new Dish(1L, "测试菜",
-                Collections.singletonList(new DishIngredient("实际食材", null)));
-        CtDishTagEntity entity = service.toEntity(hit, dish, "hash", "FISH", "model",
-                "prompt", "rule", LocalDate.of(2026, 8, 26));
+		assertThat(entity.getVerdict()).isEqualTo(TagState.UNKNOWN.name());
+		assertThat(entity.getEvidenceType()).isNull();
+		assertThat(entity.getMatchedIngredients()).isEqualTo("[]");
+	}
 
-        service.write(entity, new HashSet<String>(Collections.singletonList("实际食材")));
+	@Test
+	void validIngredientEvidenceShouldBeWrittenOnce() {
+		when(persistenceService.insertFromJob(any(CtDishTagEntity.class))).thenReturn(1);
+		DishTagOutput.Hit hit = hit("INGREDIENT", Collections.singletonList("实际食材"));
+		Dish dish = new Dish("company-a", 1L, "测试菜", Collections.singletonList(new DishIngredient("实际食材", null)));
+		CtDishTagEntity entity = service.toEntity(hit, dish, "hash", "FISH", "model", "prompt", "rule",
+				LocalDate.of(2026, 8, 26));
 
-        assertThat(entity.getVerdict()).isEqualTo(TagState.REJECT.name());
-        verify(persistenceService).insertFromJob(entity);
-    }
+		service.write(entity, new HashSet<String>(Collections.singletonList("实际食材")));
 
-    private DishTagOutput.Hit hit(String evidenceType, java.util.List<String> matchedList) {
-        DishTagOutput.Hit hit = new DishTagOutput.Hit();
-        hit.setDishId(1L);
-        hit.setVerdict("REJECT");
-        hit.setEvidenceType(evidenceType);
-        hit.setMatchedIngredients(matchedList);
-        hit.setReason("明确依据");
-        return hit;
-    }
+		assertThat(entity.getVerdict()).isEqualTo(TagState.REJECT.name());
+		verify(persistenceService).insertFromJob(entity);
+	}
+
+	private DishTagOutput.Hit hit(String evidenceType, java.util.List<String> matchedList) {
+		DishTagOutput.Hit hit = new DishTagOutput.Hit();
+		hit.setDishId(1L);
+		hit.setVerdict("REJECT");
+		hit.setEvidenceType(evidenceType);
+		hit.setMatchedIngredients(matchedList);
+		hit.setReason("明确依据");
+		return hit;
+	}
+
 }

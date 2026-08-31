@@ -1,6 +1,9 @@
 package com.example.healthreport.dish;
 
-import com.example.healthreport.cache.DishTagCache;
+import com.example.healthreport.cache.DishRecommendSetCache;
+import com.example.healthreport.cache.DishSetMemberCodec;
+import com.example.healthreport.cache.DishTagSetCatalog;
+import com.example.healthreport.cache.DishTagSetRef;
 import com.example.healthreport.constants.AllergenGroup;
 import com.example.healthreport.constants.AllergenGroups;
 import com.example.healthreport.constants.AllergenWord;
@@ -8,24 +11,26 @@ import com.example.healthreport.constants.Bucket;
 import com.example.healthreport.constants.DietRequirementContents;
 import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.DietRequirementRule;
+import com.example.healthreport.constants.NutritionKey;
 import com.example.healthreport.constants.PromptVersions;
 import com.example.healthreport.constants.ReviewStatus;
 import com.example.healthreport.constants.TagRuleVersion;
+import com.example.healthreport.infra.CompanyCursorPage;
+import com.example.healthreport.infra.DishCursorPage;
 import com.example.healthreport.infra.DishQueryService;
 import com.example.healthreport.llm.dishtag.DishTagBatchRejectedException;
 import com.example.healthreport.llm.dishtag.DishTagCallException;
 import com.example.healthreport.llm.dishtag.DishTagClient;
-import com.example.healthreport.llm.dishtag.DishTagProperties;
 import com.example.healthreport.llm.dishtag.DishTagInput;
 import com.example.healthreport.llm.dishtag.DishTagOutput;
+import com.example.healthreport.llm.dishtag.DishTagProperties;
 import com.example.healthreport.persistence.CtDishTagEntity;
 import com.example.healthreport.persistence.CtDishTagService;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.healthreport.safety.AllergenKeywordFallback;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,14 +41,18 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
-/** 离线菜品打标编排：按数据库 diff、零重试调用、写真源并预热 Redis。 */
+/** 按企业与菜品游标分页构建、校验并原子发布每日 33 个方向 SET。 */
 @Slf4j
 @Service
 public class DishTagService {
 
-	/** 单次打标调用的菜品上限；与输出 Schema 的数组上限一致，超出会被契约校验判整批作废。 */
-	private static final int BATCH_SIZE = 40;
+	/** 单次 LLM-B 调用的菜品上限；与输出 Schema 数组上限一致。 */
+	private static final int MODEL_BATCH_SIZE = 40;
+
+	/** 企业和菜品查询默认页容量；设计方案规定 500，仍需按真实菜单压测校准。 */
+	private static final int DEFAULT_QUERY_PAGE_SIZE = 500;
 
 	private final DishQueryService dishQueryService;
 
@@ -57,30 +66,150 @@ public class DishTagService {
 
 	private final DishTagProperties properties;
 
-	private final DishTagCache dishTagCache;
+	private final NutritionMatcher nutritionMatcher;
 
-	private final ObjectMapper objectMapper;
+	private final DietPositiveMatcher dietPositiveMatcher;
+
+	private final AllergenKeywordFallback allergenKeywordFallback;
+
+	private final DishRecommendSetCache setCache;
+
+	private final DishTagSetCatalog setCatalog;
+
+	private final DishSetMemberCodec memberCodec;
+
+	private final int queryPageSize;
 
 	public DishTagService(DishQueryService dishQueryService, TagHashCalculator tagHashCalculator,
 			CtDishTagService persistenceService, DishTagWriteService writeService, DishTagClient llmBClient,
-			DishTagProperties properties, DishTagCache dishTagCache, ObjectMapper objectMapper) {
+			DishTagProperties properties, NutritionMatcher nutritionMatcher, DietPositiveMatcher dietPositiveMatcher,
+			AllergenKeywordFallback allergenKeywordFallback, DishRecommendSetCache setCache,
+			DishTagSetCatalog setCatalog, DishSetMemberCodec memberCodec,
+			@Value("${dish.tag-query-page-size:500}") int queryPageSize) {
 		this.dishQueryService = dishQueryService;
 		this.tagHashCalculator = tagHashCalculator;
 		this.persistenceService = persistenceService;
 		this.writeService = writeService;
 		this.llmBClient = llmBClient;
 		this.properties = properties;
-		this.dishTagCache = dishTagCache;
-		this.objectMapper = objectMapper;
+		this.nutritionMatcher = nutritionMatcher;
+		this.dietPositiveMatcher = dietPositiveMatcher;
+		this.allergenKeywordFallback = allergenKeywordFallback;
+		this.setCache = setCache;
+		this.setCatalog = setCatalog;
+		this.memberCodec = memberCodec;
+		this.queryPageSize = queryPageSize > 0 ? queryPageSize : DEFAULT_QUERY_PAGE_SIZE;
 	}
 
-	/** 使用入口传入的业务日完成全部离线预热步骤。 */
+	/** 使用调度入口传入的统一业务日，逐企业独立构建和发布。 */
 	public void run(LocalDate bizDate) {
 		if (bizDate == null) {
 			throw new IllegalArgumentException("业务日不能为空");
 		}
 		long startMillis = System.currentTimeMillis();
-		List<Dish> dishList = DishQueryService.assertValidResult(dishQueryService.queryOnShelfDishes(bizDate));
+		int companyTotal = 0;
+		int publishedCompanyTotal = 0;
+		String lastCompanyId = null;
+		while (true) {
+			CompanyCursorPage companyPage = DishQueryService.assertValidCompanyPage(
+					dishQueryService.queryPreheatCompanyPage(bizDate, lastCompanyId, queryPageSize), lastCompanyId,
+					queryPageSize);
+			for (String companyId : companyPage.getCompanyIdList()) {
+				companyTotal++;
+				if (buildCompany(companyId, bizDate)) {
+					publishedCompanyTotal++;
+				}
+			}
+			if (companyPage.getCompanyIdList().size() < queryPageSize) {
+				break;
+			}
+			lastCompanyId = companyPage.getLastCompanyId();
+		}
+		log.info("菜品打标完成，业务日={}，企业数={}，发布企业数={}，耗时={}ms", bizDate, companyTotal, publishedCompanyTotal,
+				System.currentTimeMillis() - startMillis);
+	}
+
+	private boolean buildCompany(String companyId, LocalDate bizDate) {
+		String buildId = UUID.randomUUID().toString().replace("-", "");
+		try {
+			long countBefore = dishQueryService.countOnShelfDishes(companyId, bizDate);
+			if (countBefore < 0L) {
+				throw new IllegalStateException("在架菜品计数不能为负数");
+			}
+			Set<Long> processedDishIdSet = new LinkedHashSet<Long>();
+			Long lastDishesId = null;
+			while (true) {
+				DishCursorPage dishPage = DishQueryService.assertValidDishPage(
+						dishQueryService.queryOnShelfDishPage(companyId, bizDate, lastDishesId, queryPageSize),
+						companyId, lastDishesId, queryPageSize);
+				if (dishPage.getDishList().isEmpty()) {
+					break;
+				}
+				List<Dish> enrichedDishList = enrichPage(companyId, dishPage.getDishList());
+				for (Dish dish : enrichedDishList) {
+					if (!processedDishIdSet.add(dish.getDishId())) {
+						throw new IllegalStateException("企业分页出现重复菜品ID");
+					}
+				}
+				processPage(companyId, bizDate, buildId, enrichedDishList);
+				if (dishPage.getDishList().size() < queryPageSize) {
+					break;
+				}
+				lastDishesId = dishPage.getLastDishesId();
+			}
+			long countAfter = dishQueryService.countOnShelfDishes(companyId, bizDate);
+			if (countBefore != countAfter || countBefore != processedDishIdSet.size()) {
+				throw new IllegalStateException("企业菜品分页数量与前后计数不一致");
+			}
+			setCache.publish(companyId, bizDate, buildId, setCatalog.publishRefs());
+			log.info("企业菜品标签快照发布完成，业务日={}，菜品数={}，方向集合数={}", bizDate, processedDishIdSet.size(),
+					setCatalog.publishRefs().size());
+			return true;
+		}
+		catch (RuntimeException exception) {
+			discardSafely(companyId, bizDate, buildId);
+			// 企业标识与可能含 Key 的异常正文均不进入日志；保留堆栈便于定位确定性失败点。
+			log.error("企业菜品标签快照构建失败，其他企业继续构建", sanitizedException("企业快照构建异常类型:", exception));
+			return false;
+		}
+	}
+
+	/** 清理失败不得打断企业隔离循环；staging 仍会由六小时 TTL 回收。 */
+	private void discardSafely(String companyId, LocalDate bizDate, String buildId) {
+		try {
+			setCache.discard(companyId, bizDate, buildId, setCatalog.publishRefs());
+		}
+		catch (RuntimeException discardException) {
+			log.error("企业菜品标签构建集合清理失败，等待TTL回收", sanitizedException("构建集合清理异常类型:", discardException));
+		}
+	}
+
+	/** 不携带外部异常正文，仅保留类型和堆栈的可记录异常。 */
+	private RuntimeException sanitizedException(String prefix, RuntimeException exception) {
+		RuntimeException sanitizedException = new IllegalStateException(prefix + exception.getClass().getName());
+		sanitizedException.setStackTrace(exception.getStackTrace());
+		return sanitizedException;
+	}
+
+	private List<Dish> enrichPage(String companyId, List<Dish> baseDishList) {
+		List<Long> dishIdList = new ArrayList<Long>(baseDishList.size());
+		for (Dish dish : baseDishList) {
+			dishIdList.add(dish.getDishId());
+		}
+		Map<Long, List<DishIngredient>> ingredientListMap = DishQueryService
+			.assertValidIngredientMap(dishQueryService.queryIngredientListMap(companyId, dishIdList), dishIdList);
+		List<Dish> resultList = new ArrayList<Dish>(baseDishList.size());
+		for (Dish dish : baseDishList) {
+			if (!companyId.equals(dish.getCompanyId())) {
+				throw new IllegalStateException("菜品企业归属不一致");
+			}
+			resultList.add(
+					new Dish(companyId, dish.getDishId(), dish.getDishName(), ingredientListMap.get(dish.getDishId())));
+		}
+		return resultList;
+	}
+
+	private void processPage(String companyId, LocalDate bizDate, String buildId, List<Dish> dishList) {
 		Map<Long, String> hashByDishIdMap = hashes(dishList);
 		List<Dimension> dimensionList = dimensions();
 		Set<Long> dishIdSet = new LinkedHashSet<Long>(hashByDishIdMap.keySet());
@@ -89,29 +218,18 @@ public class DishTagService {
 		for (Dimension dimension : dimensionList) {
 			enumKeySet.add(dimension.enumKey);
 		}
-		List<CtDishTagEntity> existingEntityList = persistenceService.findCandidates(dishIdSet, hashSet, enumKeySet);
-		Map<String, CtDishTagEntity> entityByTripleMap = exactExisting(existingEntityList, hashByDishIdMap, enumKeySet);
-
+		Map<String, CtDishTagEntity> entityByTripleMap = exactExisting(companyId,
+				persistenceService.findCandidates(companyId, dishIdSet, hashSet, enumKeySet), hashByDishIdMap,
+				enumKeySet);
 		for (CtDishTagEntity entity : entityByTripleMap.values()) {
 			persistenceService.refreshLastSeen(entity, bizDate);
 			entity.setLastSeenDate(bizDate);
 		}
 
-		// 复用数是这个 Job 最该被盯住的一个数：它应该接近「菜品数 × 维度数」。
-		// 突然掉到接近 0，说明 tagHash 的某个输入变了（modelVersion / promptVersion /
-		// tagRuleVersion / 菜品食材），今晚会全量重打标——那是几千次模型调用，
-		// 不记这个数就只能等账单或超时告警来告诉你（§9.5.1）。
-		int reusedCount = entityByTripleMap.size();
-		log.info("菜品打标开始，业务日={}，在架菜品数={}，维度数={}，复用已有标签数={}，待打标三元组数={}",
-				bizDate, dishList.size(), dimensionList.size(), reusedCount,
-				dishList.size() * dimensionList.size() - reusedCount);
-
 		Map<Long, Dish> dishByIdMap = new HashMap<Long, Dish>(dishList.size());
 		for (Dish dish : dishList) {
 			dishByIdMap.put(dish.getDishId(), dish);
 		}
-		int taggedCount = 0;
-		int failedBatchCount = 0;
 		for (Dimension dimension : dimensionList) {
 			List<Dish> missingDishList = new ArrayList<Dish>();
 			for (Dish dish : dishList) {
@@ -120,71 +238,31 @@ public class DishTagService {
 					missingDishList.add(dish);
 				}
 			}
-			BatchStats stats = tagMissingBatches(bizDate, dimension, missingDishList, hashByDishIdMap,
-					dishByIdMap, entityByTripleMap);
-			taggedCount += stats.taggedCount;
-			failedBatchCount += stats.failedBatchCount;
-			cacheDimension(bizDate, dimension.enumKey, dishList, hashByDishIdMap, entityByTripleMap);
-			// 逐维度记一条：某个维度整体打标失败时，只看汇总数看不出是哪一维塌了，
-			// 而那一维在线就会全部回落到 UNKNOWN——用户侧表现为该过敏原下菜品推荐异常。
-			// enumKey 是维度枚举名，离线批处理不关联任何用户，与 §9.2 的红线无关。
-			log.info("菜品打标维度完成，业务日={}，维度={}，待打标菜品数={}，新增标签数={}，作废批次数={}",
-					bizDate, dimension.enumKey, missingDishList.size(),
-					stats.taggedCount, stats.failedBatchCount);
+			tagMissingBatches(bizDate, dimension, missingDishList, hashByDishIdMap, dishByIdMap, entityByTripleMap);
 		}
-
-		log.info("菜品打标完成，业务日={}，在架菜品数={}，维度数={}，复用标签数={}，新增标签数={}，"
-						+ "作废批次数={}，耗时={}ms",
-				bizDate, dishList.size(), dimensionList.size(), reusedCount, taggedCount,
-				failedBatchCount, System.currentTimeMillis() - startMillis);
+		assertComplete(dishList, dimensionList, hashByDishIdMap, entityByTripleMap);
+		appendDirections(companyId, bizDate, buildId, dishList, hashByDishIdMap, entityByTripleMap, dimensionList);
 	}
 
-	private BatchStats tagMissingBatches(LocalDate bizDate, Dimension dimension, List<Dish> missingDishList,
+	private void tagMissingBatches(LocalDate bizDate, Dimension dimension, List<Dish> missingDishList,
 			Map<Long, String> hashByDishIdMap, Map<Long, Dish> dishByIdMap,
 			Map<String, CtDishTagEntity> entityByTripleMap) {
-		int taggedCount = 0;
-		int failedBatchCount = 0;
-		for (int fromIndex = 0; fromIndex < missingDishList.size(); fromIndex += BATCH_SIZE) {
-			int toIndex = Math.min(fromIndex + BATCH_SIZE, missingDishList.size());
+		for (int fromIndex = 0; fromIndex < missingDishList.size(); fromIndex += MODEL_BATCH_SIZE) {
+			int toIndex = Math.min(fromIndex + MODEL_BATCH_SIZE, missingDishList.size());
 			List<Dish> batchDishList = new ArrayList<Dish>(missingDishList.subList(fromIndex, toIndex));
 			try {
-				log.info("LLM-B 批次打标开始，维度={}，批次菜品数={}",
-						dimension.enumKey, batchDishList.size());
 				DishTagOutput output = llmBClient.tag(dimension.input(batchDishList));
-				List<CtDishTagEntity> newEntityList = entities(output, dimension.enumKey, bizDate, hashByDishIdMap,
-						dishByIdMap);
-				for (CtDishTagEntity entity : newEntityList) {
-					Set<String> ingredientNameSet = ingredientNames(dishByIdMap.get(entity.getDishId()));
-					writeService.write(entity, ingredientNameSet);
+				for (CtDishTagEntity entity : entities(output, dimension.enumKey, bizDate, hashByDishIdMap,
+						dishByIdMap)) {
+					writeService.write(entity, ingredientNames(dishByIdMap.get(entity.getDishId())));
 					entityByTripleMap.put(triple(entity.getDishId(), entity.getTagHash(), entity.getEnumKey()), entity);
 				}
-				taggedCount += newEntityList.size();
-				// 落库行数少于批次菜品数说明模型漏回了菜——那些菜今天没有标签，
-				// 在线会回落到 UNKNOWN。不是异常，但必须看得见。
-				log.info("LLM-B 批次打标成功，维度={}，批次菜品数={}，落库标签数={}", dimension.enumKey,
-						batchDishList.size(), newEntityList.size());
 			}
 			catch (DishTagBatchRejectedException | DishTagCallException exception) {
-				// 整批作废且零重试；日志只记录安全计数，不记录维度、菜名或模型正文。
-				failedBatchCount++;
-				log.warn("LLM-B批次契约失败，已整批作废，批次菜品数={}", batchDishList.size());
+				log.warn("LLM-B批次失败，企业快照将不发布，批次菜品数={}", batchDishList.size());
+				throw new IllegalStateException("LLM-B批次打标失败");
 			}
 		}
-		return new BatchStats(taggedCount, failedBatchCount);
-	}
-
-	/** 一个维度内全部批次的打标结果计数，只含数量，不含菜名或标签内容。 */
-	private static final class BatchStats {
-
-		private final int taggedCount;
-
-		private final int failedBatchCount;
-
-		private BatchStats(int taggedCount, int failedBatchCount) {
-			this.taggedCount = taggedCount;
-			this.failedBatchCount = failedBatchCount;
-		}
-
 	}
 
 	private List<CtDishTagEntity> entities(DishTagOutput output, String enumKey, LocalDate bizDate,
@@ -192,12 +270,16 @@ public class DishTagService {
 		List<CtDishTagEntity> entityList = new ArrayList<CtDishTagEntity>(
 				output.getNeutralDishIds().size() + output.getUnknownDishIds().size() + output.getHitList().size());
 		for (Long dishId : output.getNeutralDishIds()) {
-			entityList.add(writeService.stateEntity(dishId, hashByDishIdMap.get(dishId), enumKey, TagState.NEUTRAL,
-					properties.getModelVersionDishtag(), PromptVersions.DISH_TAG, TagRuleVersion.VALUE, bizDate));
+			Dish dish = dishByIdMap.get(dishId);
+			entityList.add(writeService.stateEntity(dish.getCompanyId(), dishId, hashByDishIdMap.get(dishId), enumKey,
+					TagState.NEUTRAL, properties.getModelVersionDishtag(), PromptVersions.DISH_TAG,
+					TagRuleVersion.VALUE, bizDate));
 		}
 		for (Long dishId : output.getUnknownDishIds()) {
-			entityList.add(writeService.stateEntity(dishId, hashByDishIdMap.get(dishId), enumKey, TagState.UNKNOWN,
-					properties.getModelVersionDishtag(), PromptVersions.DISH_TAG, TagRuleVersion.VALUE, bizDate));
+			Dish dish = dishByIdMap.get(dishId);
+			entityList.add(writeService.stateEntity(dish.getCompanyId(), dishId, hashByDishIdMap.get(dishId), enumKey,
+					TagState.UNKNOWN, properties.getModelVersionDishtag(), PromptVersions.DISH_TAG,
+					TagRuleVersion.VALUE, bizDate));
 		}
 		for (DishTagOutput.Hit hit : output.getHitList()) {
 			entityList.add(writeService.toEntity(hit, dishByIdMap.get(hit.getDishId()),
@@ -207,34 +289,91 @@ public class DishTagService {
 		return entityList;
 	}
 
-	private void cacheDimension(LocalDate bizDate, String enumKey, List<Dish> dishList,
-			Map<Long, String> hashByDishIdMap, Map<String, CtDishTagEntity> entityByTripleMap) {
-		Map<String, TagValue> valueByFieldMap = new LinkedHashMap<String, TagValue>();
+	private void appendDirections(String companyId, LocalDate bizDate, String buildId, List<Dish> dishList,
+			Map<Long, String> hashByDishIdMap, Map<String, CtDishTagEntity> entityByTripleMap,
+			List<Dimension> dimensionList) {
+		Map<DishTagSetRef, Set<String>> memberByRefMap = new LinkedHashMap<DishTagSetRef, Set<String>>();
 		for (Dish dish : dishList) {
-			String tagHash = hashByDishIdMap.get(dish.getDishId());
-			CtDishTagEntity entity = entityByTripleMap.get(triple(dish.getDishId(), tagHash, enumKey));
-			if (entity != null) {
-				valueByFieldMap.put(dishTagCache.field(dish.getDishId(), tagHash), toTagValue(entity));
+			String member = memberCodec.encode(dish.getDishId(), dish.getDishName());
+			Map<String, TagState> stateByEnumKeyMap = finalSafetyStates(dish, hashByDishIdMap.get(dish.getDishId()),
+					entityByTripleMap, dimensionList);
+			for (AllergenGroup group : AllergenGroups.foodBorneGroups()) {
+				if (stateByEnumKeyMap.get(group.getKey().name()) == TagState.REJECT) {
+					addMember(memberByRefMap, setCatalog.ref(DishTagSetRef.Category.ALLERGEN,
+							DishTagSetRef.Direction.REJECT, group.getKey().name()), member);
+				}
+			}
+			for (DietRequirementKey key : DietRequirementKey.values()) {
+				if (key != DietRequirementKey.OTHER && stateByEnumKeyMap.get(key.name()) == TagState.REJECT) {
+					addMember(memberByRefMap,
+							setCatalog.ref(DishTagSetRef.Category.DIET, DishTagSetRef.Direction.REJECT, key.name()),
+							member);
+				}
+			}
+			if (!stateByEnumKeyMap.containsValue(TagState.UNKNOWN)) {
+				appendPositiveDirections(memberByRefMap, member, dish, stateByEnumKeyMap);
 			}
 		}
-		dishTagCache.putAll(bizDate, enumKey, valueByFieldMap);
+		for (Map.Entry<DishTagSetRef, Set<String>> entry : memberByRefMap.entrySet()) {
+			setCache.append(companyId, bizDate, buildId, entry.getKey(), entry.getValue());
+		}
 	}
 
-	/** 将数据库实体转换为在线只需的安全缓存值。 */
-	public TagValue toTagValue(CtDishTagEntity entity) {
-		List<String> matchedIngredientList = Collections.emptyList();
-		if (entity.getMatchedIngredients() != null) {
-			try {
-				matchedIngredientList = objectMapper.readValue(entity.getMatchedIngredients(),
-						new TypeReference<List<String>>() {
-						});
-			}
-			catch (IOException | RuntimeException exception) {
-				// 真源行证据损坏时保留 verdict，但不扩散损坏文本。
-				matchedIngredientList = Collections.emptyList();
+	private Map<String, TagState> finalSafetyStates(Dish dish, String tagHash,
+			Map<String, CtDishTagEntity> entityByTripleMap, List<Dimension> dimensionList) {
+		Map<String, TagState> resultMap = new LinkedHashMap<String, TagState>();
+		for (Dimension dimension : dimensionList) {
+			CtDishTagEntity entity = entityByTripleMap.get(triple(dish.getDishId(), tagHash, dimension.enumKey));
+			resultMap.put(dimension.enumKey, TagState.valueOf(entity.getVerdict()));
+		}
+		for (AllergenGroup group : AllergenGroups.foodBorneGroups()) {
+			if (allergenKeywordFallback.matches(group, dish)) {
+				resultMap.put(group.getKey().name(), TagState.REJECT);
 			}
 		}
-		return new TagValue(TagState.valueOf(entity.getVerdict()), matchedIngredientList);
+		return resultMap;
+	}
+
+	private void appendPositiveDirections(Map<DishTagSetRef, Set<String>> memberByRefMap, String member, Dish dish,
+			Map<String, TagState> stateByEnumKeyMap) {
+		for (NutritionKey key : NutritionKey.values()) {
+			if (key != NutritionKey.OTHER && nutritionMatcher.match(dish, key).getState() == TagState.RECOMMEND) {
+				addMember(memberByRefMap,
+						setCatalog.ref(DishTagSetRef.Category.NUTRITION, DishTagSetRef.Direction.RECOMMEND, key.name()),
+						member);
+			}
+		}
+		DietRequirementKey[] positiveKeyArray = new DietRequirementKey[] { DietRequirementKey.LOW_PURINE,
+				DietRequirementKey.HIGH_FIBER };
+		for (DietRequirementKey key : positiveKeyArray) {
+			TagState safetyState = stateByEnumKeyMap.get(key.name());
+			if (dietPositiveMatcher.match(dish, key, safetyState).getState() == TagState.RECOMMEND) {
+				addMember(memberByRefMap,
+						setCatalog.ref(DishTagSetRef.Category.DIET, DishTagSetRef.Direction.RECOMMEND, key.name()),
+						member);
+			}
+		}
+	}
+
+	private void addMember(Map<DishTagSetRef, Set<String>> memberByRefMap, DishTagSetRef setRef, String member) {
+		Set<String> memberSet = memberByRefMap.get(setRef);
+		if (memberSet == null) {
+			memberSet = new LinkedHashSet<String>();
+			memberByRefMap.put(setRef, memberSet);
+		}
+		memberSet.add(member);
+	}
+
+	private void assertComplete(List<Dish> dishList, List<Dimension> dimensionList, Map<Long, String> hashByDishIdMap,
+			Map<String, CtDishTagEntity> entityByTripleMap) {
+		for (Dish dish : dishList) {
+			for (Dimension dimension : dimensionList) {
+				if (!entityByTripleMap
+					.containsKey(triple(dish.getDishId(), hashByDishIdMap.get(dish.getDishId()), dimension.enumKey))) {
+					throw new IllegalStateException("当前页标签维度覆盖不完整");
+				}
+			}
+		}
 	}
 
 	private Map<Long, String> hashes(List<Dish> dishList) {
@@ -242,16 +381,19 @@ public class DishTagService {
 		for (Dish dish : dishList) {
 			if (resultMap.put(dish.getDishId(), tagHashCalculator.calculate(TagRuleVersion.VALUE,
 					PromptVersions.DISH_TAG, properties.getModelVersionDishtag(), dish)) != null) {
-				throw new IllegalArgumentException("在架菜品ID重复");
+				throw new IllegalArgumentException("当前企业分页菜品ID重复");
 			}
 		}
 		return resultMap;
 	}
 
-	private Map<String, CtDishTagEntity> exactExisting(List<CtDishTagEntity> candidateEntityList,
+	private Map<String, CtDishTagEntity> exactExisting(String companyId, List<CtDishTagEntity> candidateEntityList,
 			Map<Long, String> hashByDishIdMap, Set<String> enumKeySet) {
 		Map<String, CtDishTagEntity> resultMap = new HashMap<String, CtDishTagEntity>();
 		for (CtDishTagEntity entity : candidateEntityList) {
+			if (!companyId.equals(entity.getCompanyId())) {
+				throw new IllegalStateException("菜品标签数据库返回了其他企业数据");
+			}
 			if (enumKeySet.contains(entity.getEnumKey())
 					&& entity.getTagHash().equals(hashByDishIdMap.get(entity.getDishId()))) {
 				resultMap.put(triple(entity.getDishId(), entity.getTagHash(), entity.getEnumKey()), entity);

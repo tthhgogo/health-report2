@@ -7,6 +7,7 @@
     <!-- 文件绑定只读取容量预检与归属判断需要的最小字段。 -->
     <sql id="fileBindingColumns">
         f.file_id,
+        f.company_id,
         f.user_id,
         f.task_id,
         f.status,
@@ -21,6 +22,7 @@
     <resultMap id="fileBindingRecordMap"
                type="com.example.healthreport.persistence.FileBindingRecord">
         <id column="file_id" property="fileId"/>
+        <result column="company_id" property="companyId"/>
         <result column="user_id" property="userId"/>
         <result column="task_id" property="taskId"/>
         <result column="status" property="status"/>
@@ -42,6 +44,7 @@
             #{fileId}
         </foreach>
         AND f.user_id = #{userId}
+        AND f.company_id = #{companyId}
     </select>
 
     <!-- OF f 保证只锁文件行，避免绑定旧任务时扩大锁范围。 -->
@@ -55,6 +58,7 @@
             #{fileId}
         </foreach>
         AND f.user_id = #{userId}
+        AND f.company_id = #{companyId}
         FOR UPDATE OF f
     </select>
 

@@ -67,8 +67,11 @@
         ▼
 ⑤ 前端轮询 taskId 取结果
 
-离线：每日凌晨 LLM-B 对当日在架菜品按 22 个维度打标 → MySQL ct_dish_tag（真源）+ Redis（读缓存）
-      营养补充 9 个维度不打标，在线由 Java 确定性交集匹配（§8.7）
+离线：每日凌晨按企业游标分页读取当日在架菜品与食材，完成 13 个过敏原、9 个饮食注意、
+      9 个营养补充维度的全部判定；饮食正向仅支持低嘌呤、高纤维，按企业发布 33 个
+      Redis 标签集合（§8.3）
+在线：只按当前用户 companyId 读取对应企业的 Redis 集合，做并集、差集与排序；
+      不查询菜品表、不读取食材、不调用 LLM-B，也不回源 MySQL 标签表
 ```
 
 **在线链路只调用 LLM-A，不调用 LLM-B。** LLM-A 本身按 ≤8 页/批分批，一份 22 页报告是 3 批（§4.1）。
@@ -89,7 +92,7 @@ LLM-B 只允许离线预热任务调用，在线链路对它的调用次数必�
 | 可读性 | 按 §3.1 的逐格式可读性判定 | 「文件无法读取，请检查文件是否完整」 |
 
 存 S3 私有 Bucket，落一条 `ct_health_report_file`（`status = UPLOADED`，`task_id = NULL`，
-`user_id = 当前用户`，`expire_at = now + 30min`）。
+`user_id = 当前用户`、`company_id = 当前企业`，`expire_at = now + 30min`）。
 
 **HEIC 由前端转码为 JPEG 后上传**，后端不引 Native 库。
 
@@ -104,6 +107,7 @@ POST /api/health-report/analyze
 
 ```
 file.userId   == 当前已认证 userId     ← 不校验这条 = 拿到别人的 fileId 就能读到别人的报告
+file.companyId == 当前已认证 companyId ← 用户与文件必须同时属于当前企业
 file.status   == UPLOADED
 file.expireAt >  now
 file.taskId   IS NULL
@@ -135,7 +139,7 @@ PDF / OFD / 图片的预检页数是精确值；Word 因内嵌图片尚未 OCR�
 SELECT f.*, t.status, t.reanalyzable, t.deleted_at
   FROM ct_health_report_file f
   LEFT JOIN ct_health_report_task t ON t.task_id = f.task_id
- WHERE f.file_id IN (?) AND f.user_id = ?
+ WHERE f.file_id IN (?) AND f.user_id = ? AND f.company_id = ?
  FOR UPDATE OF f;
 -- 逐行校验 status='UPLOADED'、expire_at>now、以及上面的可绑定条件
 -- 不加 OF f 会连带锁住 ct_health_report_task 行，与 Worker 的状态 CAS 争锁
@@ -143,7 +147,7 @@ SELECT f.*, t.status, t.reanalyzable, t.deleted_at
 -- ② 条件更新，把 oldTaskId 带进 WHERE 防止两个请求同时抢
 UPDATE ct_health_report_file
    SET task_id = :newTaskId, file_index = ?, expire_at = ?
- WHERE file_id = ? AND user_id = ? AND status = 'UPLOADED'
+ WHERE file_id = ? AND user_id = ? AND company_id = ? AND status = 'UPLOADED'
    AND (task_id IS NULL OR task_id = :oldTaskId);
 -- 不写 update_time，由 ON UPDATE CURRENT_TIMESTAMP 维护（§9.1.1）
 -- 受影响行数必须 == 1，否则整个事务回滚，返回 FILE_ALREADY_BOUND
@@ -198,6 +202,7 @@ deleted_at  正交标志，任何状态下都可置，一旦置上不可撤销
 CREATE TABLE ct_health_report_task (
   task_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '任务ID，使用UUID',
   user_id        VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属用户ID，用于鉴权',
+  company_id  VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属企业ID，创建任务时从可信登录上下文固化，模块四据此选择企业菜品标签集合',
   status         VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '任务状态：QUEUED/PARSING/EXTRACTING/ASSEMBLING/SUCCEEDED/FAILED',
   stage          VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '前端进度阶段，见§2.4',
   progress       TINYINT      NOT NULL DEFAULT 0 COMMENT '任务进度百分比，取值0至100',
@@ -215,7 +220,7 @@ CREATE TABLE ct_health_report_task (
   update_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护',
   update_by      VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '更新人标识',
   PRIMARY KEY (task_id),
-  KEY idx_user (user_id),
+  KEY idx_company_user (company_id, user_id),
   KEY idx_sweep (status, heartbeat_at),
   KEY idx_deadline (status, deadline_at),
   KEY idx_expire (expire_at)
@@ -224,6 +229,7 @@ CREATE TABLE ct_health_report_task (
 CREATE TABLE ct_health_report_file (
   file_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '文件ID，使用UUID',
   user_id        VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属用户ID，用于鉴权',
+  company_id  VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属企业ID，上传时从可信登录上下文固化，绑定任务时必须与任务企业精确一致',
   task_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '关联任务ID，未绑定任务时为NULL',
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始',
   status         VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '文件状态：UPLOADED',
@@ -240,7 +246,7 @@ CREATE TABLE ct_health_report_file (
   update_by      VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '更新人标识',
   PRIMARY KEY (file_id),
   KEY idx_task (task_id),
-  KEY idx_user (user_id),
+  KEY idx_company_user (company_id, user_id),
   KEY idx_expire (expire_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='上传的体检报告文件';
 ```
@@ -467,7 +473,8 @@ UPDATE ct_health_report_task SET status='FAILED', fail_code='EXECUTION_TIMEOUT',
 **删除是打标志，不是状态迁移：**
 
 ```
-① UPDATE task SET deleted_at = now() WHERE task_id=? AND user_id=? AND deleted_at IS NULL
+① UPDATE task SET deleted_at = now()
+    WHERE task_id=? AND user_id=? AND company_id=? AND deleted_at IS NULL
    —— 任何状态下都允许，包括 SUCCEEDED 和执行中
 ② 删除以下全部：
      S3 原始文件
@@ -2055,13 +2062,14 @@ sectionIndex  同批内模型给的章节顺序 ← 阅读顺序的真源
 | 指标名称 | `indicators[].name` | 报告原文，不改写 |
 | 检测值 + 单位 | `value` + `unit` | |
 | 参考正常范围 | `refRange` | 报告没写时展示「报告未提供」，**禁止填充通用参考值** |
-| 报告结论 | `conclusionText` | 报告原文，直接引用 |
+| 展示结论 | `conclusionText` | `REPORT_TEXT` 路径直接引用报告原文；`REFERENCE_RANGE_IN_RANGE` 固定为「在参考范围内」；`REFERENCE_VALUE_MATCH` 固定为「符合报告参考值」 |
+| 结论生成标志 | `conclusionGenerated` | 报告原文为 `false`；上述两种参考值准入文案为 `true`，前端必须做视觉区分 |
 | 状态标签 | 见 §5.2 | |
 
-> 「参考正常范围」「报告结论」「指标名称」三项展示的都是**报告原文**，
+> 「参考正常范围」「指标名称」以及 `REPORT_TEXT` 路径的 `conclusionText` 是**报告原文**，
 > 一律由 Java 按 `segmentId` 定位，并做**包含性校验**——档位按该 segment 的
-> `textSource` 区分，原生文本层严格子串、OCR 放宽（§3.2.3）。
-> 任一字段校验不过，该指标**整条丢弃**。
+> `textSource` 区分，原生文本层严格子串、OCR 放宽（§3.2.3）。任一必需来源字段校验不过，
+> 该指标**整条丢弃**。两条参考值准入文案是 Java 固定内容常量，不冒充报告原文。
 
 ### 5.2 状态标签：完全由模型判定
 
@@ -2093,8 +2101,8 @@ sectionIndex  同批内模型给的章节顺序 ← 阅读顺序的真源
 > ——**只用于观察的东西不该跑在每一次用户请求里**（§4.4-③）。
 >
 > 方向词的口径落在**提示词**（§4.3-6）和**评测集**（§11-18），不落在 Java。
-> 代价是模型抽风时不再有运行时信号，缓解在展示层：标签文字永远是原文（见下），
-> 用户看到的还是「↑偏高」三个字，只有颜色错。
+> 代价是模型抽风时不再有运行时信号。`REPORT_TEXT` 路径的展示文字仍是原文，
+> 用户看到的还是「↑偏高」三个字，只有颜色错；参考值准入路径按下述固定文案展示。
 
 **为什么这一层要交给模型：** 「阳性」不等于异常，**「阴性」也不等于正常**。
 
@@ -2108,14 +2116,17 @@ sectionIndex  同批内模型给的章节顺序 ← 阅读顺序的真源
 **原设计把「阴性」无条件放进正常词表，与"阳性不一定异常"是同一个错误的两面**（§16 评审），
 现已改为阴性阳性走同一条路径。这与 §8.4 把过敏打标交给模型是同一条理由。
 
-**展示规则：颜色跟判定，文字跟原文。**
+**展示规则：颜色跟判定；文字按结论依据分流。**
 
 ```
 标签颜色 = status 对应色
-标签文字 = conclusionText 报告原文（如「阳性(+)」），不写「异常」二字
+conclusionBasis = REPORT_TEXT               → conclusionText 报告原文（如「阳性(+)」），conclusionGenerated=false
+conclusionBasis = REFERENCE_RANGE_IN_RANGE  → 「在参考范围内」，conclusionGenerated=true
+conclusionBasis = REFERENCE_VALUE_MATCH     → 「符合报告参考值」，conclusionGenerated=true
 ```
 
-即使模型判反了方向，用户看到的仍然是报告原文，不会被系统的措辞误导。
+前一条即使模型判反方向，用户看到的仍是报告原文；后两条只陈述与本报告参考值的关系，
+不得扩大成「正常」或「未见异常」，且前端必须按生成标志做视觉区分。
 
 **记录 `statusJudgedByModel = true` 的条数**——这是直接数模型返回的一个布尔字段，
 不是词表扫描，留在线上。它告诉你有多大比例的判定走了模型的临床含义判断路径，
@@ -2595,19 +2606,24 @@ class DietRequirementContent {
 
 ### 8.1 菜品数据
 
-**菜品与食材数据已同步在本系统库表内，在线组装与离线打标都直接查库**，
-不调外部接口，因此没有超时、降级、鉴权穿透这些问题。
+**菜品与食材数据只允许离线打标任务读取。** 在线推荐不查询菜品表和食材表，
+只读取凌晨已经发布完成的 Redis 标签集合。
 
 ```
-ct_dish             dish_id（全系统唯一）、dish_name、on_shelf、biz_date
-ct_dish_ingredient  dish_id、ingredient_name、weight_g
+ct_dish             company_id、dishes_id、dish_name、on_shelf、biz_date
+ct_dish_ingredient  company_id、dishes_id、ingredient_name、weight_g
 ```
 
 > 这两张是食堂系统的表，本方案只读、不写、不改结构。
-> 实际表名与列名以食堂系统为准，接入时核对（§12-13）。
+> 实际表名接入时核对；企业与菜品 ID 列分别固定按 `company_id`、`dishes_id` 接入（§12-13）。
 
-在线组装时按当前用户可见范围查当日在架菜品；主料标记、拼音、配料完整性全部运行时推导，
-**菜品库零改造**。
+用户与菜品都归属于企业。`company_id` 是菜品查询、Redis Key 和在线读取的强制隔离维度；
+任务创建时把可信登录上下文中的 `companyId` 固化到任务记录；在线组装只使用该字段，
+不得接受请求参数覆盖，也不得跨企业合并集合。
+
+菜品量可能很大，凌晨任务禁止一次性查询全企业菜品：先按企业分页读取菜品主表，
+再按当前页的菜品 ID 批量查询食材。不得用菜品与食材一对多 JOIN 后直接分页，
+也不得逐菜查询食材形成 N+1。分页细节见 §8.3.2。
 
 #### 8.1.1 `ct_dish_ingredient` 里没有调味料（已确认）
 
@@ -2641,89 +2657,114 @@ XO 酱  → 配方线索       配方差异大，虾/干贝维度未明确时 UN
 > 一律不成立——只能推出"主料配料里没有 X"。这条要写进 LLM-B 的提示词，
 > 也要写进 Java 兜底的注释里，否则以后一定有人照着"数据里没有"下结论。
 
-**`dish_id` 全系统唯一已由菜品数据方确认**（2026-08-24），这是 §8.3 缓存 Key 不含租户/食堂维度的前提。
+无论 `dishes_id` 是企业内唯一还是全系统唯一，Redis Key 和数据库查询都必须包含 `company_id`。
+唯一 ID 不能代替租户隔离；同一请求中的用户企业、Redis 企业段和菜品所属企业必须完全一致。
 
 ### 8.2 三个维度的判定方式
 
 | 维度 | 枚举数 | 判定方 | 需求依据 |
 |---|---|---|---|
-| 食入性过敏原 | 13 | **LLM-B 离线打标（`REJECT`/`UNKNOWN`/`NEUTRAL`，§8.4）+ Java 关键词兜底取并集** | §8-2 主料或配料 |
+| 食入性过敏原 | 13 | **凌晨离线打标，只把 `REJECT` 写入过敏原不推荐集合** | §8-2 主料或配料 |
 | ↑ 注 | | 食材表不含调味料（§8.1.1），Java 兜底实际只覆盖明确菜名；缺少配方证据时 LLM-B 必须给 `UNKNOWN`，不得用常识补配方 | |
-| 营养补充 | 9 | **纯 Java 确定性匹配**，不调模型 | §8-2 菜品主料 |
-| 饮食注意 | 9 | **LLM-B 离线打标（安全三态）+ Java 确定性正向匹配（§8.7.1）** | §8-2 符合/违反饮食要求 |
+| 营养补充 | 9 | **凌晨离线确定性打标，只写推荐集合** | §8-2 菜品主料 |
+| 饮食注意 | 9 | **凌晨离线对 9 个维度写不推荐集合；仅 `LOW_PURINE`、`HIGH_FIBER` 按主料确证后写推荐集合** | §8-2 仅限能从菜品主料确证的维度 |
 | 吸入性过敏原 | 5 | **不参与** | 非食物 |
 
-**LLM-B 实际打标维度 = 13 + 9 = 22 个**（5 个吸入性不参与、9 个营养补充走 Java）。
+LLM-B 处理 13 个食入性过敏原和 9 个饮食注意维度，只负责 `REJECT / UNKNOWN / NEUTRAL`
+安全判定；2 个饮食正向维度和 9 个营养补充维度由 Java 在同一个凌晨任务中按主料计算。
+发布给在线链路的结果统一为 **33 个集合**：
+
+```
+13 个 allergen:reject
+ 2 个 diet:recommend（仅 LOW_PURINE、HIGH_FIBER）
+ 9 个 diet:reject
+ 9 个 nutrition:recommend
+= 33 个标签集合
+```
+
+> **数量口径：Redis 方向集合固定是 33 个。** 文档其他位置出现的“40 道菜”只是
+> LLM-B 单次模型调用的菜品批量上限，不是 Redis Key 或集合数量。
 
 ### 8.3 离线打标（每日凌晨，xxl-job）
 
 #### 8.3.1 缓存 Key 按维度组织，不按菜
 
-> **2026-08-24 变更：`tagPolicyVersion` 已取消，合并进 `tagHash`。**
-> 本节以下凡写 `dishHash` + `tagPolicyVersion` 两个维度的地方，现在都是一个 `tagHash`。
+Redis 直接保存用户查询所需的方向集合，不保存逐菜五态对象。正式 Key 全部带
+`companyId + bizDate`，同一企业同一天的 Key 使用相同 Redis Cluster hash tag：
 
-```
-tagHash = sha256(tagRuleVersion + "|" + promptVersion + "|" + modelVersion + "|"
-                 + normalize(菜名) + "|" + 食材串)
-
-MySQL ct_dish_tag 唯一键   (dish_id, tag_hash, enum_key)               ← 真源
-Redis Key               dish:tag:{enumKey}:{bizDate}   Hash
-Redis Field             {dishId}:{tagHash}
-Redis Value             {verdict, matchedIngredients}
-Redis TTL               3 天
+```text
+dish:recommend:{<companyId>:<bizDate>}:allergen:reject:<enumKey>
+dish:recommend:{<companyId>:<bizDate>}:diet:recommend:<enumKey>
+dish:recommend:{<companyId>:<bizDate>}:diet:reject:<enumKey>
+dish:recommend:{<companyId>:<bizDate>}:nutrition:recommend:<enumKey>
 ```
 
-**Key 的形状必须匹配读取模式。** 在线要的是「这几个生效维度，全部菜分别什么标签」，
-不是「这一道菜，22 个维度分别什么标签」：
+其中 `diet:recommend` 只允许 `LOW_PURINE`、`HIGH_FIBER` 两个 `enumKey`；其余 7 个饮食维度
+只存在 `diet:reject`，不得创建空的正向占位 Key，也不得因 LLM-B 给出正向判断而扩展集合范围。
 
-```
-生效维度 = 本次报告命中的食入性过敏原枚举 ∪ 命中的饮食注意枚举
-          典型 3~6 个，不是 22 个
-在线读取 = 每个生效维度一次 HMGET，一次带上全部 dishId:tagHash
-          → 3~6 次 Redis 命令搞定
-```
+每个 Key 都是 Redis `SET`，成员统一编码为：
 
-早期设计是一菜一 Key（`dish:tag:{dishId}:{tagHash}`），200 道菜就是
-200 个 Key，且每次取回 22 个维度而只用其中 6 个。管道化能把 RTT 压下去，
-但那是在用管道掩盖结构错配。
-
-**`bizDate` 让 Key 每天重建，不留垃圾字段。** Hash 没有字段级 TTL，
-不带日期的话每道菜改一次食材就在 22 个 Hash 里各留一个死字段，一年下来全是垃圾。
-
-**两类失效仍然都要覆盖，但用同一个哈希表达：**
-
-| 变的是什么 | 谁失效 |
-|---|---|
-| 某道菜改了食材 | 食材串变 → `tagHash` 变 → Field 变 → **只有它自己**读不到标签 |
-| 换模型 / 改提示词 / 改内容常量 | 版本段变 → **全部菜**的 `tagHash` 变 → 全部重打 |
-
-**两个问题的答案总是一起用，所以没必要分成两个字段。** 分开的代价是唯一键多一列、
-在线查询多一个等值条件、Redis Key 多一段、清理要维护「保留版本集合」、
-还要额外一张表才知道「前一版本」是什么；收益只有排障时能区分是菜变了还是规则变了，
-而那用 `model_version` / `prompt_version` / `tag_rule_version` 三个普通列就够了。
-
-**输出 Schema 的版本不参与。** 它只约束返回结构，不改变模型对「这道菜含不含虾」的判断；
-加字段属于数据迁移问题，不是标签失效问题。只有真正影响打标结果的三项进 hash。
-
-**bump 的代价很低：** 全量重打 = 200 道菜 × 22 维度 / 40 每批 ≈ 110 次调用，
-一个凌晨窗口跑得完。所以这里可以放心保守——宁可多重打一次，
-也不要让旧规则的标签留在线上。
-
-**版本段不能从哈希里拿掉。** 只算菜名和食材的话，改了提示词或内容常量之后菜和食材都没变，
-diff 会认为标签已存在，永远不会重算：
-
-```
-营养师往 LOW_FAT 的避免食材里加了「红油」「油炸」，bump tagRuleVersion
-凌晨 diff：(水煮牛肉, tagHash=abc, LOW_FAT) 在 ct_dish_tag 里有没有？ 有 → 跳过
-        → 这道菜永远不会用新规则重打
+```text
+<dishId>\t<dishName>
 ```
 
-而且这个 bug 是**静默的**——不报错、不告警、监控指标全绿，只有人工比对才发现。
+同一道菜在所有标签集合里必须使用完全相同的成员字符串，集合并、差运算才能以菜品为单位生效。
+编码与解码由一个公共 codec 实现；`dishId` 和 `dishName` 写入前都必须拒绝制表符、换行符和空值。
+不能只用菜名作为成员，因为同一企业当天可能存在同名菜，Redis 会错误合并。
+在线解码遇到畸形成员时只跳过该成员并累计告警数量，不记录成员原文，也不得让模块四异常废掉
+已经完成的模块一至三；合法成员仍继续组装，全部成员都无效时模块四返回空态。
 
-反过来，用「全部菜品集合」的整体 hash 也不行：任何一道菜改一克，整个版本号就变，
-预热完成前推荐模块整个空掉。
+**不创建以下 Key：**
 
-#### 8.3.2 `tagHash` 必须规范化后再算
+```text
+dish:recommend:active
+dish:recommend:{...}:all
+dishId -> dishName Hash
+dishId + 标签维度 -> matchedIngredients Hash
+```
+
+原因分别是：在线只读取当前 `bizDate`，不需要 active 指针；推荐候选从正向标签并集开始，
+不需要全部菜品集合；复合成员已经携带菜品名称；推荐理由直接使用报告原文，不使用命中食材。
+
+`companyId` 必须来自可信登录上下文，并在拼 Key 前由唯一 codec 做 UTF-8 Base64URL 无填充编码，
+避免企业标识中的冒号或花括号破坏 Key 分段与 Cluster hash tag。不同企业的集合绝不能参加
+同一条 `SUNION` / `SDIFF`。日期 Key TTL 为 3 天只用于清理，在线永远只读取当天 Key，
+当天构建失败不得回退读取前一天的数据。
+
+#### 8.3.2 分企业游标分页与内部 `tagHash`
+
+凌晨任务先分页枚举存在当日在架菜品的企业，再在每个企业内按 `dishes_id` 做 Keyset 分页：
+
+```sql
+SELECT company_id, dishes_id, dish_name
+  FROM ct_dish
+ WHERE company_id = :companyId
+   AND biz_date = :bizDate
+   AND on_shelf = 1
+   AND dishes_id > :lastDishesId
+ ORDER BY dishes_id
+ LIMIT :pageSize
+```
+
+`pageSize` 由 `dish.tag-query-page-size` 配置，默认 500，属于待压测校准值。第一页传
+`lastDishesId = null`；查询实现对首批不拼接 `dishes_id > :lastDishesId` 条件。每个非空批次都必须
+在返回页对象中提供 `lastDishesId`，其值严格等于本批最后一条记录的 `dishes_id`；下一批查询把该值
+原样作为输入游标。空批次返回空菜品列表和 `lastDishesId = null`，表示分页结束；批次数少于
+`pageSize` 时也可直接结束。禁止 OFFSET 分页，避免菜品量大时越翻越慢。`dishes_id` 若不是单调
+可比较类型，则使用等价的稳定复合游标，不能退回 OFFSET。
+
+每页分两次查询：第一条只查菜品主表，第二条按本页 `(company_id, dishes_id)` 集合一次批量查询食材。
+不能在一对多 JOIN 结果上分页，否则一道菜的多条食材会挤占页容量并造成菜品断页；不能逐菜查询食材。
+分页循环只保留当前页对象，标签结果增量写入该企业当天的 staging SET，禁止把全企业菜品一次性留在内存。
+
+每个企业分页前后各执行一次使用同一过滤条件的 `COUNT(*)`，要求开始数量、结束数量和实际处理的
+去重菜品数三者相等；不等说明分页期间菜单发生变化，该企业不发布。菜品系统仍应在凌晨构建窗口
+冻结当日菜单，双计数只是检测明显漂移，不能把不断变化的数据伪装成同一时刻快照。
+
+企业间完全独立：一个企业分页或打标失败只使该企业当天不发布，不得污染或阻断已经成功构建的其他企业。
+
+`tagHash` 只服务于离线增量判定和 MySQL 历史记录，不进入在线 Redis 成员或查询路径，
+并且必须规范化后再计算：
 
 ```
 tagHash = sha256(
@@ -2741,47 +2782,54 @@ tagHash = sha256(
 #### 8.3.3 打标任务
 
 ```
-① 取当日在架菜品全量，逐菜计算 tagHash
-② diff 出缺失的 (dishId, tagHash, enumKey) 组合
-   —— diff 以 MySQL ct_dish_tag 为准，不看 Redis
-   —— diff【命中】的行必须把 last_seen_date 刷成今天，否则 30 天后会被清理误删
-③ 分批调用 LLM-B（40 道/批，按 enumKey 分组）
-④ Java 校验通过的写入 MySQL ct_dish_tag（真源），last_seen_date = 今天
-⑤ 按 enumKey 聚合，HSET 写入当日 Redis Key，设 TTL 3 天
-⑥ 上报 tag_target_total / tag_written_total，不等即告警
+① 取得 bizDate，分页枚举有在架菜品的 companyId
+② 每个企业按 §8.3.2 游标分页查询菜品；当前页菜品 ID 一次批量查询食材
+③ 对当前页完成三类标签计算：
+   - 13 个过敏原只产出 reject 成员
+   - 9 个饮食注意由 LLM-B 产出 reject 安全结论；仅 LOW_PURINE、HIGH_FIBER
+     由凌晨 DietPositiveMatcher 按主料产出 recommend 成员
+   - 9 个营养补充只产出 recommend 成员
+④ 当前页结果增量 SADD 到该企业、该 bizDate、该 buildId 的 33 个 staging SET
+⑤ 全部分页完成后校验处理菜品数、每维度覆盖和两个饮食正向维度的 recommend/reject 互斥
+⑥ 通过 Lua 在一个原子操作中把该企业 33 个 staging SET 替换成当天正式 SET
+⑦ 设置 TTL 3 天并删除该企业构建临时数据；失败时当天正式 SET 保持不存在
 ```
 
-**成本：** 200 道菜 × 20 维度 / 40 道每批 ≈ 100 次调用/天；稳态下只补新增和变更，远低于此。
-改提示词 / 词表 / 模型会让全部 `tagHash` 变化，触发一次全量重打，需在发版计划里预留窗口。
+staging Key 与正式 Key 使用相同的 `{companyId:bizDate}` hash tag，保证 Redis Cluster 下原子替换
+不跨 slot。合法空集合在 Redis 中没有实体 Key，发布脚本对它执行 `DEL formalKey`；非空集合执行
+`RENAME stagingKey formalKey`。33 个方向集合必须作为一个企业快照整体发布，绝不能逐个覆盖正式 Key。
+脚本返回已处理方向数仅作为 Java 发布清单与 Lua 契约的握手，用于发现脚本漂移；它不代表成功写入
+的成员数，不应描述成业务发布结果数量校验。
+
+改提示词、词表或模型会让相关 `tagHash` 变化并触发离线重算；分页和模型小批次是两层独立边界，
+数据库一页可拆成多个 LLM-B 批次，不得为了模型批量上限把数据库查询退回逐条读取。
 
 #### 8.3.4 在线读取路径
 
 ```
-① MySQL  当前用户可见的当日在架菜品 + 食材            ~200 菜 / ~1600 行
-         （tagHash、主料推导、过敏 Java 兜底都要这份数据，绕不开）
-② Java   逐菜算 tagHash                             200 × sha256，<5ms
-③ Redis  每个生效维度一次 HMGET，Field 是全部 dishId:tagHash
-                                                    3~6 次命令
-④ MySQL  ③ 中返回 null 的 Field 回源查 ct_dish_tag       一次 IN 查询
-         WHERE enum_key IN (...)
-           AND (dish_id, tag_hash) IN ((?,?), ...)
-         MySQL 8.0.14+ 对行构造器 IN 支持索引区间扫描，走 idx_online；
-         更早的版本会退化成全表扫，需确认实际部署版本
-⑤ Java   仍然查不到 → TAG_MISSING（§8.9），不是 NEUTRAL
+① 从任务记录取得创建时由可信登录上下文固化的 companyId，从任务入口取得统一 bizDate
+② 按用户正式枚举选择该企业当天的正向集合和排除集合 Key
+③ 把全部相关维度的 `SMEMBERS` 命令一次入 pipeline，以一次网络往返取回，禁止按维度串行 RTT
+④ Java 对正向集合做并集，对过敏 reject 与饮食 reject 集合做并集
+⑤ 推荐菜 = 正向并集 - 排除并集；不推荐菜 = 排除并集，并利用已取回的维度集合恢复标签归属
+⑥ 解析复合成员得到 dishId / dishName；畸形成员只跳过并计数，不记录原文、不使整份任务失败
+⑦ 按菜名拼音排序后各取前 3 道；推荐菜只恢复正向标签，不推荐菜只恢复 reject 标签
+⑧ 推荐理由直接取报告中该标签维度对应的原文；不推荐菜不恢复、不返回任何正向标签或推荐理由
 ```
 
-**第 ④ 步的回源不能省。** 没有它，预热任务失败或 Redis 被清空的那天，
-所有维度全部 `TAG_MISSING`，按 §8.9 的完整性门槛，**推荐列表会整个空掉**。
-Redis 在这里只是加速器，MySQL `ct_dish_tag` 才是真源。
+在线链路禁止调用 `DishQueryService`、禁止查询 `ct_dish` / `ct_dish_ingredient`、禁止计算
+`tagHash`、禁止读取 `ct_dish_tag`、禁止调用 LLM-B。相关 Key 不存在时按当天无可用标签处理，
+返回空态并告警，不读取前一天 Key，也不实时重算。
 
 #### 8.3.5 持久化
 
 ```sql
 CREATE TABLE ct_dish_tag (
-  dish_id             BIGINT       NOT NULL COMMENT '食堂菜品ID',
+  company_id        VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '菜品所属企业ID，离线打标、查询与Redis发布的租户隔离键',
+  dishes_id             BIGINT       NOT NULL COMMENT '食堂菜品ID',
   tag_hash            CHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci     NOT NULL COMMENT '打标输入哈希：规则版本+提示词版本+模型版本+菜名+食材',
-  enum_key            VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '过敏原或饮食注意维度枚举键',
-  verdict             VARCHAR(12) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '打标结论：REJECT含或可能含/UNKNOWN数据不足判不出/NEUTRAL确认不含。RECOMMEND仅由营养维度的Java计算产生不落本表；TAG_MISSING是查不到行的推导结果不入库',
+  enum_key            VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '过敏原、饮食注意或营养补充维度枚举键',
+  verdict             VARCHAR(12) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '离线打标结论：RECOMMEND推荐/REJECT不推荐/UNKNOWN数据不足/NEUTRAL未命中；在线只发布RECOMMEND与REJECT方向集合',
   matched_ingredients VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '命中食材名称的JSON数组字符串',
   reason              VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '模型返回的判定理由',
   model_version       VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT 'LLM-B模型版本',
@@ -2792,16 +2840,16 @@ CREATE TABLE ct_dish_tag (
   create_by           VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '创建人标识',
   update_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间，由数据库维护',
   update_by           VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '更新人标识',
-  UNIQUE KEY uk (dish_id, tag_hash, enum_key),
-  KEY idx_online (enum_key, dish_id, tag_hash),      -- ④ 的回源走这条
-  KEY idx_last_seen (last_seen_date)                 -- 清理走这条
+  UNIQUE KEY uk (company_id, dishes_id, tag_hash, enum_key),
+  KEY idx_build (company_id, enum_key, dishes_id, tag_hash),
+  KEY idx_last_seen (last_seen_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='菜品维度打标结果';
 ```
 
 （正式 DDL 以开发方案 §3.1 为准；那边每个字符列都逐列写了字符集与排序规则。）
 
 三个 `*_version` 列冗余存储（版本段已经在 `tag_hash` 里），
-**仅供排障复现某天的推荐结果，不参与任何键与查询条件**。
+**仅供离线排障，不参与在线推荐查询**。
 
 **没有单独的 `tagged_at` 列**——打标时间就是行的 `create_time`，
 而 `tag_hash` 进了唯一键，同一输入下的行不会被覆写重打。
@@ -2810,6 +2858,8 @@ CREATE TABLE ct_dish_tag (
 
 输入：一批菜品（菜名 + 食材列表 + 重量）+ 一个枚举的展示名和内容常量。
 **食材列表里没有任何调味料**（§8.1.1），这一点必须在提示词里对模型讲明。
+饮食维度只向 LLM-B 提供反向与安全判定所需内容，不下发 `recommendableFoodList`、
+`PositiveMatchPolicy` 或其他正向触发规则，避免模型越权产出推荐。
 正式契约为 `schema/dish_tag_output.schema.json`。
 
 ```jsonc
@@ -2817,21 +2867,21 @@ CREATE TABLE ct_dish_tag (
   "enumKey": "LOW_FAT",
   "neutralDishIds": [10001],            // 能确认不含/不违反的，只回 ID
   "unknownDishIds": [10003, 10004],     // 判不出的，只回 ID —— 过敏维度下这类是常态
-  "hitList": [                           // 只有 REJECT 携带证据
+  "hitList": [                           // 只有 REJECT 携带离线校验证据
     { "dishId": 10002, "verdict": "REJECT",
       "evidenceType": "COOKING", "matchedIngredients": [], "reason": "油炸菜品" }
   ]
 }
 ```
 
-**紧凑格式不缩小覆盖范围**：`neutralDishIds ∪ unknownDishIds ∪ hitList` 必须精确等于
-本批全部输入 `dishId`，**三者两两不相交**；少一个、多一个、重复一个都判整批作废，
+**紧凑格式不缩小覆盖范围**：`neutralDishIds ∪ unknownDishIds ∪ hitList`
+必须精确等于本批全部输入 `dishId`，**三者两两不相交**；少一个、多一个、重复一个都判整批作废，
 不写库、不重试。**遗漏的菜绝不静默补成 `NEUTRAL`，也不补成 `UNKNOWN`。**
 
 | 维度 | 允许的 verdict |
 |---|---|
 | 食入性过敏原 | `REJECT` / `UNKNOWN` / `NEUTRAL` |
-| 饮食注意 | `REJECT` / `UNKNOWN` / `NEUTRAL`，**模型不产生推荐**（正向推荐由 Java 产出，§8.7.1） |
+| 饮食注意 | `REJECT` / `UNKNOWN` / `NEUTRAL`；正向不由 LLM-B 输出 |
 
 #### 调用方式：直连，且必须先剥离思考段（2026-08-27 定）
 
@@ -2860,7 +2910,7 @@ CREATE TABLE ct_dish_tag (
 模型能给出的最强结论只有"没看出含的理由"，那不是"确定不含"。
 
 > **两处均已修正**（2026-08-25）：§8.1.1 的例子改为 `UNKNOWN`，
-> `prompt/dish_tag.md` 的三态定义、证据降级口径、饮食注意示例（凉拌黄瓜）
+> `prompt/dish_tag.md` 的过敏三态、饮食三态定义、证据降级口径与饮食注意示例（凉拌黄瓜）
 > 全部改为 `UNKNOWN`。**当前提示词不存在这个冲突**，本段只作变更记录保留。
 
 ```
@@ -2869,23 +2919,26 @@ UNKNOWN   数据不足，判不出 —— 食材表没调味料、菜名也看�
 NEUTRAL   有完整配方或调味料标签，能确认不含
 ```
 
+LLM-B 输出中没有 `RECOMMEND`。饮食正向由凌晨 Java 逻辑另行计算，而且只允许
+`LOW_PURINE`、`HIGH_FIBER` 两个维度；模型路径的变化不能扩大需求规定的正向范围。
+
 **在当前数据条件下，过敏维度的 `NEUTRAL` 几乎不应该出现。** 食堂给的是主料配料表，
 不是配方表，所以「白灼西兰花」的正确答案是 `UNKNOWN` 而不是 `NEUTRAL`——
 白灼确实没有明显调料路径，但那只是"我没看出来"，不是"厨房没放"。
 `NEUTRAL` 留给将来食材表补全调味料、或菜品数据带上配方标签之后。
 
-**Java 侧只做枚举判断，不重新解释语义（§0-2）：**
+**该状态只在凌晨构建阶段消费，在线不再逐菜处理五态：**
 
 ```
-过敏维度 UNKNOWN  →  HIDDEN，与 TAG_MISSING 同样处理（§8.9、§8.10）
-                     不进推荐列表，也不进不推荐列表
-饮食注意 UNKNOWN  →  同上
+过敏维度 UNKNOWN     → 不写过敏 reject SET，也禁止该菜进入任何正向 SET
+饮食注意 UNKNOWN     → 不写该维度 recommend/reject SET，也禁止该菜进入任何正向 SET
+批次覆盖不完整        → 整批作废；企业快照完整性不通过则当天 33 个正式 SET 不发布
 ```
 
 > **为什么不干脆把 UNKNOWN 从严映射成 REJECT。** 那样几乎所有菜都会被拒
 > ——过敏维度下 `NEUTRAL` 本来就该罕见，全判 `REJECT` 等于推荐模块永远空着，
 > 而且会把大量无辜菜品放进"不推荐列表"，构成错误指控（§8.9 已论证过这一点）。
-> `HIDDEN` 是唯一诚实的选择：**我们不知道，所以不说。**
+> 不进入任何在线结果是唯一诚实的选择：**我们不知道，所以不说。**
 >
 > **代价是推荐列表会明显变短**，与 §8.1.1 的"过敏拒绝率上升"是同一笔账的另一半，
 > 一并计入 §11-4a 的量化。
@@ -2912,14 +2965,14 @@ NEUTRAL   有完整配方或调味料标签，能确认不含
    > **口径已裁决：**菜名明确出现酱油/豉油时可作为大豆/小麦高可信线索；香油只作芝麻
    > `MODEL_ONLY` 线索；红烧、酱爆、卤、凉拌等做法词不得单独推出调味料成分。
 
-3. **模型不得把通常做法补成实际配方。** `UNKNOWN` 本身就是安全态，在线与缺标签同样隐藏；
+3. **模型不得把通常做法补成实际配方。** `UNKNOWN` 在凌晨构建时阻止菜品进入正向集合；
    因此没有必要用未经证实的常识制造 `REJECT`，也不能用信息缺失制造 `NEUTRAL`。
    代价是 REJECT 率会明显上升，见下。
 
 > **这条改动会让过敏拒绝率大幅上升。** 「酱油含小麦」一条就能让小麦过敏用户的
 > 中式咸口菜几乎全军覆没。这是**正确**行为（那些菜确实含酱油），但产品需要知道
 > 推荐列表会变得很短，甚至空掉——与 §7.2.1 收录「香油」的代价是同一类，只是范围更大。
-> 需用真实菜单量化（§11-22）。
+> 需用真实菜单量化（§11-4a）。
 
 ### 8.5 过敏的 Java 关键词兜底
 
@@ -2936,7 +2989,7 @@ NEUTRAL   有完整配方或调味料标签，能确认不含
 **食材表没有调味料之后，这一层实际上只剩「菜名」一条通路**（§8.1.1）。
 「蚝油生菜」能拦住是因为**菜名里写着蚝油**，不是因为食材里有；而「红烧肉」里的酱油、
 「凉拌黄瓜」里的香油，这一层**一个都拦不到**——§8.4 也不得猜配方，只能给 `UNKNOWN`，
-由在线完整性门槛把该菜隐藏。
+由凌晨完整性门槛阻止该菜进入正向集合。
 
 后果是这一层从"双保险"退化成了"菜名保险"，两条必须跟上：
 
@@ -2950,27 +3003,13 @@ NEUTRAL   有完整配方或调味料标签，能确认不含
 **已知代价：过杀。**「鱼香肉丝」在鱼过敏时会被误标。按 §0-6 的不对称主动接受。
 误杀集中在少数几个词时，加一个不超过 20 条的例外词典（常量数组）。
 
-### 8.6 枚举外过敏原（`OTHER` 且 `isFoodBorne = true`）
+### 8.6 枚举外过敏原（`OTHER`）
 
-**仅对食源性未收录过敏原生效。** `isFoodBorne = false` 的（艾蒿、豚草、真菌等）
-不进入本节任何逻辑，也不参与任何菜名/食材匹配。
+`OTHER` 没有稳定的离线标签维度，不进入 33 个 Redis 集合。在线没有食材数据，也不得为了
+`OTHER` 临时查询菜品库或做字符串匹配；模块三继续展示报告原文，模块四不据此推荐或排除菜品。
+将来若要支持，必须先扩展经审核的正式过敏原维度并随凌晨任务发布，不能恢复在线食材匹配。
 
-```
-① 用过敏原名称原文对「菜名 + 全部食材名」做字符串匹配
-② 命中的菜 → 进不推荐列表，标签展示「{原文名}过敏」
-③ 未命中的菜 → 照常参与其他维度，正常出推荐列表
-④ 不展示任何提示文字（产品决策，§12-3）
-```
-
-> **已知接受的风险：** 字面匹配拦得住「芹菜炒肉」，拦不住复合调味料里的隐藏成分。
-> 这部分菜会正常出现在推荐列表中，且页面不作任何说明。兜底仅靠 §8.12 的模块声明。
->
-> **枚举外过敏原比正式枚举更脆弱。** 正式枚举至少有独立 LLM-B 维度承载 `UNKNOWN` 安全态，
-> 而本节走的是**纯字面匹配**——食材表没有调味料（§8.1.1），
-> 报告写「芥末 阳性」时，含芥末酱的菜既不在食材表里、菜名也未必写，就是拦不住。
-> 本次不为此单独引入模型判断，风险记录在案。
-
-### 8.7 营养补充：纯 Java 确定性匹配
+### 8.7 营养补充：凌晨任务中的纯 Java 确定性打标
 
 **这个维度不需要模型。** 需求 §8-2 的规则本身就是确定性的：菜品主料包含该营养素的推荐食材。
 
@@ -2992,49 +3031,36 @@ Java 校验会原样放行——一道白米饭就成了补铁推荐菜。
 食材名对不上时（「猪肝」vs「鲜猪肝」）用 `IngredientAliasWords` 常量别名表兜一层，
 未命中即按不匹配处理（方向保守，只会少推荐）。
 
-**该维度永远不会 `TAG_MISSING`**（§8.9）——Java 现算，不依赖预热。
+计算发生在凌晨分页任务内，命中结果写入对应 `nutrition:recommend:<enumKey>` staging SET；
+在线只读集合，不再读取食材或重新计算。
 
-#### 8.7.1 饮食注意的正向推荐：Java 确定性匹配（2026-08-28 定）
+#### 8.7.1 饮食注意：九个反向维度，两个主料正向维度
 
-需求 §8-2 要求饮食注意维度也能产出推荐，而 LLM-B 只判 `REJECT`/`UNKNOWN`/`NEUTRAL`
-——报告只给忌口、没给营养补充建议时，推荐列表**结构上永远为空**（两份真实样本正是这种情况）。
+LLM-B 必须在凌晨对 9 个饮食注意维度完成 `REJECT`、`UNKNOWN`、`NEUTRAL` 三态安全判定。
+发布时只把 `REJECT` 写入 `diet:reject:<enumKey>`；LLM-B 不输出 `RECOMMEND`，`UNKNOWN` 和
+`NEUTRAL` 也不建在线集合。
 
-**放开的方式不是让 LLM-B 输出 `RECOMMEND`**：正面标签是对用户的健康承诺，不交给模型生成。
-改为复用 §8.7 的主料交集，由 Java 产出正向事实：
+需求 §8-2 明确规定，推荐仅限能从菜品主料确证的维度，第一期只有 `LOW_PURINE`、
+`HIGH_FIBER`。原来的 `DietPositiveMatcher` 不再在线运行，而是移动到凌晨分页任务：
 
-| 事实 | 判定方 | 可能取值 | rejectCapable |
-|---|---|---|---|
-| 安全事实 | LLM-B 离线标签 | `REJECT` / `UNKNOWN` / `NEUTRAL` | 是（缺数据触发隐藏） |
-| 正向事实 | Java 主料交集 | `RECOMMEND`，否则不产生 | 否 |
+```java
+Set<String> matchedMainIngredientSet = intersect(
+    mainIngredients(dish),
+    DietRequirementContents.ALL.get(enumKey).getRecommendableFoodList()
+);
+boolean recommend = safetyVerdict == TagState.NEUTRAL
+    && !matchedMainIngredientSet.isEmpty();
+```
 
-两条事实**并列存在**，绝不把正向结果写回安全那条——写回去会让缺数据时的隐藏门槛失效。
-安全门槛因此是自动的：**只有安全事实为 `NEUTRAL` 才计算正向事实**，模型判 `REJECT` 要拦、
-判 `UNKNOWN` 或标签缺失要隐藏，都轮不到推荐。`TagStateResolver` 的裁决顺序不变。
+这段 Java 逻辑只允许遍历 `LOW_PURINE`、`HIGH_FIBER`。只有 LLM-B 安全结论为 `NEUTRAL` 且主料
+命中已审核推荐食材时，才写入 `diet:recommend:<enumKey>`；`REJECT` 或 `UNKNOWN` 即使主料命中
+也不得推荐。`LOW_FAT`、`LOW_SODIUM`、`LOW_ADDED_SUGAR`、`LOW_CHOLESTEROL`、
+`LOW_CALORIE`、`LIMIT_ALCOHOL`、`LIGHT_DIET` 依赖调味料、用油量、酒精或完整配方证据，
+第一期只允许写不推荐集合，绝不创建对应的 `diet:recommend` 集合。
 
-**第一期只开放两个维度**，开关写在 `DietRequirementRule.positiveMatchPolicy` 内容常量里，
-不散落到代码分支：
-
-| 维度 | 政策 | 依据 |
-|---|---|---|
-| `LOW_PURINE` | `MAIN_INGREDIENT_INTERSECTION` | 主料命中已审核的低嘌呤食材 |
-| `HIGH_FIBER` | `MAIN_INGREDIENT_INTERSECTION` | 复用 `DIETARY_FIBER` 的同一份已审核推荐食材表 |
-| 其余七个 | `NONE` | 取决于调味料、用油量与酒的实际用量，菜品接口给不了这些数据 |
-
-**否定式确证一律不成立**：「食材表里没有酒」推不出这道菜不含酒，「没命中高嘌呤词」
-推不出这道菜低嘌呤——食材表不含调味料（§8.1.1），缺证据不是安全证据。
-因此 `LIMIT_ALCOHOL` 不在开放之列（它连正向食材都是空表），`LOW_PURINE` 必须**同时**
-满足 LLM-B `NEUTRAL` 与主料命中白名单。
-
-`recommendableFoodList` 与展示用的 `displayOnlyFoodList` 是两张表、两次审核
-（`positiveReviewStatus` 独立于 `reviewStatus`）——审一句科普文案不等于批一条推荐规则，
-与 §7.5 营养侧同一个道理。`HIGH_FIBER` 的推荐表因此不含白菜：营养侧已把白菜裁决为只展示不推荐。
-
-**去重**：报告同时出现「高纤维饮食」与「补充膳食纤维」时两个维度都会命中，
-同文案的正面标签只保留一条（营养维度先加入、优先保留），推荐理由也只出一条。
-
-**正向内容进 `tagRuleVersion` 摘要**：它不进提示词、不改变离线标签，
-但与 §7.5 营养侧 `recommendableFoodList` 同理——能改变用户可见结论的内容一律版本钉住，
-改动即触发一次全量重打标。
+改变执行时点只能消除在线查食材，不能扩大正向业务范围。任何扩展都必须先修改需求、补充可确证
+的数据字段与规则，并形成 §12 所要求的可追溯产品决策。报告同时命中饮食与营养的同文案标签时，
+展示层按标签文案去重；推荐理由按报告 `rawText` 去重。
 
 ### 8.8 主料推导
 
@@ -3065,113 +3091,68 @@ Set<String> mainIngredients(Dish d) {
 `MAIN_RATIO = 0.25` 与 `TOP_N_MIN_RATIO = 0.15` 是推导值，**上线前抽 50 道真实菜品校准**。
 误判率偏高时应推动食堂系统补主料字段，而不是继续调阈值——业务数据永远比推导规则可靠。
 
-### 8.9 标签缺失 ≠ 中立（§8 评审）
+### 8.9 标签完整性在发布前保证
 
-**这是本轮评审发现的最严重的一处错误。** 原设计写"漏标只导致少推荐，方向安全"，
-在单维度下成立，**多维度下不成立**：
+在线 Redis 只保存可执行的 `RECOMMEND` / `REJECT` 方向集合，不保存 `NEUTRAL`、`UNKNOWN`
+或 `TAG_MISSING` 集合。三者的差异只存在于凌晨构建与排障阶段，不能让在线再次逐菜裁决。
 
-```
-报告同时有「补充蛋白质」和「低脂饮食」两条建议
-某道油炸肉菜：
-   PROTEIN  维度 → Java 现算，肉是主料 → RECOMMEND
-   LOW_FAT  维度 → 标签缺失（预热窗口后新上架）→ 原设计按 NEUTRAL 处理
-   合并裁决 → 有 RECOMMEND 无 REJECT → 【推荐】
-→ 一道油炸菜被推荐给需要低脂饮食的人
-```
+每个 LLM-B 批次仍必须对输入菜品给出完整、互斥的 `REJECT` / `UNKNOWN` / `NEUTRAL` 覆盖；
+模型少返回、多返回或集合相交时整批作废。对任一可产生 `REJECT` 的生效维度，菜品为 `UNKNOWN`
+时不得写入任何正向推荐集合；只有安全事实为 `NEUTRAL` 时，才允许 Java 对
+`LOW_PURINE`、`HIGH_FIBER` 继续执行主料正向匹配。
 
-过敏维度同理，而且后果更严重。
-
-**因此引入五态，三种"不是 REJECT"必须分开：**
-
-```java
-enum TagState {
-    TAG_MISSING,   // 没打过标（预热没覆盖到 / 缓存与库都没有）
-    UNKNOWN,       // 打过标，模型判不出（§8.4：数据不足）
-    NEUTRAL,       // 打过标，确认不含 / 不违反
-    RECOMMEND,     // 仅营养维度，Java 现算（§8.7）
-    REJECT
-}
-```
-
-**两者的产生位置不同，不要混：**
-
-```
-UNKNOWN      模型给的结论，或写库前校验降级而来（§8.4）—— 库里【有】这一行，verdict=UNKNOWN
-TAG_MISSING  在线读取时 Redis 与 MySQL 都查不到有效标签（§8.3.4-⑤）—— 库里【没有】这一行
-
-【模型漏返回某道菜】不产生 TAG_MISSING —— 那是覆盖不完整，整批作废、不写库（§8.4）
-    结果是这批标签根本没写进去，在线读取自然查不到，此时才表现为 TAG_MISSING
-    两者是「因」与「果」，不是同一层的两条并列规则
-```
-
-`TAG_MISSING` 与 `UNKNOWN` 在**裁决上同结果**（都进 `HIDDEN`），但**必须是两个值**——
-它们是两种完全不同的故障，混成一个就没法排障：
-
-```
-TAG_MISSING 多  →  预热任务的问题：跑失败了、菜是窗口后新上架的、tagHash 变了没重打
-UNKNOWN     多  →  数据或提示词的问题：食材表信息太少、菜名看不出、提示词该改
-```
-
-**完整性门槛：** 对本次报告实际生效的每个**可产生 REJECT 的维度**
-（全部食入性过敏原维度 + 全部饮食注意维度），该菜只要有任意一个维度**不是**
-`NEUTRAL` 也不是 `REJECT`（即 `TAG_MISSING` 或 `UNKNOWN`），**就不能进入推荐列表**。
-
-```
-可产生 REJECT 的维度 = 生效的食入性过敏原枚举 ∪ 生效的饮食注意枚举
-营养补充维度不在此列（Java 现算，永不缺失，也永不 UNKNOWN）
-
-该菜在上述任一维度 TAG_MISSING 或 UNKNOWN  →  不进推荐列表，也不进不推荐列表（不展示）
-```
-
-**为什么不放进不推荐列表：** 我们并不知道它违规，只是没核验过（`TAG_MISSING`）
-或核验不出来（`UNKNOWN`）；放进不推荐列表是对菜品的错误指控，
-也会误导用户以为这道菜有问题。不展示是唯一诚实的选择。
-
-预热窗口之后新上架的菜品**当天不出现在推荐列表里**，这是有意的。
+一个企业的全部菜品分页完成后，发布前必须校验：查询到的菜品数与处理完成数相等、所有 31 个
+标签维度都完成、2 个饮食正向维度的 recommend/reject 集合互斥、其余 7 个饮食维度不存在
+recommend 集合、复合成员企业归属一致。任一校验失败，该企业当天 33 个正式集合一个都不发布。
+当天新增但未进入凌晨分页快照的菜品
+不会出现在任何集合中，也不会在线实时补算。
 
 ### 8.10 合并裁决
 
-```java
-// ① 逐条校验（不通过就降级，不整批丢弃）
-//    - matchedIngredients ⊆ 该菜食材表，对不上的剔除
-//      全对不上 → 降 UNKNOWN（★ 不是 NEUTRAL：证据不成立不等于确认不含，§8.4）
-//    ★ 【没有「未返回的菜 → TAG_MISSING」这一条】
-//      覆盖不完整在【写库前】就整批作废了（§8.4），根本走不到这里
-//      TAG_MISSING 只有一个来源：在线读取时 Redis 与 MySQL 都查不到有效标签（§8.3.4-⑤）
-//    - 营养维度不走此路径，由 §8.7 直接产出
+设当前用户报告生效维度对应的 Redis 集合为：
 
-// ② 裁决（需求 §8-3：冲突以不推荐优先）
-if (任一过敏维度 REJECT)              return NOT_RECOMMENDED;   // 只带过敏标签
-if (任一维度 REJECT)                  return NOT_RECOMMENDED;   // 推荐标签作灰色附注
-if (任一可 REJECT 维度 ∈ {TAG_MISSING, UNKNOWN}) return HIDDEN; // ★ 不进任何列表（§8.9、§8.4）
-if (任一维度 RECOMMEND)               return RECOMMENDED;
-return NEUTRAL;                                                 // 不进任何列表
+```text
+P = SUNION(饮食 recommend 集合, 营养 recommend 集合)
+R = SUNION(过敏原 reject 集合, 饮食 reject 集合)
+
+notRecommended = R
+recommended    = P - R
 ```
 
-**过敏拒绝的菜不下发任何正面标签**，灰色附注也不行——「补铁 · 虾蟹过敏」并列展示会削弱过敏提示。
-这与需求 §8-3「展示所有命中的标签」不一致，已列为产品决策（§12-12）。
+`P - R` 可由同 slot Lua 一次完成，或批量取得两个集合后在 Java 中做 `removeAll`；禁止为每道菜、
+每个标签发独立 Redis 请求。冲突时不推荐天然优先：进入 `R` 的菜必须从 `P` 剔除，且返回时
+不得携带任何正向标签或推荐理由。该规则对 `allergen:reject` 与 `diet:reject` 完全相同，
+不是只在过敏冲突时生效。
+
+正向 Key 列表为空时，Java 直接把 `P` 设为空集合，不调用零参数 `SUNION`；排除 Key 列表为空时
+同理把 `R` 设为空集合。不能为了凑 Redis 命令引入 `all` 或占位 Key。
+
+如果用户只有过敏原，没有饮食或营养正向要求，则 `P` 为空：推荐列表为空，`R` 中命中过敏原的
+菜进入不推荐列表；没有命中过敏、也没有正向标签的普通菜不进入任何列表。正因为候选从 `P`
+开始，系统不需要 `all` 集合。
 
 ### 8.11 标签与推荐理由
 
 | tagType | 来源 | 示例 | 建议色 |
 |---|---|---|---|
 | `NUTRITION` | 营养补充 RECOMMEND | 补铁、高蛋白、补钙 | 绿 |
-| `DIET_OK` | 饮食注意 Java 正向匹配（§8.7.1） | 低嘌呤、高纤维 | 蓝 |
+| `DIET_OK` | 饮食注意主料确证 `RECOMMEND`（§8.7.1） | 低嘌呤、高纤维 | 蓝 |
 | `ALLERGY` | 过敏命中 | 虾蟹过敏、芹菜过敏 | 红 |
 | `DIET_AVOID` | 饮食注意 REJECT | 高脂、高盐、高糖 | 橙 |
 
-**推荐理由由 Java 拼接，不加工报告原文：**
+**推荐理由直接返回报告原文，不拼菜品食材：**
 
 ```
-{菜名}——含{matchedIngredients 逗号连接}；报告原文：「{segment 原文}」
-
-例：菠菜猪肝汤——含猪肝、菠菜；报告原文：「建议补充铁剂」
+标签：补铁
+推荐理由：建议补铁
 ```
 
-原模板 `符合报告建议{rawText}` 会拼出「符合报告建议**建议**补充铁剂」——
-原文本身常以「建议」开头。改成引号引用原文，既不重复也更符合需求 §8-4「引用对应饮食建议原文」。
+标签文案由枚举常量转换，推荐理由由命中的标签维度关联回当前报告的 `rawText`；一道菜命中
+多条正向标签时返回全部标签及对应原文，完全相同的标签和原文分别去重。凌晨缓存不保存
+`matchedIngredients`，也不保存用户报告原文。这个边界保证公开菜品缓存不混入健康数据。
 
-一道菜命中多条时，按维度逐条列出全部理由。
+推荐菜只返回 `dishName + recommendTags + recommendReasons`；不推荐菜只返回
+`dishName + notRecommendTags`。不得扩大为价格、图片、分类或完整菜品信息。
 
 ### 8.12 排序、空态与降级
 
@@ -3202,20 +3183,20 @@ recommendList 与 rejectList 最大长度均为 3
 
 | 存储 | 内容 | 生命周期 |
 |---|---|---|
-| MySQL `ct_health_report_task` | 任务状态真源、attempt、心跳、deadline、partial、deleted_at（DDL §2.3.2） | `expire_at` 到期物理删除 |
-| MySQL `ct_health_report_file` | fileId、userId、S3 定位、taskId、fileIndex、文件元数据、status、expire_at | 按 §2.7 清理矩阵 |
-| MySQL `ct_dish_tag` | 菜品标签真源 + 版本元数据（DDL §8.3.5） | 按 `last_seen_date < bizDate-30d` 清理陈旧行 |
-| MySQL `ct_dish` / `ct_dish_ingredient` | 食堂菜品与食材（外部同步，本方案只读） | 外部维护 |
+| MySQL `ct_health_report_task` | 任务状态真源、userId、companyId、attempt、心跳、deadline、partial、deleted_at（DDL §2.3.2） | `expire_at` 到期物理删除 |
+| MySQL `ct_health_report_file` | fileId、userId、companyId、S3 定位、taskId、fileIndex、文件元数据、status、expire_at | 按 §2.7 清理矩阵 |
+| MySQL `ct_dish_tag` | 按企业保存的离线标签历史与版本元数据；不参与在线推荐读取（DDL §8.3.5） | 按 `last_seen_date < bizDate-30d` 清理陈旧行 |
+| MySQL `ct_dish` / `ct_dish_ingredient` | 带 `company_id` 的食堂菜品与食材；仅凌晨任务分页只读 | 外部维护 |
 | S3 私有 Bucket | 原始文件 | 按 §2.7 清理矩阵 |
 | Redis `result:{taskId}` | 四模块结果 JSON | TTL 2h |
-| Redis `dish:tag:{enumKey}:{bizDate}` | 打标读缓存，Field = `dishId:tagHash`（§8.3.1） | TTL 3d |
+| Redis `dish:recommend:{companyId:bizDate}:...` | 每企业每天 33 个方向标签 SET；Member=`dishId\tdishName`（§8.3.1） | TTL 3d，在线只读当天 |
 
 **没有任务队列，没有 `task:{taskId}` 状态 Hash，没有 Redis 墓碑，也没有 outbox 表。**
 任务状态与删除标志都在 MySQL——状态 CAS 要与文件绑定同事务，Redis 做不到；
 `deleted_at` 也不能随 TTL 消失（§2.6）。执行由 §2.3.3 的**事务提交后**提交本机线程池完成。
 
-**Redis 在本方案里只剩两个用途**：四模块结果（TTL 2h）和菜品打标读缓存（TTL 3d）。
-两者都是"丢了只是变慢或要用户重来"，**没有任何调度状态依赖 Redis**——
+**Redis 在本方案里只剩两个用途**：四模块结果（TTL 2h）和按企业隔离的当日菜品标签集合（TTL 3d）。
+菜品标签集合丢失时当天模块返回空态并告警，不允许在线回源重算；**没有任何调度状态依赖 Redis**——
 Redis 整个挂掉时，正在跑的任务仍能跑完，只是写结果那一步失败、任务判 `FAILED`。
 
 **MySQL 不存任何健康数据**，`ct_health_report_task` 不含。
@@ -3347,7 +3328,8 @@ task.setUpdateTime(new Date());
 | `GET  /api/health-report/result/{taskId}` | 取四模块结果，含 `partial` / `suppressDietAdvice` / `suppressDishRecommend` |
 | `DELETE /api/health-report/task/{taskId}` | 用户关闭页面时清除（§2.6） |
 
-**除上传接口外，全部接口必须校验 `taskId` 归属当前 `userId` 且 `deleted_at IS NULL`。**
+**除上传接口外，全部接口必须校验 `taskId` 同时归属当前 `userId`、`companyId`，且
+`deleted_at IS NULL`。**
 taskId 难猜是混淆，不是鉴权。**上传接口虽无 taskId，但创建任务时必须校验文件归属**（§2.2）。
 
 ### 9.3 轮询
@@ -3373,7 +3355,7 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 4. **批次 `UNREADABLE` → `BATCH_UNREADABLE` 降级，模块三四不输出**（§4.1.1）
 5. **精确累计 31~60 页 → `PAGE_TRUNCATED` 降级，模块三四不输出；精确累计 >60 页或
    单个 Word 超独立上限 → `PAGE_LIMIT_EXCEEDED`，且不调用 LLM-A**（§3.3）
-6. **`TAG_MISSING` ≠ `NEUTRAL`，可 REJECT 维度缺标签的菜不进推荐列表**（§8.9）
+6. **标签完整性在按企业发布前校验**；构建不完整时该企业当天 33 个正式集合均不发布（§8.9）
 7. 过敏原按 `isFoodBorne` 拆两条路径；**正式枚举的 `isFoodBorne` 由 `enumKey` 查表得出
    （模型返回值直接丢弃）；`OTHER` 采信 LLM-A，Java 不校验、不改写、不告警**（§4.4-③④、§7.2）
 8. 高危表述**退出结构化链路**的 Java 安全闸，**不覆写 `enumKey`**（§7.3）
@@ -3389,9 +3371,8 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
     常量类、两个 Schema、两个提示词、四个契约数字（13、18、22、36）及
     `tagRuleVersion=tag-1.0.0` 已同步。部署时仍须全量重打；如组织要求具名执业签字，签字未完成
     仍是模块三、模块四的上线阻断项
-15b. **LLM-B 三态 `REJECT` / `UNKNOWN` / `NEUTRAL`**：食材表不含调味料时
-    过敏维度的 `NEUTRAL` 应当罕见，判不出必须给 `UNKNOWN`；
-    Java 把 `UNKNOWN` 与 `TAG_MISSING` 同样处理为 `HIDDEN`（§8.4、§8.9、§8.10）
+15b. **LLM-B 离线状态不进入在线逐菜裁决**：过敏原允许三态，饮食注意允许增加
+    `RECOMMEND`；`UNKNOWN` 不得进入任何正向集合，Redis 只保存最终方向集合（§8.4、§8.9）
 
 ### P0 — 正确性
 
@@ -3452,14 +3433,16 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
     `AllergenSectionWords`）：不实现 `statusConflictCount` / `normalAdmitSuspectCount` /
     `foodBorneConflictCount`，全部移入离线评测（§4.4-③、§11-18）。
     **§4.4-② 的高风险交叉扫描不在此列**——它触发安全降级，不是计数器
-22. **营养维度改 Java 确定性交集匹配**（§8.7）
+22. **营养维度由凌晨任务做 Java 确定性交集打标并发布推荐集合**，在线不再读食材（§8.7）
 23. 主料双规则推导（§8.8）；**没有 `SEASONING` 常量**——食材表本来就不含调味料（§8.1.1）
 23a. **食材表不含调味料**：LLM-B 只按明确菜名/配方证据判 `REJECT`，通常做法不明时判 `UNKNOWN`；
     Java 兜底词表覆盖明确调味料在**菜名**里的写法；`MOLLUSK` / `SESAME` 已纳入正式契约
     （§8.1.1、§8.4、§8.5、§7.2.1）
 23b. **禁止「食材表里没有 X 所以判 NEUTRAL」的推理**——它只能推出"主料配料里没有 X"（§8.1.1）
-24. **单一 `tagHash`（规则/提示词/模型版本 + 菜名 + 食材）进唯一键与缓存 Field；
-    Key 按维度组织 + `bizDate` 每日重建；没有 `tagPolicyVersion`**（§8.3.1，2026-08-24 合并）
+24. **Redis 按 `companyId + bizDate + 标签方向` 组织 33 个 SET**，成员统一为
+    `dishId\tdishName`；不建 `active`、`all`、名称 Hash 或命中食材 Hash（§8.3.1）
+24a. **菜品数据库查询按企业做 `dishes_id` Keyset 分页**；当前页批量查食材，禁止 OFFSET、
+    一对多 JOIN 分页和逐菜 N+1 查询（§8.3.2）
 25. **`tagHash` 排序 + 单位统一 + 名称规范化**（§8.3.2）
 26. **去重只认 `segmentId + itemIndex`，非重叠页面不去重**（§4.1.3）
 27. 多文件合并用 `groupKey`，健康指标按 `groupKey` 分组（§4.6、§5.3）
@@ -3500,7 +3483,8 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 34b. **LLM-A 批次并发执行**（串行跑不完 deadline）+ **只持有编码字节不持有 `BufferedImage`** + **心跳独立线程**（§4.1.4）
 35. **「重新解析」= 同批 fileIds 重调 analyze，可从可重解析的失败任务解绑**（§2.2、§2.5）
 36. **清理矩阵按状态逐类判定，原文件在 `SUCCEEDED` 后才删**（§2.7）
-37. **`ct_dish_tag` MySQL 真源；Redis 未命中必须回源查库**，否则预热失败当天推荐列表全空（§8.3.4）
+37. **在线推荐只读当前用户企业当天的 Redis 标签集合**；未命中返回空态并告警，禁止查菜品库、
+    回源标签表、读取前一天或实时打标（§8.3.4）
 38. 逐格式判定 + 解压炸弹防御，**流式计数不信 `getSize()`**（§3.1、§3.1.1）
 39. **Word 独立分块规则 + 内嵌图片 OCR + 上传下界预筛/Worker 精确容量裁决**（§3.3.1）
 40. **正式 JSON Schema 文件（LLM-A / LLM-B）+ 契约测试**（§4.2、§8.4）
@@ -3511,7 +3495,7 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
     不得推导「各项正常」「未涉及某风险」等医学结论（§6.4、§7.7）
 42. 总览条数字（§5.4）
 43. 来源标注取报告原文章节名（§6.2）
-44. 推荐理由 Java 拼接，引号引用原文（§8.11）
+44. 推荐理由直接返回对应标签维度的报告原文；不拼命中食材（§8.11）
 45. 拼音首字母排序（§8.12）
 46. 三阶段进度条（§2.4）
 
@@ -3538,7 +3522,7 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 - **OCR bounding box 落库**（原为 P1-50，2026-08-25 移到此处）
 - 内容管理后台 / 建议内容的人工编辑
 - 报告未写饮食建议时的通用建议兜底（§7.1）
-- 菜品标签的版本双缓冲与原子切换（单菜粒度后不需要，§8.3.1）
+- 菜品标签的 `active` 指针与 `all` 全集 Key；按企业当天 staging SET 原子替换正式 SET（§8.3）
 
 > **为什么「bbox 落库」不是"暂缓"而是"不做"。** 它与 §2.7 直接冲突：
 > 渲染图与 OCR 中间产物**仅存在于内存，不落盘、不入 S3**，bbox 就是 OCR 中间产物。
@@ -3633,8 +3617,10 @@ Worker deadline 10 分钟，**客户端超时不写终态**，服务端独立判
 | 10 | **健康问题名称允许系统拼接两段报告原文**——报告没有成句表述（`problemName = null`）时，拼「指标名 + 结论原文」，如「甘油三酯 ↑」。**不再拼「甘油三酯偏高」这类归一化措辞**——那是系统造出报告里没有的表述（§0-2，本轮已改）。需求 §6-2 要求直接引用原文不做改写，拼接严格说仍不是引用（虽然两段素材都是原文），已加 `displayNameGenerated` 字段供验收统计（§6.2） |
 | 10a | **已确认调味料证据边界**——明确菜名/配方出现酱油、豉油时可产生大豆/小麦拒绝；“红烧、酱爆、卤”等做法词不入硬词表，只靠通常做法时为 `UNKNOWN`。产品需监控 `UNKNOWN` 导致的推荐收缩，但不得以提高推荐量为由把未知降成 `NEUTRAL`（§8.4、§8.5） |
 | 11 | **`OTHER` 建议只展示原文，不给食材内容**——不满足需求 §7-3 对每条建议的字段要求。需回写需求（§7.4） |
-| 12 | **过敏命中时不下发任何正面标签**——与需求 §8-3「展示所有命中的标签」不一致。安全考虑，需作为正式产品决策回写需求（§8.10） |
+| 12 | **凡进入 `rejectSet` 的菜都不下发任何正向标签或推荐理由。** `rejectSet` 同时包含过敏原 `REJECT` 与饮食注意 `REJECT`；菜品只进入不推荐列表并展示全部命中的不推荐标签。该规则比需求 §8-3「展示所有命中的标签，冲突时不推荐优先」更窄：需求文字仍可能被理解为“归入不推荐列表但继续展示已命中的正向标签”，而本方案明确全部抑制。该完整偏离范围需作为正式产品决策回写需求（§8.10） |
+| 13 | **食堂数据源接入项。** `company_id`、`dishes_id` 已确定；仍需在接入时确认菜品表与食材表的实际表名、`on_shelf` / `biz_date` / 食材字段映射、按企业游标分页与当前批食材查询能力，以及等价索引是否存在。逻辑表名 `ct_dish` / `ct_dish_ingredient` 不能未经核对直接当作物理表名（§8.1、§8.3.2） |
 | 14 | **预热窗口后新上架的菜当天不出现在推荐列表**——§8.9 完整性门槛的必然结果。若食堂当天临时加菜频繁，需评估影响面 |
+| 15 | **已按需求锁定：饮食注意正向推荐第一期仅 `LOW_PURINE`、`HIGH_FIBER`。** LLM-B 从在线改为凌晨离线，只改变执行时点，不产生新的调味料、用油量、酒精或完整配方证据；其余 7 个饮食维度只做不推荐。若以后扩展，必须先修改需求 §8-2、补充可确证的数据字段与规则并形成评审记录（§8.7.1） |
 
 > **所有"产品已确认"但与原需求不同的决策，都必须同步修改《体检报告分析需求.md》或形成
 > 可追溯的评审记录。** 否则需求文档和设计方案会同时成为有效依据，开发、测试和验收无法确定最终口径。

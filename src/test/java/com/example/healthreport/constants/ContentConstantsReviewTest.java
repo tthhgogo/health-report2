@@ -114,7 +114,8 @@ class ContentConstantsReviewTest {
 		assertThat(rejectedWordSet).containsExactlyInAnyOrder("蟹柳", "蟹棒", "海鲜酱");
 
 		AllergenKeywordFallback fallback = new AllergenKeywordFallback();
-		Dish crabStickDish = new Dish(1L, "蟹棒沙拉", Collections.singletonList(new DishIngredient("蔬菜", null)));
+		Dish crabStickDish = new Dish("company-a", 1L, "蟹棒沙拉",
+				Collections.singletonList(new DishIngredient("蔬菜", null)));
 		assertThat(fallback.matches(AllergenGroups.SHRIMP_CRAB, crabStickDish)).isFalse();
 	}
 
@@ -154,7 +155,8 @@ class ContentConstantsReviewTest {
 		AllergenKeywordFallback fallback = new AllergenKeywordFallback();
 		assertThat(fallback.matches(AllergenGroups.MOLLUSK, dish(4L, "蚝油生菜"))).isTrue();
 		assertThat(fallback.matches(AllergenGroups.MOLLUSK, dish(5L, "素蚝油生菜"))).isFalse();
-		Dish explicitOyster = new Dish(6L, "素蚝油生菜", Collections.singletonList(new DishIngredient("牡蛎", null)));
+		Dish explicitOyster = new Dish("company-a", 6L, "素蚝油生菜",
+				Collections.singletonList(new DishIngredient("牡蛎", null)));
 		assertThat(fallback.matches(AllergenGroups.MOLLUSK, explicitOyster)).isTrue();
 	}
 
@@ -166,8 +168,7 @@ class ContentConstantsReviewTest {
 			DietRequirementRule rule = entry.getValue();
 			if (rule.positiveRecommendEnabled()) {
 				openedKeySet.add(entry.getKey());
-				assertThat(rule.getPositiveMatchPolicy())
-						.isEqualTo(PositiveMatchPolicy.MAIN_INGREDIENT_INTERSECTION);
+				assertThat(rule.getPositiveMatchPolicy()).isEqualTo(PositiveMatchPolicy.MAIN_INGREDIENT_INTERSECTION);
 				assertThat(rule.getRecommendableFoodList()).isNotEmpty();
 				assertThat(rule.getRecommendTagText()).isNotEmpty();
 			}
@@ -184,10 +185,9 @@ class ContentConstantsReviewTest {
 	/** 限酒靠「食材表里没有酒」推不出推荐：配料表不含调味料，缺证据不是安全证据。 */
 	@Test
 	void alcoholAndSeasoningDependentDimensionsShouldNeverCarryPositiveContent() {
-		for (DietRequirementKey key : Arrays.asList(DietRequirementKey.LIMIT_ALCOHOL,
-				DietRequirementKey.LIGHT_DIET, DietRequirementKey.LOW_FAT, DietRequirementKey.LOW_SODIUM,
-				DietRequirementKey.LOW_ADDED_SUGAR, DietRequirementKey.LOW_CHOLESTEROL,
-				DietRequirementKey.LOW_CALORIE)) {
+		for (DietRequirementKey key : Arrays.asList(DietRequirementKey.LIMIT_ALCOHOL, DietRequirementKey.LIGHT_DIET,
+				DietRequirementKey.LOW_FAT, DietRequirementKey.LOW_SODIUM, DietRequirementKey.LOW_ADDED_SUGAR,
+				DietRequirementKey.LOW_CHOLESTEROL, DietRequirementKey.LOW_CALORIE)) {
 			DietRequirementRule rule = DietRequirementContents.ALL.get(key);
 			assertThat(rule.positiveRecommendEnabled()).isFalse();
 			assertThat(rule.getPositiveReviewStatus()).isEqualTo(ReviewStatus.REJECTED);
@@ -198,9 +198,8 @@ class ContentConstantsReviewTest {
 	@Test
 	void fiberRecommendationShouldReuseTheAuditedNutritionFoodListWithoutCabbage() {
 		assertThat(DietRequirementContents.HIGH_FIBER.getRecommendableFoodList())
-				.isEqualTo(NutritionContents.DIETARY_FIBER.getRecommendableFoodList());
-		assertThat(DietRequirementContents.HIGH_FIBER.getRecommendableFoodList())
-				.doesNotContain("白菜");
+			.isEqualTo(NutritionContents.DIETARY_FIBER.getRecommendableFoodList());
+		assertThat(DietRequirementContents.HIGH_FIBER.getRecommendableFoodList()).doesNotContain("白菜");
 		assertThat(DietRequirementContents.HIGH_FIBER.getDisplayOnlyFoodList()).contains("白菜");
 	}
 
@@ -242,7 +241,7 @@ class ContentConstantsReviewTest {
 	}
 
 	private Dish dish(long dishId, String dishName) {
-		return new Dish(dishId, dishName, Collections.singletonList(new DishIngredient("示例食材", null)));
+		return new Dish("company-a", dishId, dishName, Collections.singletonList(new DishIngredient("示例食材", null)));
 	}
 
 }

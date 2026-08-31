@@ -15,19 +15,21 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/api/health-report")
 public class HealthReportFileController {
 
-    private final FileUploadService fileUploadService;
-    private final CurrentUserProvider currentUserProvider;
+	private final FileUploadService fileUploadService;
 
-    public HealthReportFileController(FileUploadService fileUploadService,
-                                      CurrentUserProvider currentUserProvider) {
-        this.fileUploadService = fileUploadService;
-        this.currentUserProvider = currentUserProvider;
-    }
+	private final CurrentUserProvider currentUserProvider;
 
-    /** 校验并上传单个文件，不创建分析任务。 */
-    @PostMapping(value = "/file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public FileUploadResponse upload(@RequestParam("file") MultipartFile multipartFile) {
-        String fileId = fileUploadService.upload(multipartFile, currentUserProvider.currentUserId());
-        return new FileUploadResponse(fileId);
-    }
+	public HealthReportFileController(FileUploadService fileUploadService, CurrentUserProvider currentUserProvider) {
+		this.fileUploadService = fileUploadService;
+		this.currentUserProvider = currentUserProvider;
+	}
+
+	/** 校验并上传单个文件，不创建分析任务。 */
+	@PostMapping(value = "/file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public FileUploadResponse upload(@RequestParam("file") MultipartFile multipartFile) {
+		String fileId = fileUploadService.upload(multipartFile, currentUserProvider.currentUserId(),
+				currentUserProvider.currentCompanyId());
+		return new FileUploadResponse(fileId);
+	}
+
 }

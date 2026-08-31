@@ -28,69 +28,74 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** 两个 GET 与 DELETE 的 HTTP 契约测试。 */
 class HealthReportTaskResultControllerTest {
 
-    private static final String TASK_ID = "123e4567-e89b-12d3-a456-426614174000";
-    private static final String USER_ID = "CaseSensitiveUser";
+	private static final String TASK_ID = "123e4567-e89b-12d3-a456-426614174000";
 
-    private MockMvc mockMvc;
-    private TaskQueryService queryService;
-    private TaskDeleteService deleteService;
+	private static final String USER_ID = "CaseSensitiveUser";
 
-    @BeforeEach
-    void setUp() {
-        queryService = mock(TaskQueryService.class);
-        deleteService = mock(TaskDeleteService.class);
-        CurrentUserProvider userProvider = mock(CurrentUserProvider.class);
-        when(userProvider.currentUserId()).thenReturn(USER_ID);
-        mockMvc = MockMvcBuilders.standaloneSetup(
-                        new HealthReportTaskController(queryService, deleteService, userProvider),
-                        new HealthReportResultController(queryService, userProvider))
-                .setControllerAdvice(new HealthReportExceptionHandler())
-                .build();
-    }
+	private static final String COMPANY_ID = "company-a";
 
-    @Test
-    void taskEndpointShouldReturnQueuedWithoutResultPayload() throws Exception {
-        when(queryService.getStatus(TASK_ID, USER_ID)).thenReturn(new TaskStatusResponse(
-                TaskStatus.QUEUED.name(), TaskStage.UPLOADING.name(), 0, null, false));
+	private MockMvc mockMvc;
 
-        mockMvc.perform(get("/api/health-report/task/{taskId}", TASK_ID))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("QUEUED"))
-                .andExpect(jsonPath("$.stage").value("UPLOADING"))
-                .andExpect(jsonPath("$.progress").value(0))
-                .andExpect(jsonPath("$.modules").doesNotExist());
-    }
+	private TaskQueryService queryService;
 
-    @Test
-    void resultEndpointShouldExposeAllDegradeAndPageFields() throws Exception {
-        AnalysisResult result = AnalysisResult.create(new DegradeAccumulator(), 0, 0,
-                AnalysisModules.empty());
-        when(queryService.getResult(TASK_ID, USER_ID)).thenReturn(result);
+	private TaskDeleteService deleteService;
 
-        mockMvc.perform(get("/api/health-report/result/{taskId}", TASK_ID))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.partial").value(false))
-                .andExpect(jsonPath("$.partialReason").doesNotExist())
-                .andExpect(jsonPath("$.suppressDietAdvice").value(false))
-                .andExpect(jsonPath("$.suppressDishRecommend").value(false))
-                .andExpect(jsonPath("$.processedPages").value(0))
-                .andExpect(jsonPath("$.totalPages").value(0));
-    }
+	@BeforeEach
+	void setUp() {
+		queryService = mock(TaskQueryService.class);
+		deleteService = mock(TaskDeleteService.class);
+		CurrentUserProvider userProvider = mock(CurrentUserProvider.class);
+		when(userProvider.currentUserId()).thenReturn(USER_ID);
+		when(userProvider.currentCompanyId()).thenReturn(COMPANY_ID);
+		mockMvc = MockMvcBuilders
+			.standaloneSetup(new HealthReportTaskController(queryService, deleteService, userProvider),
+					new HealthReportResultController(queryService, userProvider))
+			.setControllerAdvice(new HealthReportExceptionHandler())
+			.build();
+	}
 
-    @Test
-    void unfinishedResultShouldReturnConflictCode() throws Exception {
-        doThrow(new HealthReportException(FailCode.TASK_NOT_FINISHED, 409))
-                .when(queryService).getResult(TASK_ID, USER_ID);
+	@Test
+	void taskEndpointShouldReturnQueuedWithoutResultPayload() throws Exception {
+		when(queryService.getStatus(TASK_ID, USER_ID, COMPANY_ID))
+			.thenReturn(new TaskStatusResponse(TaskStatus.QUEUED.name(), TaskStage.UPLOADING.name(), 0, null, false));
 
-        mockMvc.perform(get("/api/health-report/result/{taskId}", TASK_ID))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("TASK_NOT_FINISHED"));
-    }
+		mockMvc.perform(get("/api/health-report/task/{taskId}", TASK_ID))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.status").value("QUEUED"))
+			.andExpect(jsonPath("$.stage").value("UPLOADING"))
+			.andExpect(jsonPath("$.progress").value(0))
+			.andExpect(jsonPath("$.modules").doesNotExist());
+	}
 
-    @Test
-    void deleteEndpointShouldReturnNoContent() throws Exception {
-        mockMvc.perform(delete("/api/health-report/task/{taskId}", TASK_ID))
-                .andExpect(status().isNoContent());
-        verify(deleteService).delete(TASK_ID, USER_ID);
-    }
+	@Test
+	void resultEndpointShouldExposeAllDegradeAndPageFields() throws Exception {
+		AnalysisResult result = AnalysisResult.create(new DegradeAccumulator(), 0, 0, AnalysisModules.empty());
+		when(queryService.getResult(TASK_ID, USER_ID, COMPANY_ID)).thenReturn(result);
+
+		mockMvc.perform(get("/api/health-report/result/{taskId}", TASK_ID))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.partial").value(false))
+			.andExpect(jsonPath("$.partialReason").doesNotExist())
+			.andExpect(jsonPath("$.suppressDietAdvice").value(false))
+			.andExpect(jsonPath("$.suppressDishRecommend").value(false))
+			.andExpect(jsonPath("$.processedPages").value(0))
+			.andExpect(jsonPath("$.totalPages").value(0));
+	}
+
+	@Test
+	void unfinishedResultShouldReturnConflictCode() throws Exception {
+		doThrow(new HealthReportException(FailCode.TASK_NOT_FINISHED, 409)).when(queryService)
+			.getResult(TASK_ID, USER_ID, COMPANY_ID);
+
+		mockMvc.perform(get("/api/health-report/result/{taskId}", TASK_ID))
+			.andExpect(status().isConflict())
+			.andExpect(jsonPath("$.code").value("TASK_NOT_FINISHED"));
+	}
+
+	@Test
+	void deleteEndpointShouldReturnNoContent() throws Exception {
+		mockMvc.perform(delete("/api/health-report/task/{taskId}", TASK_ID)).andExpect(status().isNoContent());
+		verify(deleteService).delete(TASK_ID, USER_ID, COMPANY_ID);
+	}
+
 }

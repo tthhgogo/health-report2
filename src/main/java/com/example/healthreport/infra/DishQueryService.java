@@ -1,43 +1,106 @@
 package com.example.healthreport.infra;
 
 import com.example.healthreport.dish.Dish;
+import com.example.healthreport.dish.DishIngredient;
 
 import java.time.LocalDate;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
-/**
- * 当日在架菜品及食材查询边界。
- * <p>接口只读；实现不得写入或修改 {@code ct_dish}/{@code ct_dish_ingredient}。</p>
- *
- * <p><b>返回值契约</b>：列表非 {@code null}、不含 {@code null} 元素；
- * <b>空列表是合法结果</b>（当日无在架菜品），不得用 {@code null} 表示。
- * 消费方用 {@link #assertValidResult(List)} 在边界上校验一次，
- * 不要让不合法的返回值漏进下游——那里只会炸出没有上下文的 NPE。</p>
- */
+/** 凌晨任务查询当日在架菜品与食材的只读占位边界。 */
 public interface DishQueryService {
 
-    /** TODO 查询指定业务日的在架菜品及其食材。 */
-    default List<Dish> queryOnShelfDishes(LocalDate bizDate) {
-        throw new UnsupportedOperationException("DishQueryService尚未实现");
-    }
+	/** TODO 按企业标识做 Keyset 分页，枚举指定业务日有在架菜品的企业。 */
+	default CompanyCursorPage queryPreheatCompanyPage(LocalDate bizDate, String lastCompanyId, int pageSize) {
+		throw new UnsupportedOperationException("DishQueryService尚未实现");
+	}
 
-    /**
-     * 在边界上校验查询结果。
-     *
-     * <p>放在接口上而不是各消费方内部，是因为这是<b>接口的契约</b>：
-     * 实现方和消费方看同一段说明、同一个校验，不会各写各的。
-     * 菜品自身的完整性（食材列表不含 null 等）由 {@link Dish} 的构造器保证，本方法不重复。</p>
-     *
-     * @throws IllegalStateException 列表为 null 或含 null 元素
-     */
-    static List<Dish> assertValidResult(List<Dish> dishList) {
-        if (dishList == null) {
-            throw new IllegalStateException(
-                    "DishQueryService 返回 null；当日无菜品应返回空列表而不是 null");
-        }
-        if (dishList.contains(null)) {
-            throw new IllegalStateException("DishQueryService 返回的菜品列表含 null 元素");
-        }
-        return dishList;
-    }
+	/** TODO 按 {@code company_id + bizDate + dishes_id} 做 Keyset 分页。 */
+	default DishCursorPage queryOnShelfDishPage(String companyId, LocalDate bizDate, Long lastDishesId, int pageSize) {
+		throw new UnsupportedOperationException("DishQueryService尚未实现");
+	}
+
+	/** TODO 一次批量查询当前页全部菜品食材，禁止逐菜查询。 */
+	default Map<Long, List<DishIngredient>> queryIngredientListMap(String companyId, List<Long> dishIdList) {
+		throw new UnsupportedOperationException("DishQueryService尚未实现");
+	}
+
+	/** TODO 按与分页完全相同的条件统计企业当日在架菜品数。 */
+	default long countOnShelfDishes(String companyId, LocalDate bizDate) {
+		throw new UnsupportedOperationException("DishQueryService尚未实现");
+	}
+
+	/** 校验企业页非空、严格递增且返回游标等于最后一个企业标识。 */
+	static CompanyCursorPage assertValidCompanyPage(CompanyCursorPage page, String inputLastCompanyId, int pageSize) {
+		if (page == null || pageSize < 1 || page.getCompanyIdList().contains(null)) {
+			throw new IllegalStateException("DishQueryService 返回的企业分页不合法");
+		}
+		List<String> companyIdList = page.getCompanyIdList();
+		if (companyIdList.size() > pageSize) {
+			throw new IllegalStateException("企业分页数量超过页容量");
+		}
+		if (companyIdList.isEmpty()) {
+			if (page.getLastCompanyId() != null) {
+				throw new IllegalStateException("空企业页游标必须为null");
+			}
+			return page;
+		}
+		String previous = inputLastCompanyId;
+		for (String companyId : companyIdList) {
+			if (companyId.length() == 0 || previous != null && companyId.compareTo(previous) <= 0) {
+				throw new IllegalStateException("企业分页游标没有严格前进");
+			}
+			previous = companyId;
+		}
+		if (!companyIdList.get(companyIdList.size() - 1).equals(page.getLastCompanyId())) {
+			throw new IllegalStateException("企业分页返回游标不是最后一条company_id");
+		}
+		return page;
+	}
+
+	/** 校验菜品页企业归属、严格递增及最后一条 {@code dishes_id} 游标。 */
+	static DishCursorPage assertValidDishPage(DishCursorPage page, String companyId, Long inputLastDishesId,
+			int pageSize) {
+		if (page == null || companyId == null || pageSize < 1 || page.getDishList().contains(null)) {
+			throw new IllegalStateException("DishQueryService 返回的菜品分页不合法");
+		}
+		List<Dish> dishList = page.getDishList();
+		if (dishList.size() > pageSize) {
+			throw new IllegalStateException("菜品分页数量超过页容量");
+		}
+		if (dishList.isEmpty()) {
+			if (page.getLastDishesId() != null) {
+				throw new IllegalStateException("空菜品页游标必须为null");
+			}
+			return page;
+		}
+		long previousDishId = inputLastDishesId == null ? 0L : inputLastDishesId.longValue();
+		for (Dish dish : dishList) {
+			if (!companyId.equals(dish.getCompanyId()) || dish.getDishId() <= previousDishId) {
+				throw new IllegalStateException("菜品分页企业归属错误或游标没有严格前进");
+			}
+			previousDishId = dish.getDishId();
+		}
+		if (page.getLastDishesId() == null || page.getLastDishesId().longValue() != previousDishId) {
+			throw new IllegalStateException("菜品分页返回游标不是最后一条dishes_id");
+		}
+		return page;
+	}
+
+	/** 校验批量食材查询精确覆盖当前页，缺失菜品用空列表表达。 */
+	static Map<Long, List<DishIngredient>> assertValidIngredientMap(Map<Long, List<DishIngredient>> ingredientListMap,
+			List<Long> dishIdList) {
+		if (ingredientListMap == null || dishIdList == null
+				|| !ingredientListMap.keySet().equals(new java.util.LinkedHashSet<Long>(dishIdList))) {
+			throw new IllegalStateException("DishQueryService 返回的食材批量结果未精确覆盖当前页");
+		}
+		for (List<DishIngredient> ingredientList : ingredientListMap.values()) {
+			if (ingredientList == null || ingredientList.contains(null)) {
+				throw new IllegalStateException("DishQueryService 返回的食材列表不合法");
+			}
+		}
+		return Collections.unmodifiableMap(ingredientListMap);
+	}
+
 }

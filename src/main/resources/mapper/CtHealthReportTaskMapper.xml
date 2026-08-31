@@ -99,6 +99,7 @@
             update_by = #{updateBy}
         WHERE task_id = #{taskId}
           AND user_id = #{userId}
+          AND company_id = #{companyId}
           AND deleted_at IS NULL
     </update>
 
