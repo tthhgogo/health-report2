@@ -59,21 +59,18 @@ class DishRecommendationArchitectureTest {
 	}
 
 	@Test
-	void dishPackageShouldDeclareExactlyOneXxlJobAcrossAllTypes() {
-		JavaClasses dishClassSet = importDishClasses();
+	void applicationShouldNotDeclareXxlJobBeforeSchedulerIntegration() {
+		JavaClasses productionClassSet = importProductionClasses();
 		List<JavaMethod> handlerMethodList = new ArrayList<JavaMethod>();
-		for (JavaClass dishClass : dishClassSet) {
-			for (JavaMethod method : dishClass.getMethods()) {
+		for (JavaClass productionClass : productionClassSet) {
+			for (JavaMethod method : productionClass.getMethods()) {
 				if (method.isAnnotatedWith(XxlJob.class)) {
 					handlerMethodList.add(method);
 				}
 			}
 		}
 
-		assertThat(handlerMethodList).hasSize(1);
-		JavaMethod handlerMethod = handlerMethodList.get(0);
-		assertThat(handlerMethod.getOwner().getName()).isEqualTo(DishTagJob.class.getName());
-		assertThat(handlerMethod.getName()).isEqualTo("execute");
+		assertThat(handlerMethodList).isEmpty();
 	}
 
 	@Test
@@ -124,6 +121,12 @@ class DishRecommendationArchitectureTest {
 	private JavaClasses importDishClasses() {
 		return new ClassFileImporter().withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
 			.importPackages("com.example.healthreport.dish");
+	}
+
+	/** 导入全部生产类型，确保调度接入前没有任何包提前声明 XXL-JOB 处理器。 */
+	private JavaClasses importProductionClasses() {
+		return new ClassFileImporter().withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
+			.importPackages("com.example.healthreport");
 	}
 
 	/** 读取 dish 包全部生产源码，供数据库当前日期表达式的静态断言使用。 */

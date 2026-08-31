@@ -19,6 +19,7 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 
@@ -75,11 +76,16 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
         headers.setBearerAuth(connectionProperties.getApiKey());
+        String requestUrl = connectionProperties.getBaseUrl() + connectionProperties.getChatCompletionsPath();
         long startMillis = System.currentTimeMillis();
-        log.info("LLM-B 调用开始，请求体字节={}", bodyBytes.length);
+        log.info("LLM-B 调用开始，url={}，请求体字节={}", requestUrl, bodyBytes.length);
+        if (log.isDebugEnabled()) {
+            // LLM-B 只处理公开菜品数据，允许记录完整请求正文；Authorization Header 绝不进入日志。
+            log.debug("LLM-B 请求正文：{}", new String(bodyBytes, StandardCharsets.UTF_8));
+        }
         try {
             String rawResponse = restTemplate.execute(
-                    connectionProperties.getBaseUrl() + connectionProperties.getChatCompletionsPath(),
+                    requestUrl,
                     HttpMethod.POST,
                     bodyWriter(bodyBytes, headers),
                     new BoundedResponseExtractor((int) connectionProperties.getMaxResponseBodyBytes()));

@@ -130,7 +130,8 @@ DishQueryService       查询当日在架菜品与食材
 
 ## 6. 编码规范
 
-- Java 源文件一律 **CRLF** 行尾，`.gitattributes` 为仓库强制源。
+- Java 源文件与 `src/main/resources/mapper/` 下的 MyBatis XML 映射文件一律使用 **CRLF** 行尾，
+  `.gitattributes` 为仓库强制源。
 - **不得创建或保留任何 `package-info.java` 文件。** 包职责与边界统一写在具体类的中文类注释或设计文档中。
 - 配置文件尽量使用 `.properties` 格式；仅在工具不支持或既有文件格式必须保持一致时使用 YAML 等其他格式。
 - 小而内聚的服务优于一个巨型编排类；DTO / domain / infra 边界显式。

@@ -4,7 +4,6 @@ import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
-import com.xxl.job.core.handler.annotation.XxlJob;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -51,7 +50,7 @@ public class CleanupJob {
     }
 
     /** 执行清理矩阵并返回本轮扫描任务数。 */
-    @XxlJob("healthReportCleanupJob")
+    // TODO 待接入 XXL-JOB 时，将本方法注册为 healthReportCleanupJob 调度入口。
     public int cleanup() {
         LocalDateTime currentTime = LocalDateTime.now(clock);
         int batchSize = properties.getBatchSize();

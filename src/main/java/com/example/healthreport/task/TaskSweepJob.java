@@ -1,7 +1,6 @@
 package com.example.healthreport.task;
 
 import com.example.healthreport.persistence.CtHealthReportTaskService;
-import com.xxl.job.core.handler.annotation.XxlJob;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,8 +31,8 @@ public class TaskSweepJob {
         this.clock = clock;
     }
 
-    /** xxl-job 每五分钟调用一次；三条更新互不替代。 */
-    @XxlJob("healthReportTaskSweepJob")
+    /** 执行三类任务超时巡检；三条更新互不替代。 */
+    // TODO 待接入 XXL-JOB 时，将本方法注册为 healthReportTaskSweepJob 五分钟调度入口。
     public SweepResult sweep() {
         LocalDateTime currentTime = LocalDateTime.now(clock);
         int heartbeatFailed = taskService.failHeartbeatTimeout(currentTime.minusMinutes(15L));

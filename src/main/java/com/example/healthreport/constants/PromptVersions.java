@@ -7,7 +7,7 @@ public final class PromptVersions {
 	public static final String EXTRACTION = "extraction-2.4.0";
 
 	/** 菜品打标提示词版本，必须与提示词头部和摘要历史一致。 */
-	public static final String DISH_TAG = "dishtag-2.2.2";
+	public static final String DISH_TAG = "dishtag-2.2.3";
 
 	private PromptVersions() {
 	}

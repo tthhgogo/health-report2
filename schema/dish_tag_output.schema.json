@@ -99,6 +99,7 @@
             "type": "array",
             "maxItems": 10,
             "uniqueItems": true,
+            "description": "命中食材名称字符串数组，只允许填写输入 ingredientList 中的 name；禁止复制 {name, weightG} 食材对象或输出重量。",
             "items": {
               "type": "string",
               "minLength": 1,

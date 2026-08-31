@@ -1,5 +1,9 @@
 package com.example.healthreport.infra;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.llm.dishtag.DishTagProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,6 +11,7 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
@@ -66,6 +71,49 @@ class OpenAiCompatibleDishTagClientTest {
 
         // 客户端不剥离，原样返回；剥离是 ThinkSegmentStripper 的职责，两者不重叠。
         assertThat(newClient().call("提示词", "批次")).isEqualTo(content);
+    }
+
+    @Test
+    void shouldLogUrlAtInfoAndRequestBodyOnlyAtDebugWithoutApiKey() {
+        stubContent("stop", "{\"enumKey\":\"LOW_FAT\"}");
+        Logger logger = (Logger) LoggerFactory.getLogger(OpenAiCompatibleDishTagClient.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            logger.setLevel(Level.INFO);
+            newClient().call("INFO_SYSTEM_MARKER", "INFO_USER_MARKER");
+
+            assertThat(appender.list)
+                    .filteredOn(event -> event.getFormattedMessage().startsWith("LLM-B 调用开始"))
+                    .singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.INFO);
+                        assertThat(event.getFormattedMessage()).contains(
+                                "url=http://127.0.0.1:" + wireMockServer.port() + PATH);
+                    });
+            assertThat(renderedLog(appender))
+                    .doesNotContain("INFO_SYSTEM_MARKER", "INFO_USER_MARKER", "test-dishtag-api-key");
+
+            appender.list.clear();
+            logger.setLevel(Level.DEBUG);
+            newClient().call("DEBUG_SYSTEM_MARKER", "DEBUG_USER_MARKER");
+
+            assertThat(appender.list)
+                    .filteredOn(event -> event.getFormattedMessage().startsWith("LLM-B 请求正文"))
+                    .singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.DEBUG);
+                        assertThat(event.getFormattedMessage())
+                                .contains("DEBUG_SYSTEM_MARKER", "DEBUG_USER_MARKER")
+                                .doesNotContain("test-dishtag-api-key");
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
     }
 
     @Test
@@ -129,5 +177,13 @@ class OpenAiCompatibleDishTagClientTest {
         DishTagProperties dishTagProperties = new DishTagProperties();
         dishTagProperties.setModelVersionDishtag("test-dishtag-model");
         return new OpenAiCompatibleDishTagClient(objectMapper, connectionProperties, dishTagProperties);
+    }
+
+    private String renderedLog(ListAppender<ILoggingEvent> appender) {
+        StringBuilder rendered = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            rendered.append(event.getFormattedMessage()).append('\n');
+        }
+        return rendered.toString();
     }
 }

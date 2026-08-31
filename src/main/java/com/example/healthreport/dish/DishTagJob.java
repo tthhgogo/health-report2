@@ -1,6 +1,5 @@
 package com.example.healthreport.dish;
 
-import com.xxl.job.core.handler.annotation.XxlJob;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -20,7 +19,7 @@ public class DishTagJob {
     }
 
     /** 先打标后清理；业务日只在本方法获取一次并逐层传递。 */
-    @XxlJob("dishTagJob")
+    // TODO 待接入 XXL-JOB 时，将本方法注册为 dishTagJob 调度入口。
     public void execute() {
         LocalDate bizDate = LocalDate.now();
         long startMillis = System.currentTimeMillis();

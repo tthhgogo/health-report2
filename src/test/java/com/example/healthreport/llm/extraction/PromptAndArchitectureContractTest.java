@@ -49,7 +49,7 @@ class PromptAndArchitectureContractTest {
 	@Test
 	void promptConstantsHeadersHistoryAndDigestsShouldStayAligned() throws Exception {
 		assertThat(PromptVersions.EXTRACTION).isEqualTo("extraction-2.4.0");
-		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.2");
+		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.3");
 		assertPromptVersion("prompt/extraction.md", PromptVersions.EXTRACTION);
 		assertPromptVersion("prompt/dish_tag.md", PromptVersions.DISH_TAG);
 		assertThat(read(Paths.get("src/main/resources/application.properties")))
@@ -74,6 +74,20 @@ class PromptAndArchitectureContractTest {
 		assertHistoryEntry("extraction", PromptVersions.EXTRACTION, "prompt/extraction.md", lastVersionMap,
 				lastDigestMap);
 		assertHistoryEntry("dishtag", PromptVersions.DISH_TAG, "prompt/dish_tag.md", lastVersionMap, lastDigestMap);
+	}
+
+	@Test
+	void dishTagPromptShouldRequireMatchedIngredientNameStrings() throws Exception {
+		String dishTagPrompt = read(Paths.get("prompt/dish_tag.md"));
+
+		assertThat(dishTagPrompt)
+			.contains("`matchedIngredients` 的元素类型固定为字符串，只填写食材名称")
+			.contains("正确：`[\"虾仁\", \"虾皮\"]`")
+			.contains("错误：`[{\"name\":\"虾仁\",\"weightG\":10}]`")
+			.contains("禁止把输入里的 `{name, weightG}` 食材对象复制到输出")
+			.contains("响应正文只能是一个原始 JSON 对象")
+			.contains("不得输出 Markdown 代码围栏")
+			.contains("不得在 JSON 前后添加说明文字");
 	}
 
 	@Test
