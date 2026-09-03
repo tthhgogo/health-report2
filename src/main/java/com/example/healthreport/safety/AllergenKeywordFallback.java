@@ -40,22 +40,6 @@ public class AllergenKeywordFallback {
         return false;
     }
 
-    /** 枚举外食源性过敏原只做原文字面匹配；非食源性完全不进入菜品链路。 */
-    public boolean matchesOther(String rawAllergenName, boolean foodBorne, Dish dish) {
-        if (!foodBorne || rawAllergenName == null || rawAllergenName.length() == 0 || dish == null) {
-            return false;
-        }
-        if (dish.getDishName().contains(rawAllergenName)) {
-            return true;
-        }
-        for (DishIngredient ingredient : dish.getIngredientList()) {
-            if (ingredient.getName().contains(rawAllergenName)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private boolean dishNameExcepted(AllergenGroup group, AllergenWord word, String dishName) {
         for (AllergenExceptions.Rule rule : AllergenExceptions.ALL) {
             if (rule.getReviewStatus() == ReviewStatus.REVIEWED

@@ -53,6 +53,7 @@ class OpenAiCompatibleDishTagClientTest {
                 wireMockServer.findAll(postRequestedFor(urlEqualTo(PATH))).get(0).getBodyAsString());
         assertThat(root.path("model").asText()).isEqualTo("test-dishtag-model");
         assertThat(root.path("temperature").asInt()).isZero();
+        assertThat(root.path("stream").asBoolean()).isFalse();
         assertThat(root.path("max_tokens").asInt()).isEqualTo(4096);
         assertThat(root.path("messages").size()).isEqualTo(2);
         assertThat(root.path("messages").path(0).path("role").asText()).isEqualTo("system");

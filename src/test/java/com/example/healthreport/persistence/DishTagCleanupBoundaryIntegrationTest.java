@@ -50,19 +50,20 @@ class DishTagCleanupBoundaryIntegrationTest {
                 + "dish_id BIGINT PRIMARY KEY, last_seen_date DATE NOT NULL)");
     }
 
+    /** 保留期 7 天：边界日当天不删，只删严格早于边界的行。 */
     @Test
-    void shouldDeleteOnlyRowsStrictlyOlderThanThirtyDays() {
+    void shouldDeleteOnlyRowsStrictlyOlderThanRetentionBoundary() {
         LocalDate bizDate = LocalDate.of(2026, 8, 26);
-        insert(31L, bizDate.minusDays(31L));
-        insert(30L, bizDate.minusDays(30L));
-        insert(29L, bizDate.minusDays(29L));
+        insert(8L, bizDate.minusDays(8L));
+        insert(7L, bizDate.minusDays(7L));
+        insert(6L, bizDate.minusDays(6L));
 
         int deleted = dishTagService.deleteExpiredBatch(bizDate);
 
         List<Long> remainingDishIdList = jdbcTemplate.queryForList(
                 "SELECT dish_id FROM ct_dish_tag ORDER BY dish_id", Long.class);
         assertThat(deleted).isEqualTo(1);
-        assertThat(remainingDishIdList).containsExactly(29L, 30L);
+        assertThat(remainingDishIdList).containsExactly(6L, 7L);
     }
 
     private void insert(long dishId, LocalDate lastSeenDate) {

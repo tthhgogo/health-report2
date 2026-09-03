@@ -135,7 +135,6 @@
           "rangeComparison",
           "valueMatch",
           "status",
-          "statusJudgedByModel",
           "includeInHealthProblems",
           "problemName",
           "sectionIndex",
@@ -207,10 +206,6 @@
           },
           "status": {
             "$ref": "#/$defs/indicatorStatus"
-          },
-          "statusJudgedByModel": {
-            "type": "boolean",
-            "description": "false=报告写了明确方向标记，照抄词表口径；true=非方向性结论，由模型结合该指标临床含义判断。Java 侧【不做任何 status 校验】——原先的词表比对告警已整体下线，方向词口径落在本提示词与离线评测集。【conclusionBasis=REFERENCE_RANGE_IN_RANGE 时本字段不适用，固定 false】：那种情况报告根本没印方向标记，两个取值都不贴切。"
           },
           "includeInHealthProblems": {
             "type": "boolean",
@@ -289,7 +284,7 @@
             "$ref": "#/$defs/itemIndex"
           },
           "blockRefs": {
-            "$ref": "#/$defs/blockRefs"
+            "$ref": "#/$defs/paragraphBlockRefs"
           }
         }
       }
@@ -336,7 +331,7 @@
             "$ref": "#/$defs/itemIndex"
           },
           "blockRefs": {
-            "$ref": "#/$defs/blockRefs"
+            "$ref": "#/$defs/paragraphBlockRefs"
           }
         }
       }
@@ -827,6 +822,16 @@
       },
       "description": "该条目引用的全部块（批内块号）。解析器给的是原子文本块（PDF 是一次 Tj/TJ 绘制单元），一行表格指标正常跨 5~12 个块，所以上限放到 32：绘制单元被 kerning 拆碎时留一倍余量。仍然超 32 说明模型在乱引，或该文件是逐字形绘制形态——后者应在解析阶段被密度闸拦掉并改走 OCR，不该走到这里。后端展开成 segmentId 后合并文本再做包含性校验。"
     },
+    "paragraphBlockRefs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/blockRef"
+      },
+      "description": "段落级条目引用的全部块（批内块号）。与 blockRefs 的区别只在【量级】：blockRefs 按「一行表格指标跨 5~12 个块」定的 32，而总检结论、医生建议这类是【整段文字】，十几行的段落在 PDF 里就是几十个绘制单元，32 拦的是正常输出不是乱引——2026-09-01 两个模型在同一处独立撞限，据此拆开。128 ≈ 400 块/页 的三分之一：段落再长也不该跨到那个量级，仍然拦得住「把整批都引进来」。"
+    },
     "evidenceBlockRefs": {
       "type": "array",
       "minItems": 0,
@@ -933,7 +938,7 @@
                 }
               },
               {
-                "$comment": "② REFERENCE_RANGE_IN_RANGE：报告没印结论，必须给参考范围与比较条件；结论只可能是正常，因此 status 固定 NORMAL、不进健康问题、statusJudgedByModel 固定 false。",
+                "$comment": "② REFERENCE_RANGE_IN_RANGE：报告没印结论，必须给参考范围与比较条件；结论只可能是正常，因此 status 固定 NORMAL、不进健康问题。",
                 "if": {
                   "properties": {
                     "conclusionBasis": {
@@ -960,9 +965,6 @@
                     },
                     "status": {
                       "const": "NORMAL"
-                    },
-                    "statusJudgedByModel": {
-                      "const": false
                     },
                     "includeInHealthProblems": {
                       "const": false
@@ -1002,9 +1004,6 @@
                     },
                     "status": {
                       "const": "NORMAL"
-                    },
-                    "statusJudgedByModel": {
-                      "const": false
                     },
                     "includeInHealthProblems": {
                       "const": false

@@ -1,7 +1,7 @@
 # 抽取提示词 — 体检报告结构化抽取
 
 > 体检报告抽取提示词。输出必须通过 `schema/extraction_output.schema.json` 校验。
-> 版本：`promptVersion = extraction-2.4.0`
+> 版本：`promptVersion = extraction-2.4.6`
 
 ---
 
@@ -79,9 +79,26 @@
 **这一步的判断由你来做，不是后端。** 后端只会把你引用的块合并起来查字符串，
 它不知道哪些块属于同一行、哪些属于左栏右栏——**你看得到图，它看不到。**
 
-**给你的块是原子文本块，不是表格单元格。** 解析器只做一件事：把 PDF/OFD 里的字形按
-连续性切成块，附上坐标，**它不识别表格、不聚类行列、不判断哪些块是一个单元格**。
+**块的形态取决于 `textSource`，两种要分开看。**
+
+`textSource = NATIVE`（PDF/OFD 原生文本层）——**块是原子文本块，不是表格单元格。**
+解析器只做一件事：把字形按连续性切成块、附上坐标，
+**它不识别表格、不聚类行列、不判断哪些块是一个单元格**。
 所以一张指标表的一行，正常就是 4~6 个独立的块（上面那个例子）。把它们归成一行，是你的活。
+
+`textSource = OCR`（扫描件、图片、Word 内嵌图）——**一个块就是一整行**，
+块内用**制表符**隔开单元格：
+
+```
+[42] (OCR, bbox=) 血糖（GLU）→4.98→mmol/L→→3.9~6.1
+                            ↑ 这里的箭头是制表符，表示单元格边界
+```
+
+**连续两个制表符表示那一列是空的**，位置保留着——上面这行的「提示」列为空，
+所以 `3.9~6.1` 落在第 5 列而不是第 4 列。**不要把空位当成不存在**，那会让整行列位错开。
+
+OCR 路径**没有 bbox**（`bbox=` 后面是空的），制表符划出的列位置是你唯一的版面线索。
+一行就是一个块，所以引用它只需要一个块号——不像 NATIVE 那样要把一行的 4~6 块都引全。
 
 具体要你判断的：
 
@@ -96,8 +113,15 @@
 漏引一个块，那个字段就通不过包含性校验，**整条指标会被丢弃**——不是"少显示一个单位"，
 是这条指标彻底不出现。宁可多引一个相邻块（合并后仍能查到子串），不要漏引。
 
-`blockRefs` 一条最多 32 个。一行表格指标正常是 5~12 个块，多引几个相邻块也远够用；
-**真要超过 32，说明你引错了**——多半是跨栏或跨行拉进了不相干的块，回去重新看这一行的范围。
+`blockRefs` 的上限分两档：
+
+| 条目类型 | 上限 | 为什么 |
+|---|---|---|
+| `indicators` | **32** | 一行表格指标正常是 5~12 个块，多引几个相邻块也远够用 |
+| `textualFindings`、`summaryConclusions` | **128** | 它们引用的是【整段文字】，十几行的段落在版面上就是几十个绘制单元 |
+
+**指标真要超过 32，说明你引错了**——多半是跨栏或跨行拉进了不相干的块，回去重新看这一行的范围。
+段落类超过 128 同理：那意味着你把整批都引进来了，不是在标一条结论的出处。
 
 **3. 章节归属由你给，后端不推导。** 「这一行属于哪个章节」是版面判断——
 跨页续表、双栏、页脚标题、夹在两章之间的小结，**只有看得见版面的你分得清**。
@@ -222,7 +246,8 @@ OCR     扫描件、拍照件识别出来的，有误差（错别字、0/O 与 1
 "patient": { "name": null, "nameBlockRefs": [], "gender": null, "genderBlockRefs": [] }
 ```
 
-规则是硬的，Schema 会挡：**字段非空 → 证据数组至少一个元素；字段为 `null` → 证据数组必须是空的。**
+规则是硬的，**后端会校验，违反则整批作废**：**字段非空 → 证据数组至少一个元素；字段为 `null` → 证据数组必须是空的。**
+这一条不在发给你的 Schema 里，Schema 不会替你挡——只能靠你自己在输出前核对。
 
 **为什么不展示也要证据**：这两个字段能把整个任务判成「多份文件不是同一个人」而**整体失败**。
 一个猜出来的姓名，代价是用户传了 5 个文件却一个结果都拿不到。后端会拿你给的名字
@@ -271,7 +296,7 @@ OCR     扫描件、拍照件识别出来的，有误差（错别字、0/O 与 1
 - `sectionName` 逐字取自报告，不改写、不概括（`UNSECTIONED` / `UNKNOWN` 除外，见铁律 3）
 - `sectionIndex` **批内局部序号**，本批从 0 开始；别的批次也从 0 开始，这是对的
 - `sectionRelation` 四选一，见铁律 3 的表。**拿不准给 `UNKNOWN`，不要给 `CONTINUATION`**
-- `sectionBlockRef` 只有 `CURRENT` 时填，另外三态必须是 `null`（Schema 会挡）
+- `sectionBlockRef` 只有 `CURRENT` 时填，另外三态必须是 `null`（**不在 Schema 里，后端校验，违反则整批作废**）
 
 **每个 `indicators` / `textualFindings` / `summaryConclusions` / `allergens` 条目
 都必须给 `sectionIndex`**，指向上面数组的下标。这是你的判断，不是后端的（见铁律 3）。
@@ -355,7 +380,7 @@ OCR     扫描件、拍照件识别出来的，有误差（错别字、0/O 与 1
     "lowerBound": "4.0", "lowerInclusive": true,
     "upperBound": "10.0", "upperInclusive": true
   },
-  "status": "NORMAL", "statusJudgedByModel": false, "includeInHealthProblems": false
+  "status": "NORMAL", "includeInHealthProblems": false
 }
 ```
 
@@ -408,7 +433,7 @@ OCR     扫描件、拍照件识别出来的，有误差（错别字、0/O 与 1
   "conclusionBasis": "REFERENCE_VALUE_MATCH",
   "rangeComparison": null,
   "valueMatch": { "resultComparableValue": "NEGATIVE", "acceptableReferenceValues": ["NEGATIVE"] },
-  "status": "NORMAL", "statusJudgedByModel": false, "includeInHealthProblems": false
+  "status": "NORMAL", "includeInHealthProblems": false
 }
 ```
 
@@ -446,7 +471,7 @@ NOT_DETECTED   未检出
 
 **status 的判定权是分级的：**
 
-报告已经给了**方向性**标记时，照抄，`statusJudgedByModel = false`：
+报告已经给了**方向性**标记时，照抄：
 
 | 报告写的 | status |
 |---|---|
@@ -457,7 +482,7 @@ NOT_DETECTED   未检出
 
 注意「轻度增高」含「增高」，属于有方向标记，判 `HIGH`，不算你自行判断。
 
-报告只给了**非方向性**结论时——「阳性(+)」「阴性(-)」「弱阳性」「可疑」「临界」——由你结合**该指标本身的临床含义**判断，`statusJudgedByModel = true`：
+报告只给了**非方向性**结论时——「阳性(+)」「阴性(-)」「弱阳性」「可疑」「临界」——由你结合**该指标本身的临床含义**判断：
 
 ```
 过敏原-虾蟹类    阳性(+)  →  ABNORMAL      过敏原-虾蟹类   阴性(-)  →  NORMAL
@@ -678,6 +703,112 @@ LOW_CALORIE                → "控制食量"
 以上都没有对应的 → `OTHER`。
 
 > 特别提醒：「低蛋白饮食」「限碘饮食」「低钾低磷饮食」「孕期营养」这类**一律给 `OTHER`**，它们不是上表任何一项的近义词。
+
+---
+
+## 输出骨架
+
+**顶层必须是下面这 15 个字段，一个不少、一个不多。** 多给一个 Schema 里没有的字段
+（`confidence`、`note`、`reason` 之类）会被直接拒绝。没有内容的用 `[]` 或 `null`，
+**不要省略字段本身**。
+
+```json
+{
+  "fileIndex": 0, "batchIndex": 0, "batchCount": 1,
+  "batchStatus": "OK",
+  "patient": { "name": null, "nameBlockRefs": [], "gender": null, "genderBlockRefs": [] },
+  "reportOverview": null,
+  "indicators": [],
+  "textualFindings": [],
+  "summaryConclusions": [],
+  "allergens": [],
+  "nutritionSupplements": [],
+  "dietRequirements": [],
+  "sections": [],
+  "allergenSectionBlockRefs": [],
+  "allergenDataBlockRefs": []
+}
+```
+
+> 上面这份**本身就是一个合法输出**——本批什么都没抽到时照原样给即可。
+> **不要把它当模板往里填空字符串**：`""` 和空 `blockRefs` 都不合法，会让那条被丢掉。
+
+**每种条目的完整形态**——下面每个键对应一个数组，值是那个数组里**一个条目**该长的样子。
+**列出的字段一个都不能少、一个都不能多**；取值规则见 `## 各字段规则`。
+
+```json
+{
+  "indicators": {"name": "甘油三酯", "value": "2.8", "unit": "mmol/L", "refRange": "0.56~1.70", "conclusionText": "↑偏高", "conclusionBasis": "REPORT_TEXT", "rangeComparison": null, "valueMatch": null, "status": "HIGH", "includeInHealthProblems": true, "problemName": "甘油三酯偏高", "sectionIndex": 0, "orderInSection": 0, "itemIndex": 0, "blockRefs": [17, 18, 19, 20, 21]},
+  "textualFindings": {"title": "肝胆B超", "conclusionText": "提示脂肪肝", "status": "ABNORMAL", "includeInHealthProblems": true, "sectionIndex": 1, "orderInSection": 0, "itemIndex": 0, "blockRefs": [45, 46]},
+  "summaryConclusions": {"sourceOrder": 0, "itemNo": 3, "categories": ["HEALTH_PROBLEM"], "includeInHealthProblems": false, "sectionIndex": 2, "itemIndex": 0, "blockRefs": [80, 81, 82]},
+  "allergens": {"enumKey": "SHRIMP_CRAB", "isFoodBorne": true, "rawName": "虾", "rawResult": "阳性(+2)", "resultStatus": "POSITIVE", "sectionIndex": 3, "sourceOrder": 0, "itemIndex": 0, "blockRefs": [95, 96]},
+  "nutritionSupplements": {"enumKey": "IRON", "adviceQuote": "建议补充铁剂", "applicability": "CURRENT_PATIENT", "structuredSafety": "NORMAL", "sectionIndex": 2, "sourceOrder": 1, "itemNo": 4, "itemIndex": 1, "blockRefs": [85]},
+  "dietRequirements": {"enumKey": "LOW_PURINE", "adviceQuote": "建议低嘌呤饮食", "applicability": "CURRENT_PATIENT", "structuredSafety": "NORMAL", "sectionIndex": 2, "sourceOrder": 2, "itemNo": 5, "itemIndex": 2, "blockRefs": [86]},
+  "sections": {"sectionName": "血脂检查", "sectionIndex": 0, "sectionRelation": "CURRENT", "sectionBlockRef": 15}
+}
+```
+
+> 这份示例本身逐条通过正式 Schema 校验（契约测试锁着）。**照着它的字段清单填**，
+> 不要凭印象少给字段——`required` 缺失是最常见的整条被丢原因。
+> 上面 `indicators` 那条走的是 `REPORT_TEXT`；另外两条 `conclusionBasis` 路径的完整示例
+> 见 `## 各字段规则` 的「参考值准入」一节，它们的伴生字段不一样。
+
+**只输出这一个 JSON 对象。** 不要 Markdown 围栏、不要解释、不要在 JSON 前后写任何文字。
+
+---
+
+## 输出前静默自检
+
+**下面四条不在发给你的 Schema 里，Schema 不会替你挡。** 它们由后端校验，
+任一不过整批作废、且不重试——用户传的全部文件一个结果都拿不到。输出前逐条核对：
+
+**① 患者证据联动**
+`name` 非 `null` → `nameBlockRefs` 至少一个元素；`name` 为 `null` → `nameBlockRefs` 必须是 `[]`。
+`gender` 与 `genderBlockRefs` 同理。**引不出出处的名字，给 `null`。**
+
+**② 指标结论来源互斥**
+每条 `indicators` 只能落在一种 `conclusionBasis` 上，三者的伴生字段不得串台：
+
+```
+REPORT_TEXT              conclusionText 有原文；rangeComparison 与 valueMatch 都是 null
+REFERENCE_RANGE_IN_RANGE conclusionText 为 null；refRange 有原文；rangeComparison 是对象；
+                         valueMatch 为 null；status 固定 NORMAL；不进健康问题；problemName 为 null
+REFERENCE_VALUE_MATCH    conclusionText 为 null；refRange 有原文；valueMatch 是对象；
+                         rangeComparison 为 null；status 固定 NORMAL；不进健康问题；problemName 为 null
+```
+
+**这一条最容易在几十条指标里漏掉一两条，所以要【逐条扫】，不是读一遍规则就算数：**
+
+```
+把 conclusionBasis 不是 REPORT_TEXT 的条目全部过一遍，每一条都必须是：
+    status                  = "NORMAL"
+    includeInHealthProblems = false
+    problemName             = null
+有一条不是，就改回来。
+```
+
+**为什么只可能是 NORMAL：** 走这两条路的前提就是「结果符合报告给出的参考值」——
+`REFERENCE_RANGE_IN_RANGE` 这个名字里的 `IN_RANGE` 就是这个意思。
+结果超出范围而报告又没印结论的指标，**照常给 `rangeComparison`**，后端会判出「不在范围内」
+并整条丢弃；那是正确结果。**不要因为你看出这个值偏高，就把 status 改成 HIGH**——
+报告没写的结论，系统不生成（§硬规则 2）。
+
+在这两条路径上，`status` / `includeInHealthProblems` / `problemName` **不是判断题，是三个定值**，
+照抄即可。
+
+**③ 章节引用联动**
+`sectionRelation = CURRENT` → `sectionBlockRef` 必填；`CONTINUATION` / `UNSECTIONED` / `UNKNOWN`
+→ `sectionBlockRef` 必须是 `null`。
+
+**④ 非 OK 批次必须清空**
+`batchStatus != OK` 时：`sections`、`indicators`、`textualFindings`、`summaryConclusions`、
+`allergens`、`nutritionSupplements`、`dietRequirements`、`allergenSectionBlockRefs`、
+`allergenDataBlockRefs` 全部是 `[]`，`reportOverview` 是 `null`，
+`patient` 的两个值和两个证据数组全部是 `null` / `[]`。
+
+另外两条 Schema 会挡，但错了同样是整批作废，顺手核对：
+`fileIndex` / `batchIndex` / `batchCount` **原样回填输入给的值**（不是示例里的 0/1/3）；
+所有 `blockRefs` 里的整数都来自本批输入的块号。
 
 ---
 

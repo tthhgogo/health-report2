@@ -1,0 +1,155 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LLM-A 饮食建议与菜品打标召回探针输出",
+  "description": "只服务于纯图像输入的探针，不是生产契约。对应需求 §7（饮食建议，第 139~183 行）与 §8（食堂菜品推荐，第 185~214 行）。按菜品打标方向分成两组，与页面「适宜多吃／忌吃少吃」两个卡片区一致——条目落在哪个数组里就是它的方向，不另设 direction 字段。食材清单、摄入量说明、烹饪方式、菜品匹配全部由后端按枚举查常量表与 Redis 标签集合完成。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reportStatus",
+    "recommend",
+    "reject"
+  ],
+  "properties": {
+    "reportStatus": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "NO_REPORT_FEATURE",
+        "UNREADABLE"
+      ],
+      "description": "OK=正常识别；NO_REPORT_FEATURE=看得清但不是体检报告；UNREADABLE=看不清。非 OK 时 dietTags 必须为空数组"
+    },
+    "recommend": {
+      "type": "array",
+      "maxItems": 100,
+      "description": "推荐方向（页面「适宜多吃」区）。需求 §8-2：营养补充恒在这里；饮食注意只有 LOW_PURINE 与 HIGH_FIBER 能进来（第一期仅这两个维度能从菜品主料确证）。过敏原永远不在这里",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dimension",
+          "enumKey",
+          "page",
+          "section",
+          "itemNo",
+          "quote",
+          "rawText"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "ALLERGEN",
+              "NUTRITION",
+              "DIET"
+            ],
+            "description": "需求 §7-2 的三类来源：ALLERGEN=报告中明确的过敏原；NUTRITION=报告建议补充的营养物质；DIET=总检结论中的饮食要求"
+          },
+          "enumKey": {
+            "type": "string",
+            "description": "归一化到固定枚举表；表里没有对应项一律 OTHER，不要找最像的。取值范围由所属 dimension 决定，测试会校验"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "该条出自第几张图像，从 1 起"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 60,
+            "description": "承载它的章节原文名，如「过敏原筛查」「总检结论」「专家建议」。不属于任何章节时为 null。需求 §7-3 的来源标注由后端按 section 与 itemNo 拼装"
+          },
+          "itemNo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "报告原文【印着】的条目编号，如总检结论的「3.」。没印就是 null，不要自己编号"
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "该条建议本身那一句原文，尽量逐字。只摘建议那一句，不要连上下文——它会显示在卡片上作为来源标注"
+          },
+          "rawText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "承载该建议的整条原文，逐字转写，供人工与纸质报告核对"
+          }
+        }
+      }
+    },
+    "reject": {
+      "type": "array",
+      "maxItems": 100,
+      "description": "不推荐方向（页面「忌吃少吃」区）。需求 §8-2：过敏原恒在这里；饮食注意除 LOW_PURINE 与 HIGH_FIBER 外全在这里。营养补充永远不在这里",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dimension",
+          "enumKey",
+          "page",
+          "section",
+          "itemNo",
+          "quote",
+          "rawText"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "ALLERGEN",
+              "NUTRITION",
+              "DIET"
+            ],
+            "description": "需求 §7-2 的三类来源：ALLERGEN=报告中明确的过敏原；NUTRITION=报告建议补充的营养物质；DIET=总检结论中的饮食要求"
+          },
+          "enumKey": {
+            "type": "string",
+            "description": "归一化到固定枚举表；表里没有对应项一律 OTHER，不要找最像的。取值范围由所属 dimension 决定，测试会校验"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "该条出自第几张图像，从 1 起"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 60,
+            "description": "承载它的章节原文名，如「过敏原筛查」「总检结论」「专家建议」。不属于任何章节时为 null。需求 §7-3 的来源标注由后端按 section 与 itemNo 拼装"
+          },
+          "itemNo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "报告原文【印着】的条目编号，如总检结论的「3.」。没印就是 null，不要自己编号"
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "该条建议本身那一句原文，尽量逐字。只摘建议那一句，不要连上下文——它会显示在卡片上作为来源标注"
+          },
+          "rawText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "承载该建议的整条原文，逐字转写，供人工与纸质报告核对"
+          }
+        }
+      }
+    }
+  }
+}

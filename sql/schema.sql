@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS ct_health_report_task (
   fail_code      VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '失败错误码，与 FailCode 枚举一一对应，成功或未失败时为NULL',
   reanalyzable   TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否允许重新解析：1允许0不允许，同时是文件解绑条件',
   partial        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否为部分结果：1是0否，命中时模块三四按partial_reason降级',
-  partial_reason VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '降级原因：PAGE_TRUNCATED页数截断/BATCH_UNREADABLE批次不可读/ALLERGEN_SUSPECT_MISS疑似漏抽过敏原',
+  partial_reason VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '降级原因：PAGE_TRUNCATED页数截断/BATCH_UNREADABLE批次不可读/ALLERGEN_SUSPECT_MISS疑似漏抽过敏原/SCHEMA_ITEM_DROPPED个别条目不合Schema已剔除/DIET_REQUIREMENT_DROPPED剔除的条目含饮食注意需抑制菜品推荐',
   heartbeat_at   DATETIME     NULL COMMENT '工作线程最近心跳时间，巡检据此判断进程存活',
   deadline_at    DATETIME     NULL COMMENT '任务执行硬截止时间，领取时置为当前时间加10分钟，此后不再顺延',
   expire_at      DATETIME     NOT NULL COMMENT '任务行过期时间，创建时为30分钟后，成功时顺延为2小时后以对齐结果TTL',

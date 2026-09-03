@@ -1,5 +1,6 @@
 package com.example.healthreport.llm.extraction;
 
+import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
 import com.example.healthreport.parse.ParsedPage;
 import com.example.healthreport.parse.segment.Segment;
 import com.example.healthreport.parse.segment.TextNormalizer;
@@ -9,6 +10,7 @@ import com.example.healthreport.safety.AllergenCoverageScanner;
 import com.example.healthreport.safety.AllergenSuspectScanner;
 import com.example.healthreport.safety.PositiveRowCoverageScanner;
 import com.example.healthreport.support.FailCode;
+import com.example.healthreport.support.PartialReason;
 import com.example.healthreport.support.HealthReportException;
 import com.example.healthreport.support.PartialReason;
 import com.example.healthreport.task.DegradeAccumulator;
@@ -36,7 +38,8 @@ class ExtractionValidationPipelineTest {
     void setUp() {
         objectMapper = new ObjectMapper();
         TextNormalizer textNormalizer = new TextNormalizer();
-        ExtractionSchemaValidator schemaValidator = new ExtractionSchemaValidator(objectMapper);
+        ExtractionSchemaValidator schemaValidator = new ExtractionSchemaValidator(objectMapper,
+                new ModelOutputSchemaRegistry(objectMapper));
         SourceEvidenceValidator evidenceValidator =
                 new SourceEvidenceValidator(textNormalizer);
         AllergenAdmissionFilter admissionFilter = new AllergenAdmissionFilter();
@@ -126,18 +129,18 @@ class ExtractionValidationPipelineTest {
     }
 
     /**
-     * 归一化枚举之外的取值由 Schema 直接拦下，整批按契约失败。
-     * <p>枚举是契约的一部分，写错就是模型没遵守契约，比「悄悄丢一条指标」更该早暴露。</p>
+     * 归一化枚举之外的取值由 Schema 拦下，该条指标被剔除，不进展示。
+     * <p>枚举是契约的一部分；写错的那一条必须消失，但不该拖垮同批其余几十条。</p>
      */
     @Test
-    void comparableValuesOutsideTheApprovedEnumMustFailTheContract() {
+    void comparableValuesOutsideTheApprovedEnumMustDropTheIndicator() {
         Segment segment = segment("f0-p1-s0", "项目甲 阴性");
         ExtractionBatchPlan plan = plan(0, 0, 1, segment);
         ObjectNode root = validRoot(plan);
         root.putArray("indicators").add(
                 valueMatchedIndicator("阴性", "阴性", "NEG", "NEG"));
 
-        assertServerError(plan, root, Collections.singletonList(segment));
+        assertItemDropped(plan, root, Collections.singletonList(segment));
     }
 
     @Test
@@ -254,8 +257,9 @@ class ExtractionValidationPipelineTest {
     }
 
     /**
-     * 参考范围给成空串时整批作废：空串是任意原文的子串，能通过一切子串式核验，
-     * 等于让该指标带着一个查无实据的参考值进入展示。Schema 的 minLength 是第一道，
+     * 参考范围给成空串时该指标被剔除：空串是任意原文的子串，能通过一切子串式核验，
+     * 等于让该指标带着一个查无实据的参考值进入展示。剔除后它压根不出现，
+     * 这个安全性质与原先的整批作废等价。Schema 的 minLength 是第一道，
      * Java 侧的空白按缺失是第二道。
      */
     @Test
@@ -265,12 +269,12 @@ class ExtractionValidationPipelineTest {
         ObjectNode root = validRoot(plan);
         root.putArray("indicators").add(
                 rangeAdmittedIndicator("6.2", "", "6.2", "4.0", "10.0"));
-        assertServerError(plan, root, Collections.singletonList(segment));
+        assertItemDropped(plan, root, Collections.singletonList(segment));
 
         ObjectNode qualitative = validRoot(plan);
         qualitative.putArray("indicators").add(
                 valueMatchedIndicator("阴性", "", "NEGATIVE", "NEGATIVE"));
-        assertServerError(plan, qualitative, Collections.singletonList(segment));
+        assertItemDropped(plan, qualitative, Collections.singletonList(segment));
     }
 
     /** 比较用的结果值必须与 value 字段是同一个数，允许 6.2 与 6.20 的标度差异。 */
@@ -300,7 +304,6 @@ class ExtractionValidationPipelineTest {
         ObjectNode root = validRoot(plan);
         ObjectNode indicator = indicator(0, 0);
         indicator.put("status", "HIGH");
-        indicator.put("statusJudgedByModel", true);
         indicator.put("includeInHealthProblems", false);
         root.withArray("indicators").add(indicator);
 
@@ -310,29 +313,27 @@ class ExtractionValidationPipelineTest {
         assertThat(output.getIndicatorList()).hasSize(1);
         assertThat(output.getIndicatorList().get(0).getStatus()).isEqualTo(IndicatorStatus.HIGH);
         assertThat(output.getIndicatorList().get(0).isIncludeInHealthProblems()).isFalse();
-        assertThat(output.getIndicatorList().get(0).isStatusJudgedByModel()).isTrue();
         assertThat(output.rawTextList(output.getIndicatorList().get(0).getSegmentIdList()))
                 .containsExactly(segment.getRawText());
     }
 
+    /**
+     * 旧版模型仍回传已下线的 statusJudgedByModel 时，该条被 Schema 拦下并剔除，不得静默进入输出。
+     *
+     * <p>该字段随 13 个进程级计数于 2026-08-27 一并下线（精简设计方案 §4.4-③），
+     * 生产代码已无消费者。indicators 条目是 additionalProperties:false，
+     * 因此多出来的字段是硬失败——这条断言防的是有人把 false 悄悄加回 Schema。</p>
+     */
     @Test
-    void statusJudgedByModelCounterShouldOnlyCountTrueItems() {
-        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲 项目乙 V2 结论乙");
+    void shouldRejectLegacyOutputCarryingRetiredStatusJudgedByModel() {
+        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
         ExtractionBatchPlan plan = plan(0, 0, 1, segment);
         ObjectNode root = validRoot(plan);
-        ObjectNode modelJudged = indicator(0, 0);
-        modelJudged.put("statusJudgedByModel", true);
-        ObjectNode sourceJudged = indicator(0, 1);
-        sourceJudged.put("name", "项目乙");
-        sourceJudged.put("value", "V2");
-        sourceJudged.put("conclusionText", "结论乙");
-        sourceJudged.put("statusJudgedByModel", false);
-        root.withArray("indicators").add(modelJudged).add(sourceJudged);
+        ObjectNode legacyIndicator = indicator(0, 0);
+        legacyIndicator.put("statusJudgedByModel", true);
+        root.withArray("indicators").add(legacyIndicator);
 
-        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
-                Collections.singletonList(segment), new DegradeAccumulator());
-
-        assertThat(output.getIndicatorList()).hasSize(2);
+        assertItemDropped(plan, root, Collections.singletonList(segment));
     }
 
     @Test
@@ -389,27 +390,165 @@ class ExtractionValidationPipelineTest {
         assertThat(output.getIndicatorList().get(0).getProblemName()).isNull();
     }
 
+    /**
+     * 剔除的是饮食注意时，必须抑制菜品推荐。
+     *
+     * <p>每条 {@code dietRequirements} 在模块四生成一个 <b>REJECT 方向集合</b>；
+     * 剔掉「低嘌呤」而照常推荐，等于把一次格式错误变成一次错误推荐。</p>
+     */
     @Test
-    void shouldRejectMissingRequiredWrongTypeDuplicateAndTooManyReferences() {
+    void droppingDietRequirementMustSuppressDishRecommend() {
+        Segment segment = segment("f0-p1-s0", "建议 低嘌呤饮食");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        ObjectNode diet = objectMapper.createObjectNode();
+        diet.put("enumKey", "LOW_PURINE").put("adviceQuote", "低嘌呤饮食");
+        diet.put("applicability", "GENERAL").put("structuredSafety", "SAFE");
+        diet.put("sectionIndex", 0).put("sourceOrder", 0).putNull("itemNo").put("itemIndex", 0);
+        diet.putArray("blockRefs").add(0);
+        diet.put("probeExtraField", "坏字段");
+        root.withArray("dietRequirements").add(diet);
+        DegradeAccumulator accumulator = new DegradeAccumulator();
+
+        validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), accumulator);
+
+        assertThat(accumulator.suppressDishRecommend()).as("必须抑制菜品推荐").isTrue();
+        assertThat(accumulator.primaryReason()).isEqualTo(PartialReason.DIET_REQUIREMENT_DROPPED);
+    }
+
+    /** 剔除指标不抑制任何模块——只有饮食注意那一类才动摇安全结论。 */
+    @Test
+    void droppingIndicatorMustNotSuppressAnyModule() {
         Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
         ExtractionBatchPlan plan = plan(0, 0, 1, segment);
-        List<ObjectNode> invalidRootList = new ArrayList<ObjectNode>();
+        ObjectNode root = validRoot(plan);
+        ObjectNode item = indicator(0, 0);
+        item.put("probeExtraField", "坏字段");
+        root.withArray("indicators").add(item);
+        DegradeAccumulator accumulator = new DegradeAccumulator();
 
+        validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), accumulator);
+
+        assertThat(accumulator.suppressDishRecommend()).isFalse();
+        assertThat(accumulator.suppressDietAdvice()).isFalse();
+        assertThat(accumulator.primaryReason()).isEqualTo(PartialReason.SCHEMA_ITEM_DROPPED);
+    }
+
+    /** JSON 之后还写了解释文字：默认 Jackson 会静默丢掉尾部，这里必须整批作废。 */
+    @Test
+    void trailingTextAfterJsonMustFailTheWholeBatch() {
+        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        String rawContent = validRoot(plan).toString() + "\n以上就是抽取结果。";
+
+        assertThatThrownBy(() -> validate(
+                Collections.singletonList(new ExtractionBatchResult(plan, BatchStatus.OK, rawContent)),
+                Collections.singletonList(segment), new DegradeAccumulator()))
+                .isInstanceOf(HealthReportException.class);
+    }
+
+    /**
+     * 过敏原条目不参与剔除，一律整批作废。
+     *
+     * <p><b>这是安全边界，不是保守。</b> 静默少一条过敏原会让 {@code D \\ A} 非空、
+     * 触发 {@code ALLERGEN_SUSPECT_MISS}——把一次<b>格式错误</b>伪装成一次<b>漏抽降级</b>，
+     * 污染那个信号的含义，而它是菜品拦截链路的最后一道防线（§0-6 一级红线）。</p>
+     */
+    @Test
+    void allergenViolationMustFailTheBatchInsteadOfDroppingTheItem() {
+        Segment segment = segment("f0-p1-s0", "过敏原 虾 阳性");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        ObjectNode allergen = objectMapper.createObjectNode();
+        allergen.put("enumKey", "SHRIMP_CRAB").put("isFoodBorne", true);
+        allergen.put("rawName", "虾").put("rawResult", "阳性").put("resultStatus", "POSITIVE");
+        allergen.put("sectionIndex", 0).put("sourceOrder", 0).put("itemIndex", 0);
+        allergen.putArray("blockRefs").add(0);
+        allergen.put("probeExtraField", "不该出现的字段");
+        root.withArray("allergens").add(allergen);
+
+        assertServerError(plan, root, Collections.singletonList(segment));
+    }
+
+    /**
+     * 剔除量超过 20% 时整批作废：偶发一两条是抖动，大比例剔除说明这一批整体跑偏。
+     * <p>放行会得到一份严重残缺却只标着 partial 的报告，那比响亮地失败更糟。</p>
+     */
+    @Test
+    void dropRatioBeyondBudgetMustFailTheWholeBatch() {
+        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        ArrayNode indicatorArray = root.withArray("indicators");
+        for (int index = 0; index < 5; index++) {
+            ObjectNode item = indicator(0, index);
+            if (index < 2) {
+                item.put("probeExtraField", "坏字段");
+            }
+            indicatorArray.add(item);
+        }
+
+        // 5 条里坏 2 条 = 40%，上限 max(1, floor(5×20%)) = 1，超预算。
+        assertServerError(plan, root, Collections.singletonList(segment));
+    }
+
+    /** 预算之内时只剔坏的那条，其余条目照常进入输出——这才是本机制的价值所在。 */
+    @Test
+    void goodItemsMustSurviveWhenOneItemIsDropped() {
+        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        ObjectNode root = validRoot(plan);
+        ArrayNode indicatorArray = root.withArray("indicators");
+        for (int index = 0; index < 10; index++) {
+            ObjectNode item = indicator(0, index);
+            if (index == 3) {
+                item.put("probeExtraField", "坏字段");
+            }
+            indicatorArray.add(item);
+        }
+        DegradeAccumulator accumulator = new DegradeAccumulator();
+
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                Collections.singletonList(segment), accumulator);
+
+        assertThat(output.getIndicatorList()).as("只该少掉坏的那一条").hasSize(9);
+        assertThat(accumulator.primaryReason()).isEqualTo(PartialReason.SCHEMA_ITEM_DROPPED);
+    }
+
+    /**
+     * 顶层必填字段缺失仍然整批作废：它定位不到「某一条」，剔除无从下手。
+     * <p>这是剔除机制的边界——顶层坏了说明模型整体跑偏，不是个别条目抖动。</p>
+     */
+    @Test
+    void missingTopLevelRequiredFieldMustStillFailTheWholeBatch() {
+        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
         ObjectNode missingRequired = validRoot(plan);
         missingRequired.remove("dietRequirements");
-        invalidRootList.add(missingRequired);
+
+        assertServerError(plan, missingRequired, Collections.singletonList(segment));
+    }
+
+    /** 条目级的类型错、重复引用、引用超限，都只剔除那一条，不拖垮同批其余条目。 */
+    @Test
+    void wrongTypeDuplicateAndTooManyReferencesMustDropOnlyThatIndicator() {
+        Segment segment = segment("f0-p1-s0", "检查 项目甲 V1 结论甲");
+        ExtractionBatchPlan plan = plan(0, 0, 1, segment);
+        List<ObjectNode> droppableRootList = new ArrayList<ObjectNode>();
 
         ObjectNode wrongType = validRoot(plan);
         ObjectNode wrongTypeIndicator = indicator(0, 0);
         wrongTypeIndicator.putArray("blockRefs").add("0");
         wrongType.withArray("indicators").add(wrongTypeIndicator);
-        invalidRootList.add(wrongType);
+        droppableRootList.add(wrongType);
 
         ObjectNode duplicate = validRoot(plan);
         ObjectNode duplicateIndicator = indicator(0, 0);
         duplicateIndicator.putArray("blockRefs").add(0).add(0);
         duplicate.withArray("indicators").add(duplicateIndicator);
-        invalidRootList.add(duplicate);
+        droppableRootList.add(duplicate);
 
         ObjectNode tooMany = validRoot(plan);
         ObjectNode tooManyIndicator = indicator(0, 0);
@@ -418,10 +557,10 @@ class ExtractionValidationPipelineTest {
             tooManyRefArray.add(index);
         }
         tooMany.withArray("indicators").add(tooManyIndicator);
-        invalidRootList.add(tooMany);
+        droppableRootList.add(tooMany);
 
-        for (ObjectNode invalidRoot : invalidRootList) {
-            assertServerError(plan, invalidRoot, Collections.singletonList(segment));
+        for (ObjectNode droppableRoot : droppableRootList) {
+            assertItemDropped(plan, droppableRoot, Collections.singletonList(segment));
         }
     }
 
@@ -791,6 +930,24 @@ class ExtractionValidationPipelineTest {
         return pipeline.validateAndMerge(resultList, segmentList, accumulator);
     }
 
+    /**
+     * 断言坏条目被剔除而不是整批作废：它不进输出，且任务被标记为部分结果。
+     *
+     * <p>2026-09-02 由「整批作废」改为「剔除该条」。实测单条目不合 Schema 约 1.2%，
+     * 整批作废下一份 24 页报告（约 200 条）的任务成功率只有 8%——失败率被条目数指数放大。
+     * 这些用例真正要守的性质是<b>坏条目不得进入展示</b>，剔除同样满足，
+     * 而且不是「悄悄丢」：{@code SCHEMA_ITEM_DROPPED} 降级 + 带关键字与路径的 WARN 日志。</p>
+     */
+    private void assertItemDropped(ExtractionBatchPlan plan, ObjectNode root, List<Segment> segmentList) {
+        DegradeAccumulator accumulator = new DegradeAccumulator();
+        ValidatedExtractionOutput output = validate(Collections.singletonList(result(plan, root)),
+                segmentList, accumulator);
+
+        assertThat(output.getIndicatorList()).as("坏条目不得进入输出").isEmpty();
+        assertThat(accumulator.partial()).as("剔除必须标记为部分结果").isTrue();
+        assertThat(accumulator.primaryReason()).isEqualTo(PartialReason.SCHEMA_ITEM_DROPPED);
+    }
+
     private void assertServerError(ExtractionBatchPlan plan, ObjectNode root, List<Segment> segmentList) {
         assertThatThrownBy(() -> validate(Collections.singletonList(result(plan, root)),
                 segmentList, new DegradeAccumulator()))
@@ -839,7 +996,6 @@ class ExtractionValidationPipelineTest {
         node.putNull("rangeComparison");
         node.putNull("valueMatch");
         node.put("status", "NORMAL");
-        node.put("statusJudgedByModel", false);
         node.put("includeInHealthProblems", true);
         node.putNull("problemName");
         node.put("sectionIndex", sectionIndex);

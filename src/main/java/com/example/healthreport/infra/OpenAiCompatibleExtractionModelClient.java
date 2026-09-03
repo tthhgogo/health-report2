@@ -5,6 +5,7 @@ import com.example.healthreport.llm.extraction.ExtractionBatchInput;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.SensitiveLog;
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -183,6 +184,9 @@ public class OpenAiCompatibleExtractionModelClient implements ExtractionModelCli
             generator.writeStartObject();
             generator.writeStringField("model", properties.getModel());
             generator.writeNumberField("temperature", 0);
+            // 本客户端按单个 JSON 信封有界读取；显式禁用 SSE，避免等待长连接关闭直至读超时，
+            // 也避免流式响应的结构与这里的解析对不上。
+            generator.writeBooleanField("stream", false);
             generator.writeArrayFieldStart("messages");
             writeSystemMessage(generator, input);
             writeUserMessage(generator, input);
@@ -236,7 +240,13 @@ public class OpenAiCompatibleExtractionModelClient implements ExtractionModelCli
         generator.writeEndObject();
     }
 
-    /** 从有界响应中提取 content；任何解析异常都在此处脱敏。 */
+    /**
+     * 从有界响应的 content / reasoning_content 中选择唯一合法 JSON 对象；任何解析异常都脱敏。
+     *
+     * <p>当前网关会把 LLM-A 的结构化结果放进 reasoning_content，而标准 OpenAI 兼容实现通常放在
+     * content。这里不按字段名盲选：只有一个字段是合法 JSON 对象时采用它；两者都合法但内容不同
+     * 时 fail-safe 拒绝，避免把思考内容或过期结果静默送入后续医疗数据链路。</p>
+     */
     String extractContent(String responseBody, int batchIndex) {
         if (responseBody == null) {
             log.error("LLM-A 响应结构无效，batchIndex={}，响应长度=0，异常类型=NullResponse",
@@ -244,19 +254,87 @@ public class OpenAiCompatibleExtractionModelClient implements ExtractionModelCli
             throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
         }
         try {
-            JsonNode root = objectMapper.readTree(responseBody);
-            JsonNode content = root.path("choices").path(0).path("message").path("content");
-            if (!content.isTextual()) {
-                log.error("LLM-A 响应结构无效，batchIndex={}，响应长度={}，异常类型=InvalidStructure",
-                        batchIndex, responseBody.length());
+            // 外层信封同样拒绝尾随内容：内层模型 JSON 已经这么做了，
+            // 信封这一层放松等于留了同一条旁路——「合法响应 + 第二段 JSON」会被静默接受。
+            JsonNode root = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(responseBody);
+            JsonNode choiceNode = root.path("choices").path(0);
+            // 【先判 finish_reason】不是 stop 就是被截断，半截 JSON 后面全不可信。
+            // 与 LLM-B 的 §13.2.4 同一条规则；此前 LLM-A 漏了这一步。
+            String finishReason = choiceNode.path("finish_reason").asText("");
+            if (!"stop".equals(finishReason)) {
+                // 【只记白名单分类，不记原值】finish_reason 是外部响应字段，
+                // 网关塞进任意文本时原样落盘会绕过 §9.2 的敏感日志隔离。
+                log.error("LLM-A 响应未正常结束，batchIndex={}，响应长度={}，finishReasonKind={}",
+                        batchIndex, responseBody.length(), classifyFinishReason(finishReason));
                 throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
             }
-            return content.asText();
+            JsonNode messageNode = choiceNode.path("message");
+            JsonNode contentNode = messageNode.path("content");
+            JsonNode reasoningContentNode = messageNode.path("reasoning_content");
+            JsonNode contentObjectNode = parseJsonObjectOrNull(contentNode);
+            JsonNode reasoningContentObjectNode = parseJsonObjectOrNull(reasoningContentNode);
+            if (contentObjectNode != null && reasoningContentObjectNode != null) {
+                if (!contentObjectNode.equals(reasoningContentObjectNode)) {
+                    log.error("LLM-A 响应结构无效，batchIndex={}，响应长度={}，异常类型=AmbiguousJsonChannels",
+                            batchIndex, responseBody.length());
+                    throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
+                }
+                return contentNode.asText();
+            }
+            if (contentObjectNode != null) {
+                return contentNode.asText();
+            }
+            if (reasoningContentObjectNode != null) {
+                return reasoningContentNode.asText();
+            }
+            if (!contentNode.isTextual() && !reasoningContentNode.isTextual()) {
+                log.error("LLM-A 响应结构无效，batchIndex={}，响应长度={}，异常类型=InvalidStructure",
+                        batchIndex, responseBody.length());
+            } else {
+                log.error("LLM-A 响应结构无效，batchIndex={}，响应长度={}，异常类型=NoJsonObjectChannel",
+                        batchIndex, responseBody.length());
+            }
+            throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
         } catch (IOException exception) {
             // Jackson 异常可能包含响应片段，因此只记录类型名，绝不传异常对象或消息。
             log.error("LLM-A 响应解析失败，batchIndex={}，响应长度={}，异常类型={}",
                     batchIndex, responseBody.length(), exception.getClass().getName());
             throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
+        }
+    }
+
+    /**
+     * 把 {@code finish_reason} 收窄成可枚举的分类。
+     * <p>它是外部字段，原值不可信也不可记；日志只需要知道「哪一类截断」。</p>
+     */
+    static String classifyFinishReason(String finishReason) {
+        if (finishReason == null || finishReason.isEmpty()) {
+            return "missing";
+        }
+        if ("length".equals(finishReason) || "content_filter".equals(finishReason)
+                || "tool_calls".equals(finishReason) || "stop".equals(finishReason)) {
+            return finishReason;
+        }
+        return "other";
+    }
+
+    /** 文本字段完整解析为 JSON 对象时返回对象，否则返回 null；不记录可能含健康数据的解析异常。 */
+    private JsonNode parseJsonObjectOrNull(JsonNode candidateNode) {
+        if (!candidateNode.isTextual() || candidateNode.asText().trim().isEmpty()) {
+            return null;
+        }
+        try {
+            // 【必须拒绝尾随内容】Jackson 的 FAIL_ON_TRAILING_TOKENS 默认关闭，
+            // readTree("{...} 一些解释文字") 会返回那个对象并静默丢掉后面的字。
+            // 那正是「模型在 JSON 之后又说了几句」的形态，不能当成合法输出。
+            JsonNode parsedNode = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(candidateNode.asText());
+            return parsedNode != null && parsedNode.isObject() ? parsedNode : null;
+        } catch (IOException | RuntimeException exception) {
+            return null;
         }
     }
 

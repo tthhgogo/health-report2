@@ -221,7 +221,8 @@ com.example.healthreport
 │   └── segment             Segment 模型、规范化、密度闸
 ├── llm                     模型链路
 │   ├── extraction          LLM-A（报告结构化抽取）：分批、编址、调用、Schema 校验、展开、来源校验
-│   └── dishtag             LLM-B（菜品打标）：离线打标契约与校验
+│   ├── dishtag             LLM-B（菜品打标）：离线打标契约与校验
+│   └── schema              两条链路共用的输出契约：Schema 的唯一加载点与校验入口
 ├── assemble                四模块组装
 │   ├── indicator           模块一 健康指标
 │   ├── problem             模块二 健康问题
@@ -281,7 +282,7 @@ CREATE TABLE ct_health_report_task (
   fail_code      VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '失败错误码，与 FailCode 枚举一一对应，成功或未失败时为NULL',
   reanalyzable   TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否允许重新解析：1允许0不允许，同时是文件解绑条件',
   partial        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否为部分结果：1是0否，命中时模块三四按partial_reason降级',
-  partial_reason VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '降级原因：PAGE_TRUNCATED页数截断/BATCH_UNREADABLE批次不可读/ALLERGEN_SUSPECT_MISS疑似漏抽过敏原',
+  partial_reason VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '降级原因：PAGE_TRUNCATED页数截断/BATCH_UNREADABLE批次不可读/ALLERGEN_SUSPECT_MISS疑似漏抽过敏原/SCHEMA_ITEM_DROPPED个别条目不合Schema已剔除/DIET_REQUIREMENT_DROPPED剔除的条目含饮食注意需抑制菜品推荐',
   heartbeat_at   DATETIME     NULL COMMENT '工作线程最近心跳时间，巡检据此判断进程存活',
   deadline_at    DATETIME     NULL COMMENT '任务执行硬截止时间，领取时置为当前时间加10分钟，此后不再顺延',
   expire_at      DATETIME     NOT NULL COMMENT '任务行过期时间，创建时为30分钟后，成功时顺延为2小时后以对齐结果TTL',
@@ -1108,8 +1109,11 @@ bbox 必须逐块给，不能只给页面图
 展开之后 blockRef 不再出现在任何下游逻辑里
 ```
 
-**每批输入预算 ≤ 60k token（硬约束）**，超出说明 segment 数失控，应在解析阶段被密度闸拦掉。
-估算值 ≈49k/批（8 页 × 400 块 + 页面图），**需实测校准（设计方案 §11-20）**。
+**（2026-09-02）「每批输入预算 ≤ 60k token（硬约束）」已删除**，见设计方案 §4.1.5。
+实测 8 页带图 **89k~101k token**，超了 1.7 倍而链路一路跑通——那个数既不准也从未被执行。
+原估算 ≈49k/批 偏低约 2 倍，主因是没把每块的 `bbox=` 前缀算进去（每页文本实测 ≈14,577 token）。
+
+解析阶段的 **400 块/页** 上限继续有效，它防的是 segment 数失控，与 token 预算无关。
 
 ---
 
@@ -1387,6 +1391,12 @@ Segment.bbox 的定义 = 【原始渲染图上的像素坐标，原点左上、Y
 
 **下游唯一要做的换算：原始渲染图 → 压缩图。**
 
+> **（2026-09-02）这条换算此前一直没接。** `BBox.scale()` 写好了却只有测试在调，
+> `BatchAddressing` 直接输出原 bbox——PDF 原生文本层路径上，模型拿到的坐标
+> 与它看到的压缩图**整体错位**。现已在 `FileParseService.parsePdf` 的页循环里接入
+> （`scaleToExtractionImage`），系数取 `CompressedPageImage` 的实际宽高。
+> OCR 路径 bbox 恒为 null、OFD 不发页面图，两者都不需要换算。
+
 ```java
 // 系数【必须来自 CompressedPageImage 的实际宽高】，不是配置里的 2000
 double scaleX = (double) compressed.getWidth()  / renderedWidthPx;
@@ -1479,7 +1489,7 @@ LLM-A 路径：本地解码时按 EXIF 归一化（§5.6.4）—— 图已经"�
       "content": [
         { "type": "image_url",
           "image_url": { "url": "data:image/png;base64,<页面图的编码字节>" } },
-        { "type": "text", "text": "输出图片的文字" }
+        { "type": "text", "text": "<PaddleOcrVlClient.TRANSCRIBE_INSTRUCTION>" }
       ]
     }
   ]
@@ -1501,7 +1511,14 @@ LLM-A 路径：本地解码时按 EXIF 归一化（§5.6.4）—— 图已经"�
 ```
 
 **只有一条 `user` 消息、没有 system 消息**：这不是省略，是 OCR 不需要提示词工程——
-指令固定为一句「输出图片的文字」，写成常量 `PaddleOcrVlClient.TRANSCRIBE_INSTRUCTION`。
+指令写成常量 `PaddleOcrVlClient.TRANSCRIBE_INSTRUCTION`，**正文以代码为准，本文不复述**
+——复述必然过期。当前它要求：逐行输出全部文字、不得省略页眉页脚与个人信息、
+不要输出 Markdown 或 `<fcel>` 表格标记。
+
+> **（2026-09-02）原先只写「输出图片的文字」。** 实测同一张图三次调用返回三种格式
+> （纯文本 / `<fcel>` 表格标记 / Markdown 表格），且出现过页头信息整段漏识别。
+> 指令收紧是「尽量」的那一半；不依赖模型配合的那一半在
+> `OcrContentSplitter` 的格式归一化里（设计方案 §3.2.1）。
 **它不进 `prompt/versions.tsv` 版本台账**：台账管的是会实质影响输出语义、
 改一次就要重跑全量的提示词；这一句改了等于换 OCR 接口，会被本节的契约测试直接拦下。
 
@@ -2195,6 +2212,7 @@ public class OpenAiCompatibleExtractionModelClient implements ExtractionModelCli
         gen.writeStartObject();
         gen.writeStringField("model", properties.getModel());
         gen.writeNumberField("temperature", 0);              // 抽取任务，不要随机性
+        gen.writeBooleanField("stream", false);              // 客户端读取单个 JSON 信封，不接受 SSE
         gen.writeArrayFieldStart("messages");
 
         gen.writeStartObject();
@@ -2268,26 +2286,56 @@ public class OpenAiCompatibleExtractionModelClient implements ExtractionModelCli
     }
 
     /**
-     * 从响应里取出模型返回的 JSON 字符串。<b>协议相关，换服务商时改本方法。</b>
+     * 从 content / reasoning_content 中选择唯一合法 JSON 对象。<b>协议相关，换服务商时改本方法。</b>
+     * <p>当前网关把 LLM-A 结构化结果放进 reasoning_content，标准 OpenAI 兼容实现通常放在
+     * content。不能按字段名盲选：只有一个通道是合法 JSON 对象时采用它；两边都合法但内容不同
+     * 时整批拒绝，避免把思考内容或过期结果静默送入医疗数据链路。</p>
      * <p><b>解析异常必须在这里就地脱敏</b>：Jackson 的异常消息会带上出错位置附近的原文片段，
      * 而那是模型响应——含健康结论。直接把它抛出去或记进日志就等于泄露（§9.2）。</p>
      */
     private String extractContent(String responseBody, ExtractionBatchInput input) {
         try {
             JsonNode root = objectMapper.readTree(responseBody);
-            JsonNode content = root.path("choices").path(0).path("message").path("content");
-            if (content.isMissingNode() || !content.isTextual()) {
-                log.error("LLM-A 响应结构不符合预期，fileIndex={}，batchIndex={}，响应长度={}",
-                        input.getFileIndex(), input.getBatchIndex(), responseBody.length());
-                throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
+            JsonNode message = root.path("choices").path(0).path("message");
+            JsonNode content = message.path("content");
+            JsonNode reasoningContent = message.path("reasoning_content");
+            JsonNode contentObject = parseJsonObjectOrNull(content);
+            JsonNode reasoningContentObject = parseJsonObjectOrNull(reasoningContent);
+            if (contentObject != null && reasoningContentObject != null) {
+                if (!contentObject.equals(reasoningContentObject)) {
+                    log.error("LLM-A 响应结构不符合预期，fileIndex={}，batchIndex={}，响应长度={}",
+                            input.getFileIndex(), input.getBatchIndex(), responseBody.length());
+                    throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
+                }
+                return content.asText();
             }
-            return content.asText();
+            if (contentObject != null) {
+                return content.asText();
+            }
+            if (reasoningContentObject != null) {
+                return reasoningContent.asText();
+            }
+            log.error("LLM-A 响应结构不符合预期，fileIndex={}，batchIndex={}，响应长度={}",
+                    input.getFileIndex(), input.getBatchIndex(), responseBody.length());
+            throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
         } catch (IOException e) {
             // 【绝不把 e 传给 log】—— Jackson 异常消息含响应片段
             log.error("LLM-A 响应 JSON 解析失败，fileIndex={}，batchIndex={}，响应长度={}，异常类型={}",
                     input.getFileIndex(), input.getBatchIndex(),
                     responseBody.length(), e.getClass().getName());
             throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
+        }
+    }
+
+    private JsonNode parseJsonObjectOrNull(JsonNode candidate) {
+        if (!candidate.isTextual() || candidate.asText().trim().isEmpty()) {
+            return null;
+        }
+        try {
+            JsonNode parsed = objectMapper.readTree(candidate.asText());
+            return parsed != null && parsed.isObject() ? parsed : null;
+        } catch (IOException | RuntimeException e) {
+            return null;    // 这里只用于选择另一通道；不得记录可能含健康数据的异常
         }
     }
 }
@@ -2676,10 +2724,29 @@ class DegradeAccumulator {
 
 #### ① Schema 校验
 
-`schema/extraction_output.schema.json`，任一必填缺失 → **直接 `FAILED / SERVER_ERROR`，不重试**。
+`schema/extraction_output.schema.json`。**违规能定位到单个条目 → 剔除该条目并标记部分结果；
+定位不到 → 直接 `FAILED / SERVER_ERROR`。一律不重试。**
 Schema 校验频繁失败时改提示词或换模型，不是加重试。
 
 > **「Schema 通过」不等于「报告已完整识别」**——`"allergens": []` 结构上完全合法。
+
+**（2026-09-02）剔除机制**，依据与完整论证见设计方案 §4.4-①：
+
+```
+可剔除    indicators  textualFindings  summaryConclusions  nutritionSupplements
+          dietRequirements —— 剔了必须连带抑制模块四（DIET_REQUIREMENT_DROPPED）：
+                             每条饮食注意在模块四生成一个 REJECT 方向集合
+不可剔除  allergens（一级红线，静默少一条会把格式错误伪装成 ALLERGEN_SUSPECT_MISS 漏抽降级）
+          sections（被其他条目按 sectionIndex 引用）
+          顶层字段（定位不到「某一条」）
+
+剔除后【重新校验一次】，仍不合法则整批作废——不做猜测式修复
+剔除量上限 20%，且至少允许 1 条（否则两三条的小批次剔一条就作废）
+翻转 PartialReason.SCHEMA_ITEM_DROPPED（抑制范围为空）+ 记带关键字与 JSON 路径的 WARN
+```
+
+落地在 `ExtractionSchemaValidator`，返回 `SchemaValidationOutcome`（输出 + 剔除统计）。
+**依据是实测**：单条目不合 Schema 约 1.2%，整批作废下 200 条的任务成功率只有 8%。
 
 #### ①a `blockRef` 展开
 
@@ -3003,7 +3070,7 @@ Java 只在 CONTINUATION 一种取值下继承，且只做继承、不做识别
 ```
 status 由 LLM-A 给，Java 在线【不做任何校验】：
     模型给的 status  →  直接采用
-    模型漏给 status  →  按 Schema 必填直接 FAILED
+    模型漏给 status  →  按 Schema 必填拦下，剔除该条指标（§4.4-①）
 
 展示规则：颜色跟判定，文字按 conclusionBasis 分流
     标签颜色 = status 对应色
@@ -3264,6 +3331,7 @@ boolean recommend = safetyVerdict == TagState.NEUTRAL
 
 ```
 OTHER 没有稳定的离线标签维度，不进入 33 个 Redis 集合
+（2026-09-02：`AllergenKeywordFallback.matchesOther` 已随本条删除，它是这条规则确立前的遗留）
 在线没有食材数据，也不得临时查库做字符串匹配
 模块三继续展示报告原文；模块四不据此推荐或排除菜品
 ```
@@ -3449,7 +3517,7 @@ class DishCursorPage {
 ```sql
 -- :bizDate 由 §8.1 的调度入口传入，【不用 CURRENT_DATE / now()】
 DELETE FROM ct_dish_tag
- WHERE last_seen_date < DATE_SUB(:bizDate, INTERVAL 30 DAY)
+ WHERE last_seen_date < DATE_SUB(:bizDate, INTERVAL 7 DAY)
  LIMIT 5000;                      -- 分批删，避免长事务锁表；循环到影响行数为 0
 ```
 
@@ -3490,9 +3558,29 @@ DELETE FROM ct_dish_tag
 neutralDishIds ∪ unknownDishIds ∪ hitList
     必须精确等于本批全部输入 dishId
 三者【两两不相交】；任何维度都不接受模型输出 RECOMMEND
-少一个、多一个、重复一个 → 整批作废，不写库、不重试
-【遗漏的菜绝不静默补成 NEUTRAL，也不补成 UNKNOWN】
+【遗漏的菜绝不补成 NEUTRAL】——那会把「没判定」伪装成「确认安全」
 ```
+
+**（2026-09-02）覆盖问题由整批作废改为归入 UNKNOWN。** 实测真实菜单会出现重复标签与缺失标签；
+整批作废下任一批出问题就导致该企业当天 33 个集合一个都不发布，失败率随批数指数放大
+（一家 1000 道菜的企业是 25 批）。修复规则：
+
+```
+缺失（模型压根没提）        → 归入 unknownDishIds     等于「没判定」，UNKNOWN 正是这个意思
+跨列表相交（判定自相矛盾）   → 归入 unknownDishIds     两个判定打架，取安全侧
+同列表内重复（抄重了）       → 【只去重，不改判】       意图明确，去重是忠实修复
+多余 dishId（不属于本批）    → 直接丢弃                UNKNOWN 也只能装本批的菜
+hitList 某条不合 Schema     → 剔除该条，菜品随之归入 unknownDishIds
+违规定位不到某道菜           → 整批作废（顶层、enumKey）
+```
+
+**为什么 UNKNOWN 是安全侧**：任一可拒绝维度为 `UNKNOWN` 的菜不进任何推荐 staging SET，
+不会被推荐出去；它只是不出现在「不推荐」列表里，那是少展示一条，不是安全问题。
+
+**原「绝不补成 UNKNOWN」的顾虑由两点承接**：归入<b>必打日志</b>并带上具体 dishId
+（LLM-B 是全案唯一允许记录完整请求与响应的链路，§13.2.7），以及<b>归入量超过 20%
+即整批作废</b>（且至少允许 1 道，避免小批次修一道就作废）——大比例出问题说明这一批
+整体跑偏，不是个别抖动，那时候放行会得到一份大面积 UNKNOWN 的快照。
 
 **`NEUTRAL` 与 `UNKNOWN` 的语义差别必须在提示词里讲清**（`prompt/dish_tag.md` 已同步）：
 
@@ -3509,8 +3597,8 @@ LLM-B 契约只有三态。饮食正向由凌晨 `DietPositiveMatcher` 根据主
 ——白灼确实没有明显调料路径，但那只是「我没看出来」，不是「厨房没放」。
 
 三态只用于当前页离线聚合和 MySQL 排障记录，不直接写 Redis。页面内任一可拒绝维度为
-`UNKNOWN` 的菜不得进入任何推荐 staging SET；覆盖不完整则整批作废，最终导致该企业快照
-完整性校验失败而不发布。在线不再构造 `TAG_MISSING` 或 `HIDDEN` 状态。
+`UNKNOWN` 的菜不得进入任何推荐 staging SET；覆盖问题按上面的规则修复，
+修复量超预算或定位不到某道菜时才整批作废，进而导致该企业快照完整性校验失败而不发布。在线不再构造 `TAG_MISSING` 或 `HIDDEN` 状态。
 
 ### 8.3 缓存结构与在线读取
 
@@ -3711,16 +3799,17 @@ statusJudgedByModelCount
 
 `tagHash` 需要 `promptVersion` 与 `modelVersion`（§9.5.1），但现有 `constants` 包
 **只有 `TagRuleVersion`**，另两个没有真源。而且 **A 与 B 的提示词各自独立演进**
-（当前 `prompt/extraction.md` 是 `extraction-2.3.1`，`prompt/dish_tag.md` 是 `dishtag-2.2.1`），
+（版本号以 `constants.PromptVersions` 与 `prompt/versions.tsv` 为准，本节示例不复述具体值——
+复述必然过期，R55a/R55b 已经在锁三处一致），
 **不能用一个公共版本常量**。
 
 ```java
 // constants.PromptVersions —— 新增常量类
 public final class PromptVersions {
-    /** LLM-A 抽取提示词版本，必须与 prompt/extraction.md 头部的 promptVersion 一致 */
-    public static final String LLM_A = "extraction-2.3.1";
-    /** LLM-B 打标提示词版本，必须与 prompt/dish_tag.md 头部的 promptVersion 一致 */
-    public static final String LLM_B = "dishtag-2.2.1";
+    /** 体检报告抽取提示词版本，必须与 prompt/extraction.md 头部和摘要历史一致 */
+    public static final String EXTRACTION = "extraction-x.y.z";
+    /** 菜品打标提示词版本，必须与 prompt/dish_tag.md 头部和摘要历史一致 */
+    public static final String DISH_TAG = "dishtag-x.y.z";
     private PromptVersions() { }
 }
 ```
@@ -3997,7 +4086,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R21e** | 报告印 `14.0~20.0`，模型报下界 `4.0`（恰好是原文子串）、上界 `20.0` | **不展示**——子串核验拦不住它，整组区间必须与原文解析结果一致 |
 | **R21f** | 报告印 `<3.0`，模型报成闭区间，结果正好 `3.0` | **不展示**——开闭标志参与核验；如实报开区间且结果在范围内时照常展示 |
 | **R21g** | `refRange` 是 `阴性`、`详见报告` 等解析不出区间的写法 | **不展示**（fail-closed），不得对着猜出来的范围宣布正常 |
-| **R21h** | `refRange`、`title` 等短字段给成 `""` 或全空白 | Schema 直接判整批作废；Java 侧来源校验对空白字段一律返回 false——空串是任意原文的子串 |
+| **R21h** | `refRange`、`title` 等短字段给成 `""` 或全空白 | Schema 拦下并**剔除该条目**（§4.4-①，2026-09-02 前为整批作废）；Java 侧来源校验对空白字段一律返回 false——空串是任意原文的子串。两条都保证它进不了展示 |
 | **R21i** | 模型给的上下界在 `refRange` 原文里找不到 | 整条丢弃（防凭空报宽区间） |
 | **R21j** | 参考值有多套人群范围、单位不一致或非数值 | 模型给 `rangeComparison=null`，该指标不展示 |
 | **R21k** | 结果恰好等于开/闭边界；`1.10` 对上界 `1.1` | 按开闭标志判定；标度差异必须判等（`compareTo` 而非 `equals`） |
@@ -4005,8 +4094,8 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R21m** | 定性结果「阴性」对参考值「阴性或弱」（尿胆原真实场景） | 展开为 `["NEGATIVE","WEAK_POSITIVE"]`，结果在集合内 → 展示 |
 | **R21n** | 定性结果「阳性」对参考值「弱阳性」 | **不展示**；不得因「阳性」是「弱阳性」的子串而放行 |
 | **R21o** | 定性结果 `NEGATIVE` 对参考值 `NOT_DETECTED` | **不展示**；Java 不得把两者当同义词 |
-| **R21p** | 归一化取值落在四态枚举之外（如 `NEG`） | **Schema 直接拒绝、整批契约失败**；枚举是契约的一部分，不是悄悄丢一条 |
-| **R22** | LLM-B 返回缺一个 `dishId` / 多一个 / 四个列表有交集 | 整批作废，不写库、不重试 |
+| **R21p** | 归一化取值落在四态枚举之外（如 `NEG`） | Schema 拒绝并**剔除该条指标**（§4.4-①，2026-09-02 前为整批契约失败）；枚举是契约的一部分，写错的那一条必须消失，但不该拖垮同批其余几十条。**不是悄悄丢**：翻转 `SCHEMA_ITEM_DROPPED` 并记带关键字与路径的 WARN |
+| **R22** | LLM-B 返回缺一个 `dishId` / 多一个 / 列表有交集 / 同列表内重复 | 按 §8.2 修复:缺失与跨列表相交归入 `UNKNOWN`、同列表内重复只去重不改判、非本批 `dishId` 丢弃;**修复后覆盖必须精确成立**。修复量超 20%(至少允许 1 道)或违规定位不到某道菜 → 整批作废,不写库、不重试(2026-09-02 前为一律整批作废) |
 | **R23** | 用 `schema/*.json` 校验文档 §4.2 与 §8.2 的示例 | 全部 PASS；两个 Schema 自身通过 `check_schema` |
 | **R24** | `patient.name` 非空但证据数组为空 | Schema 拒绝 |
 | **R25** | `patient.name` 来源校验失败 | 该字段降 `null` 且**不参与同一性判断**（不得因此 `IDENTITY_MISMATCH`） |
@@ -4079,7 +4168,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R50** | `SUCCEEDED` 后跑清理 | 原文件与 file 行立即删；task 行保留至顺延后的 `expire_at` |
 | **R51** | `FAILED` 且 `reanalyzable=1` 后跑清理 | 原文件**保留**至 `expire_at`（否则「重新解析」形同虚设） |
 | **R52** | 任意实体的 insert / update | SQL 中**不出现** `create_time` / `update_time` |
-| **R53** | 一批指标中 `statusJudgedByModel` 有 true 有 false | 字段原样透传，Java **不做任何 status 校验**，两种取值都不影响输出 |
+| **R53** | 一批指标携带已下线的 `statusJudgedByModel` 字段 | `indicators` 条目是 `additionalProperties:false`，**剔除该条**（§4.4-①）。Java 仍**不做任何 status 校验**，`status` 的四个取值都不影响输出（字段随 §4.4-③ 的 13 个计数于 2026-08-27 下线，2026-09-01 从 Schema 与 DTO 删除） |
 
 #### LLM-A 直连红线（§6.2.1）
 
@@ -4476,6 +4565,7 @@ Dify 要求该字段非空；OpenAI 兼容的 `/chat/completions` 没有这个�
 {
   "model": "qwen3-32b-k100",
   "temperature": 0,
+  "stream": false,
   "messages": [
     { "role": "system", "content": "<prompt/dish_tag.md 正文>" },
     { "role": "user",   "content": "<本批菜品与枚举，见下>" }
@@ -4553,7 +4643,8 @@ qwen3 支持关闭思考，但**网关是否透传该参数未确认**（列入 
 
 #### 13.2.4 Java 侧校验顺序
 
-任何一步不过即整批作废、不写库、不重试：
+任何一步不过即整批作废、不写库、不重试；**唯一的例外是第 ⑤ 步**——
+Schema 与覆盖违规能定位到某道菜时按 §8.2 修复（归入 `UNKNOWN`），修复量超 20% 才作废：
 
 ```
 ① HTTP 状态码 2xx，且响应体在 llm.dishtag.max-response-body-bytes 之内
@@ -4613,6 +4704,25 @@ catch (RequestTooLargeException exception) {
 而不是只丢掉这一批。一个为了隔离单批而加的防护，反倒成了更大的故障源。
 
 也不能翻译成 `DishTagCallException`：请求根本没出过进程，而且重试同一批数据也不会变小。
+
+#### 9.4.2 模型输出契约的落地类（`llm.schema`）
+
+```
+ModelOutputSchemaRegistry   两份 Schema 的唯一加载点；@Component，启动即加载，失败即启动失败
+ModelOutputSchema           单份契约，只做校验
+```
+
+**存在的理由是消掉两处重复加载**：`ExtractionSchemaValidator` 与 `DishTagContractValidator`
+原先各有一个 `loadSchema`，两份 Schema 的编译入口因此有两个。
+
+> **（2026-09-02）「传输版投影」那一半已删除。** 它原本用于把 Schema 随
+> `response_format=json_schema` 发给模型。实测下来这条路没有价值：**LLM-B 用不了
+> `json_schema`**；LLM-A 侧只有一个候选模型支持，而它剩下的失败是条件约束（`const`），
+> 投影必须剥掉、约束解码看不到。加上条目剔除机制已经把可用性救回来（§4.4-①），
+> 那部分只剩「少剔几条」的边际收益，却要每批多付约 6k token。
+>
+> 一整块零生产调用的代码留着比删了危险——后来的人会当它在用而去维护、去同步。
+> 若要恢复，依据记在设计方案 §4.4-①；网关侧的探针 `JsonSchemaGatewayVerificationIT` 保留。
 
 #### 13.2.6 落地类
 

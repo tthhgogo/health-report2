@@ -11,6 +11,7 @@ import com.example.healthreport.parse.pdf.PdfPageRenderer;
 import com.example.healthreport.parse.pdf.PdfParseResult;
 import com.example.healthreport.parse.pdf.PdfSegmentParser;
 import com.example.healthreport.parse.segment.GlyphDensityGate;
+import com.example.healthreport.parse.segment.BBox;
 import com.example.healthreport.parse.segment.Segment;
 import com.example.healthreport.parse.word.WordParseResult;
 import com.example.healthreport.parse.word.WordSegmentParser;
@@ -161,10 +162,14 @@ public class FileParseService {
             for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
                 int page = pageIndex + 1;
                 BufferedImage renderedImage = pdfPageRenderer.render(document, pageIndex);
+                // 【必须在 processAndRelease 之前取】它会 flush 掉这张图。
+                int renderedWidth = renderedImage.getWidth();
+                int renderedHeight = renderedImage.getHeight();
                 PageImageArtifacts artifacts = renderedPageImageProcessor.processAndRelease(renderedImage);
                 List<Segment> pageSegmentList = nativeSegmentList == null
                         ? recognizePage(artifacts.getOcrEncodedImageBytes(), fileIndex, page)
-                        : segmentsOfPage(nativeSegmentList, page);
+                        : scaleToExtractionImage(segmentsOfPage(nativeSegmentList, page),
+                                renderedWidth, renderedHeight, artifacts.getExtractionImage());
                 pageList.add(new ParsedPage(page, pageSegmentList,
                         artifacts.getExtractionImage().getJpegBytes(), true));
             }
@@ -203,6 +208,38 @@ public class FileParseService {
                 pagesFromSegments(parseResult.getSegmentList(), parseResult.getPageCount()));
         logParsed(parsedFile, "OFD原生文本对象");
         return parsedFile;
+    }
+
+    /**
+     * 把 bbox 从<b>原始渲染图</b>坐标系换算到<b>发给 LLM-A 的压缩图</b>坐标系。
+     *
+     * <p>{@code PdfSegmentParser} 产出的 bbox 钳制在渲染图尺寸上，而
+     * {@code ExtractionImageCompressor} 会把图缩到长边 2000（或回退 1600）再发出去。
+     * 不换算的话，模型拿到的坐标和它看到的图<b>整体错位</b>，
+     * 而 bbox 正是它判断行列归属的依据（开发方案 §5.5）。</p>
+     *
+     * <p><b>系数取自 {@code CompressedPageImage} 的实际宽高</b>，不是配置里的 2000——
+     * 压缩器在超限时会回退到 1600，用配置值算会再错一次。</p>
+     *
+     * <p>OCR 路径的 bbox 恒为 {@code null}，不走这里；OFD 不发页面图，也不需要换算。</p>
+     */
+    private List<Segment> scaleToExtractionImage(List<Segment> segmentList, int renderedWidth,
+                                                 int renderedHeight,
+                                                 CompressedPageImage extractionImage) {
+        if (renderedWidth == extractionImage.getWidth()
+                && renderedHeight == extractionImage.getHeight()) {
+            return segmentList;
+        }
+        List<Segment> scaledList = new ArrayList<Segment>(segmentList.size());
+        for (Segment segment : segmentList) {
+            BBox bbox = segment.getBbox();
+            scaledList.add(bbox == null ? segment
+                    : new Segment(segment.getSegmentId(), segment.getRawText(),
+                            segment.getNormalizedText(), segment.getTextSource(),
+                            bbox.scale(renderedWidth, renderedHeight,
+                                    extractionImage.getWidth(), extractionImage.getHeight())));
+        }
+        return scaledList;
     }
 
     /**

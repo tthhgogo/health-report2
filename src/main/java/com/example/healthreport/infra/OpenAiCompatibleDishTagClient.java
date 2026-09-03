@@ -2,6 +2,7 @@ package com.example.healthreport.infra;
 
 import com.example.healthreport.llm.dishtag.DishTagProperties;
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -149,6 +150,8 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
             generator.writeStringField("model", dishTagProperties.getModelVersionDishtag());
             // 同一批菜必须得到同一批标签，否则 tagHash 的复用语义自相矛盾。
             generator.writeNumberField("temperature", 0);
+            // 本客户端按单个 JSON 信封有界读取；显式禁用 SSE，避免等待长连接关闭直至读超时。
+            generator.writeBooleanField("stream", false);
             generator.writeNumberField("max_tokens", connectionProperties.getMaxTokens());
             generator.writeArrayFieldStart("messages");
             generator.writeStartObject();
@@ -179,7 +182,10 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
             throw new DishTagModelCallException(200, elapsedMillis);
         }
         try {
-            JsonNode root = objectMapper.readTree(responseBody);
+            // 外层信封同样拒绝尾随内容，理由与 LLM-A 一致。
+            JsonNode root = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(responseBody);
             JsonNode choice = root.path("choices").path(0);
             String finishReason = choice.path("finish_reason").asText("");
             if (!"stop".equals(finishReason)) {

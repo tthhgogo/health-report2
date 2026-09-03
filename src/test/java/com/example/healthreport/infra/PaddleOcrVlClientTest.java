@@ -177,6 +177,60 @@ class PaddleOcrVlClientTest {
         assertThat(renderedLog()).doesNotContain(PRIVATE_RESPONSE_MARKER);
     }
 
+    /**
+     * 截断的 OCR 响应必须失败，不能当成一次成功识别。
+     * <p>半页文本结构上完全合法，而 <b>LLM-A 补不回 OCR 里不存在的姓名、日期与数值</b>——
+     * 证据链断了那些条目只会被丢弃，用户拿到一份静默残缺的报告。</p>
+     */
+    @Test
+    void truncatedOrMissingFinishReasonMustFail() {
+        // 三种非 stop 取值 + 一种缺失，都必须失败。
+        String[] finishReasonArray = {"\"length\"", "\"content_filter\"", "null", null};
+        for (String finishReason : finishReasonArray) {
+            String choiceTail = finishReason == null ? "" : ",\"finish_reason\":" + finishReason;
+            wireMockServer.stubFor(post(urlEqualTo(PATH)).willReturn(aResponse()
+                    .withStatus(200)
+                    .withHeader("Content-Type", "application/json")
+                    .withBody("{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+                            + "\"content\":\"" + PRIVATE_RESPONSE_MARKER + "\"}" + choiceTail + "}]}")));
+
+            assertThatThrownBy(() -> newClient().recognize(pngBytes()))
+                    .as("finishReason=" + finishReason)
+                    .isInstanceOf(OcrCallException.class);
+        }
+        assertThat(renderedLog()).doesNotContain(PRIVATE_RESPONSE_MARKER);
+    }
+
+    /** 隐私标记放在 {@code finish_reason} 里也不得进入日志——OCR 响应正文就是报告全文。 */
+    @Test
+    void privateMarkerInFinishReasonMustNotReachTheLog() {
+        wireMockServer.stubFor(post(urlEqualTo(PATH)).willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+                        + "\"content\":\"text\"},\"finish_reason\":\""
+                        + PRIVATE_RESPONSE_MARKER + "\"}]}")));
+
+        assertThatThrownBy(() -> newClient().recognize(pngBytes()))
+                .isInstanceOf(OcrCallException.class);
+        assertThat(renderedLog()).doesNotContain(PRIVATE_RESPONSE_MARKER);
+    }
+
+    /** 外层信封后面还跟着第二段 JSON 或解释文字，都必须拒绝。 */
+    @Test
+    void trailingContentAfterResponseEnvelopeMustFail() {
+        for (String trailing : new String[] {" {\"second\":1}", "\n网关附言"}) {
+            wireMockServer.stubFor(post(urlEqualTo(PATH)).willReturn(aResponse()
+                    .withStatus(200)
+                    .withHeader("Content-Type", "application/json")
+                    .withBody(completion("正常文本") + trailing)));
+
+            assertThatThrownBy(() -> newClient().recognize(pngBytes()))
+                    .as("尾随=" + trailing.trim())
+                    .isInstanceOf(OcrCallException.class);
+        }
+    }
+
     private String completion(String content) {
         try {
             return "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"model\":\"test-ocr-model\","

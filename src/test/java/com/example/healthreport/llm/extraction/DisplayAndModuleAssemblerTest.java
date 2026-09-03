@@ -215,13 +215,13 @@ class DisplayAndModuleAssemblerTest {
 
         ValidatedExtractionOutput.Indicator primaryIndicator = new ValidatedExtractionOutput.Indicator(
                 0, 0, 0, 0, 0, 1, Arrays.asList(firstId, laterId), "甘油三酯", "1.0", "u",
-                null, "↑", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL, true, true, null);
+                null, "↑", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL, true, null);
         ValidatedExtractionOutput.Indicator continuationIndicator = new ValidatedExtractionOutput.Indicator(
                 0, 1, 0, 0, 0, 2, Collections.singletonList(continuationId), "续页项", "2.0", "u",
-                "0-3", "原文结论", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.HIGH, false, false, null);
+                "0-3", "原文结论", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.HIGH, false, null);
         ValidatedExtractionOutput.Indicator otherFileIndicator = new ValidatedExtractionOutput.Indicator(
                 1, 0, 0, 0, 0, 1, Collections.singletonList(otherFileId), "另一项", "3.0", "u",
-                "0-4", "原文结论", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL, false, false, null);
+                "0-4", "原文结论", IndicatorConclusionBasis.REPORT_TEXT, IndicatorStatus.NORMAL, false, null);
         ValidatedExtractionOutput.TextualFinding textualFinding = new ValidatedExtractionOutput.TextualFinding(
                 0, 0, 0, 1, 0, 1, Collections.singletonList(textualId), "文字检查",
                 "未见异常", IndicatorStatus.NORMAL, true);

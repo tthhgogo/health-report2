@@ -99,7 +99,7 @@ public class ExtractionValidationPipeline {
             batchDataList.add(validateBatch(batchResult, segmentByIdMap, degradeAccumulator));
         }
 
-        MergeData mergeData = merge(batchDataList, segmentByIdMap);
+        MergeData mergeData = merge(batchDataList);
         allergenCoverageScanner.scan(mergeData.allergenSectionSegmentIdSet,
                 mergeData.allergenDataSegmentIdSet, mergeData.allergenItemSegmentIdSet,
                 degradeAccumulator);
@@ -125,7 +125,16 @@ public class ExtractionValidationPipeline {
         if (batchResult == null || batchResult.getBatchStatus() != BatchStatus.OK) {
             throw serverError();
         }
-        JsonNode rootNode = schemaValidator.validate(batchResult.getRawContent());
+        SchemaValidationOutcome schemaOutcome = schemaValidator.validate(batchResult.getRawContent(),
+                batchResult.getPlan().getInput().getBatchIndex());
+        JsonNode rootNode = schemaOutcome.getRootNode();
+        if (schemaOutcome.hasDropped()) {
+            // 剔除即为部分结果。剔除明细已由 ExtractionSchemaValidator 记 WARN，这里不重复；
+            // 但要看剔除的是不是饮食注意——那一类在模块四生成 REJECT 方向集合，
+            // 少一条就等于少一道排除，必须连带抑制菜品推荐。
+            degradeAccumulator.recordSchemaItemDropped(
+                    schemaOutcome.getDroppedCountByArray().containsKey("dietRequirements"));
+        }
         assertMetadata(rootNode, batchResult);
         BatchContext context = new BatchContext(batchResult, segmentByIdMap);
 
@@ -345,8 +354,6 @@ public class ExtractionValidationPipeline {
                     item.segmentIdList, context.segmentByIdMap)) {
                 problemName = null;
             }
-            // 原样透传给展示层，Java 不因这个标记改判状态；计数已于 2026-08-27 全部下线。
-            boolean statusJudgedByModel = node.path("statusJudgedByModel").asBoolean();
             IndicatorConclusionBasis conclusionBasis =
                     IndicatorConclusionBasis.valueOf(node.path("conclusionBasis").asText());
             if (conclusionBasis == IndicatorConclusionBasis.REFERENCE_RANGE_IN_RANGE
@@ -366,7 +373,7 @@ public class ExtractionValidationPipeline {
                     node.path("value").asText(), nullableText(node.get("unit")),
                     nullableText(node.get("refRange")), nullableText(node.get("conclusionText")),
                     conclusionBasis,
-                    IndicatorStatus.valueOf(node.path("status").asText()), statusJudgedByModel,
+                    IndicatorStatus.valueOf(node.path("status").asText()),
                     node.path("includeInHealthProblems").asBoolean(), problemName));
         }
     }
@@ -616,7 +623,7 @@ public class ExtractionValidationPipeline {
         }
     }
 
-    private MergeData merge(List<BatchData> batchDataList, Map<String, Segment> segmentByIdMap) {
+    private MergeData merge(List<BatchData> batchDataList) {
         MergeData result = new MergeData();
         Map<String, Set<String>> inputSegmentIdSetByBatchKeyMap = new HashMap<String, Set<String>>();
         for (BatchData batchData : batchDataList) {

@@ -93,6 +93,7 @@ class OpenAiCompatibleExtractionModelClientTest {
         com.github.tomakehurst.wiremock.verification.LoggedRequest request =
                 wireMockServer.findAll(postRequestedFor(urlEqualTo(PATH))).get(0);
         JsonNode root = objectMapper.readTree(request.getBodyAsString());
+        assertThat(root.path("stream").asBoolean()).isFalse();
         JsonNode userContent = root.path("messages").path(1).path("content");
         assertThat(userContent).hasSize(5);
         assertThat(userContent.path(0).path("text").asText())
@@ -220,6 +221,45 @@ class OpenAiCompatibleExtractionModelClientTest {
         assertApplicationLogsDoNotContain(sensitiveMarker);
     }
 
+    @Test
+    void reasoningContentJsonShouldBeUsedWhenContentIsEmpty() throws Exception {
+        String expectedJson = "{\"batchStatus\":\"OK\"}";
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+
+        String actualJson = client.extractContent(responseWithChannels("", expectedJson), 0);
+
+        assertThat(actualJson).isEqualTo(expectedJson);
+    }
+
+    @Test
+    void validReasoningContentShouldReplaceIncompleteContent() throws Exception {
+        String incompleteContentMarker = "INCOMPLETE_CONTENT_MARKER";
+        String expectedJson = "{\"batchStatus\":\"OK\"}";
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+
+        String actualJson = client.extractContent(responseWithChannels(
+                "{\"partial\":\"" + incompleteContentMarker, expectedJson), 0);
+
+        assertThat(actualJson).isEqualTo(expectedJson);
+        assertApplicationLogsDoNotContain(incompleteContentMarker);
+    }
+
+    @Test
+    void differentValidJsonChannelsMustFailSafeWithoutLeakingEitherChannel() throws Exception {
+        String contentMarker = "CONTENT_CHANNEL_PRIVATE_MARKER";
+        String reasoningMarker = "REASONING_CHANNEL_PRIVATE_MARKER";
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+
+        assertThatThrownBy(() -> client.extractContent(responseWithChannels(
+                "{\"source\":\"" + contentMarker + "\"}",
+                "{\"source\":\"" + reasoningMarker + "\"}"), 0))
+                .isInstanceOf(LlmCallException.class);
+        assertApplicationLogsDoNotContain(contentMarker, reasoningMarker);
+    }
+
     private void assertSingleFailure(int status, int expectedDelay) {
         wireMockServer.resetAll();
         wireMockServer.stubFor(post(urlEqualTo(PATH)).willReturn(aResponse()
@@ -281,9 +321,115 @@ class OpenAiCompatibleExtractionModelClientTest {
         });
     }
 
+    /**
+     * {@code finish_reason} 不是 {@code stop} 就是被截断，半截 JSON 后面全不可信。
+     * <p>缺失同样按截断处理：网关不给这个字段时，无法证明输出完整。</p>
+     */
+    /**
+     * 请求体里每个顶层字段只能出现一次。
+     *
+     * <p><b>必须查原始字节，不能查 {@code readTree} 的结果</b>——Jackson 会用后者覆盖
+     * 重复键，测试因此完全看不见问题，而部分网关会直接拒绝含重复字段的 JSON。
+     * 2026-09-02 曾因两处独立改动各写了一次 {@code stream} 而出现重复。</p>
+     */
+    @Test
+    void requestBodyMustNotContainDuplicateTopLevelFields() throws Exception {
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+
+        String rawBody = new String(client.buildRequestBody(twoPageInput()),
+                java.nio.charset.StandardCharsets.UTF_8);
+
+        for (String field : new String[] {"\"stream\"", "\"model\"", "\"temperature\"",
+                "\"messages\"", "\"response_format\""}) {
+            assertThat(countOccurrences(rawBody, field))
+                    .as("顶层字段 " + field + " 重复出现").isEqualTo(1);
+        }
+    }
+
+    private int countOccurrences(String text, String token) {
+        int count = 0;
+        int index = text.indexOf(token);
+        while (index >= 0) {
+            count++;
+            index = text.indexOf(token, index + token.length());
+        }
+        return count;
+    }
+
+    @Test
+    void truncatedOrMissingFinishReasonMustFail() throws Exception {
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+        String privateMarker = "TRUNCATED_RESPONSE_MARKER";
+
+        for (String finishReason : new String[] {"length", "content_filter", "", null}) {
+            final String response = responseWithFinishReason(
+                    "{\"batchStatus\":\"OK\",\"marker\":\"" + privateMarker + "\"}", finishReason);
+
+            assertThatThrownBy(() -> client.extractContent(response, 0))
+                    .as("finishReason=" + finishReason)
+                    .isInstanceOf(LlmCallException.class);
+        }
+        // 截断日志只记 finishReason 与长度，绝不带响应正文。
+        assertApplicationLogsDoNotContain(privateMarker);
+    }
+
+    /** 隐私标记放在 {@code finish_reason} 里也不得进入普通日志——只记白名单分类。 */
+    @Test
+    void privateMarkerInFinishReasonMustNotReachTheLog() throws Exception {
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+        String privateMarker = "FINISH_REASON_PRIVATE_MARKER";
+        final String response = responseWithFinishReason("{\"batchStatus\":\"OK\"}", privateMarker);
+
+        assertThatThrownBy(() -> client.extractContent(response, 0))
+                .isInstanceOf(LlmCallException.class);
+
+        assertApplicationLogsDoNotContain(privateMarker);
+        assertThat(OpenAiCompatibleExtractionModelClient.classifyFinishReason(privateMarker))
+                .isEqualTo("other");
+    }
+
+    /** 外层信封后面还跟着第二段 JSON 或解释文字，都必须拒绝。 */
+    @Test
+    void trailingContentAfterResponseEnvelopeMustFail() throws Exception {
+        OpenAiCompatibleExtractionModelClient client =
+                client(properties(1024 * 1024, 1024 * 1024, 1000));
+        String envelope = successResponse("{\"batchStatus\":\"OK\"}");
+
+        for (String trailing : new String[] {" {\"second\":1}", "\n网关附言"}) {
+            final String polluted = envelope + trailing;
+            assertThatThrownBy(() -> client.extractContent(polluted, 0))
+                    .as("尾随=" + trailing.trim())
+                    .isInstanceOf(LlmCallException.class);
+        }
+    }
+
     private String successResponse(String content) throws Exception {
+        return responseWithFinishReason(content, "stop");
+    }
+
+    /** 正常响应必须带 {@code finish_reason=stop}；缺失或非 stop 都表示被截断。 */
+    private String responseWithFinishReason(String content, String finishReason) throws Exception {
         com.fasterxml.jackson.databind.node.ObjectNode root = objectMapper.createObjectNode();
-        root.putArray("choices").addObject().putObject("message").put("content", content);
+        com.fasterxml.jackson.databind.node.ObjectNode choiceNode =
+                root.putArray("choices").addObject();
+        if (finishReason != null) {
+            choiceNode.put("finish_reason", finishReason);
+        }
+        choiceNode.putObject("message").put("content", content);
+        return objectMapper.writeValueAsString(root);
+    }
+
+    private String responseWithChannels(String content, String reasoningContent) throws Exception {
+        com.fasterxml.jackson.databind.node.ObjectNode root = objectMapper.createObjectNode();
+        com.fasterxml.jackson.databind.node.ObjectNode choiceNode =
+                root.putArray("choices").addObject();
+        choiceNode.put("finish_reason", "stop");
+        com.fasterxml.jackson.databind.node.ObjectNode messageNode = choiceNode.putObject("message");
+        messageNode.put("content", content);
+        messageNode.put("reasoning_content", reasoningContent);
         return objectMapper.writeValueAsString(root);
     }
 

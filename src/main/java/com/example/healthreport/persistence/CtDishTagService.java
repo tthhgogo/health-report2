@@ -63,14 +63,26 @@ public class CtDishTagService {
 		return dishTagMapper.update(updateEntity, updateWrapper);
 	}
 
-	/** 清理一批早于业务日 30 天边界的标签。 */
+	/**
+	 * 标签保留天数。
+	 * <p><b>它决定的是「下架多久的菜再上架要重打标」，不是「多久重打一次」。</b>
+	 * 在架菜品每天被预热刷新 {@code last_seen_date}，永远不会被清掉；
+	 * 只有连续下架超过本值的菜品，其 {@code tagHash} 记录才消失，重新上架时必须重调 LLM-B。
+	 * 缩短它省的是表体积，代价是轮换菜的重打标量——菜单轮换周期大于本值时，
+	 * 每轮回来都要重打一次。</p>
+	 * <p><b>取 7 天是为了覆盖周菜单轮换。</b> 曾短暂定为 3 天，但食堂菜单以周为周期时，
+	 * 周一的菜下周一才回来（间隔 7 天），3 天会让每一道轮换菜每周重调一次 LLM-B。</p>
+	 */
+	private static final long TAG_RETENTION_DAYS = 7L;
+
+	/** 清理一批早于业务日保留期边界的标签。 */
 	public int deleteExpiredBatch(LocalDate bizDate) {
 		if (bizDate == null) {
 			throw new IllegalArgumentException("清理业务日不能为空");
 		}
-		// 截止日由 Java 从 bizDate 算出后传入，等价于 DATE_SUB(bizDate, INTERVAL 30 DAY)。
+		// 截止日由 Java 从 bizDate 算出后传入，等价于 DATE_SUB(bizDate, INTERVAL 7 DAY)。
 		// 禁止在 SQL 里取数据库当前时间：跨零点执行会让清理基准与打标基准分叉。
-		LocalDate cutoffDate = bizDate.minusDays(30L);
+		LocalDate cutoffDate = bizDate.minusDays(TAG_RETENTION_DAYS);
 		return dishTagMapper.deleteExpiredBatch(cutoffDate);
 	}
 

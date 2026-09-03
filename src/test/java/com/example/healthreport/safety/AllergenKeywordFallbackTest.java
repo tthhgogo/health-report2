@@ -42,14 +42,6 @@ class AllergenKeywordFallbackTest {
 	}
 
 	@Test
-	void nonFoodOtherShouldNeverEnterDishMatching() {
-		Dish dish = new Dish("company-a", 1L, "艾草青团", Collections.singletonList(new DishIngredient("艾草", null)));
-
-		assertThat(fallback.matchesOther("艾草", false, dish)).isFalse();
-		assertThat(fallback.matchesOther("艾草", true, dish)).isTrue();
-	}
-
-	@Test
 	void reviewedFormalWordsShouldParticipateInHardFallback() {
 		Dish dish = new Dish("company-a", 2L, "花生拌菜", Collections.singletonList(new DishIngredient("花生", null)));
 

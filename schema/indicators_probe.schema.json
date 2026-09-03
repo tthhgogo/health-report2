@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LLM-A 健康指标召回探针输出",
+  "description": "只服务于纯图像输入的指标召回探针，不是生产契约。生产契约是 extraction_output.schema.json。按章节分组，与页面上「一个章节一张卡片」的展示结构一致。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reportStatus",
+    "overview",
+    "sections"
+  ],
+  "properties": {
+    "reportStatus": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "NO_REPORT_FEATURE",
+        "UNREADABLE"
+      ],
+      "description": "OK=正常识别；NO_REPORT_FEATURE=看得清但不是体检报告；UNREADABLE=看不清。非 OK 时 sections 必须为空数组"
+    },
+    "overview": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "totalCount",
+        "abnormalCount",
+        "source"
+      ],
+      "description": "需求 §5-5 顶部总览条。报告自己印了汇总数字就用它的，否则按你抽出的指标自己数。reportStatus 非 OK 时为 null",
+      "properties": {
+        "totalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "总指标数。【不与抽取结果交叉核对，直接采信】——报告口径与展示口径本就不同"
+        },
+        "abnormalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "异常项数，含偏高与偏低。同样直接采信，不做核算"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "REPORT",
+            "COUNTED"
+          ],
+          "description": "REPORT=报告上印着这两个数，逐字取；COUNTED=报告没印，由你按自己抽出的指标数出来"
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "maxItems": 60,
+      "description": "按报告阅读顺序排列的章节；同一个章节只能出现一次，跨页续表并进同一条",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "section",
+          "page",
+          "indicators"
+        ],
+        "properties": {
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 60,
+            "description": "章节名，逐字取自报告，如「血脂检查」；不属于任何章节时为 null"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "该章节开始于第几张图像，从 1 起。用于发现整页被跳过，不逐条重复"
+          },
+          "indicators": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "description": "该章节下的指标，按报告阅读顺序；数组顺序即展示顺序",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "value",
+                "unit",
+                "refRange",
+                "conclusionGenerated",
+                "status"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60,
+                  "description": "指标名称，逐字取自报告"
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "description": "检测结果，逐字取自报告；定性结果如「阴性」同样填这里。不得是「正常 / 未见异常」这类评价——那是结论不是结果，属于健康问题模块"
+                },
+                "unit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 30,
+                  "description": "单位，报告没印则 null，不得补通用单位"
+                },
+                "refRange": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 60,
+                  "description": "参考范围或参考值，逐字取自报告；没印则 null。与 conclusion 不得同时为 null——两者皆无的行按需求 §5-2 不属于本模块（跨字段约束，由测试断言）"
+                },
+                "conclusionGenerated": {
+                  "type": "boolean",
+                  "description": "需求 §5-3 第 80 行要求下发的字段。false=报告自己印了结论，status 照它判；true=报告没印结论，status 由你拿 value 与 refRange 比较得出，前端据此把展示文案标成系统判定。true 时 refRange 必须有值，且 status 只能是 NORMAL"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "NORMAL",
+                    "HIGH",
+                    "LOW",
+                    "ABNORMAL"
+                  ],
+                  "description": "状态标签，需求 §5-3 第 82 行要求每张卡片都有，因此必给。conclusionGenerated=false 时由报告印的结论决定；true 时只能是 NORMAL——超出参考范围而报告未印结论的，按需求 §5-2 整条不输出"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

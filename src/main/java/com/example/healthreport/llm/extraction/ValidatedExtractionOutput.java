@@ -223,8 +223,6 @@ public final class ValidatedExtractionOutput {
 
 		private final IndicatorStatus status;
 
-		private final boolean statusJudgedByModel;
-
 		private final boolean includeInHealthProblems;
 
 		private final String problemName;
@@ -232,7 +230,7 @@ public final class ValidatedExtractionOutput {
 		Indicator(int fileIndex, int batchIndex, int sectionIndex, int orderInSection, int itemIndex, int page,
 				List<String> segmentIdList, String name, String value, String unit, String refRange,
 				String conclusionText, IndicatorConclusionBasis conclusionBasis, IndicatorStatus status,
-				boolean statusJudgedByModel, boolean includeInHealthProblems, String problemName) {
+				boolean includeInHealthProblems, String problemName) {
 			this.fileIndex = fileIndex;
 			this.batchIndex = batchIndex;
 			this.sectionIndex = sectionIndex;
@@ -247,7 +245,6 @@ public final class ValidatedExtractionOutput {
 			this.conclusionText = conclusionText;
 			this.conclusionBasis = conclusionBasis;
 			this.status = status;
-			this.statusJudgedByModel = statusJudgedByModel;
 			this.includeInHealthProblems = includeInHealthProblems;
 			this.problemName = problemName;
 		}

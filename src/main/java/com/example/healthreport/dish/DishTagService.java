@@ -54,6 +54,14 @@ public class DishTagService {
 	/** 企业和菜品查询默认页容量；设计方案规定 500，仍需按真实菜单压测校准。 */
 	private static final int DEFAULT_QUERY_PAGE_SIZE = 500;
 
+	/**
+	 * 单企业单日最多参与打标的菜品数。
+	 * <p><b>这是一条产能闸，不是分页参数。</b> 超出上限的菜品当天不打标、不进任何 Redis 方向集合，
+	 * 因而不会被推荐、也不会被过敏拦截——它们对模块四直接不存在（与设计方案 §8.9
+	 * 「当天新增但未进入凌晨分页快照的菜品不会出现在任何集合中」是同一种缺席）。</p>
+	 */
+	private static final int DEFAULT_MAX_DISHES_PER_COMPANY = 500;
+
 	private final DishQueryService dishQueryService;
 
 	private final TagHashCalculator tagHashCalculator;
@@ -80,12 +88,15 @@ public class DishTagService {
 
 	private final int queryPageSize;
 
+	private final int maxDishesPerCompany;
+
 	public DishTagService(DishQueryService dishQueryService, TagHashCalculator tagHashCalculator,
 			CtDishTagService persistenceService, DishTagWriteService writeService, DishTagClient llmBClient,
 			DishTagProperties properties, NutritionMatcher nutritionMatcher, DietPositiveMatcher dietPositiveMatcher,
 			AllergenKeywordFallback allergenKeywordFallback, DishRecommendSetCache setCache,
 			DishTagSetCatalog setCatalog, DishSetMemberCodec memberCodec,
-			@Value("${dish.tag-query-page-size:500}") int queryPageSize) {
+			@Value("${dish.tag-query-page-size:500}") int queryPageSize,
+			@Value("${dish.tag-max-dishes-per-company:500}") int maxDishesPerCompany) {
 		this.dishQueryService = dishQueryService;
 		this.tagHashCalculator = tagHashCalculator;
 		this.persistenceService = persistenceService;
@@ -99,6 +110,8 @@ public class DishTagService {
 		this.setCatalog = setCatalog;
 		this.memberCodec = memberCodec;
 		this.queryPageSize = queryPageSize > 0 ? queryPageSize : DEFAULT_QUERY_PAGE_SIZE;
+		this.maxDishesPerCompany = maxDishesPerCompany > 0 ? maxDishesPerCompany
+				: DEFAULT_MAX_DISHES_PER_COMPANY;
 	}
 
 	/** 使用调度入口传入的统一业务日，逐企业独立构建和发布。 */
@@ -136,12 +149,22 @@ public class DishTagService {
 			if (countBefore < 0L) {
 				throw new IllegalStateException("在架菜品计数不能为负数");
 			}
+			// 【产能闸由 countBefore 判定，不能由循环处理数反推】——用处理数反推会让
+			// 「计数说 1 道、分页却返回 2 道」这种 count/page 自相矛盾被当成触发闸，
+			// 期望值随之变成 2，恰好绕过下面那条本该发现它的校验。
+			boolean capReached = countBefore > maxDishesPerCompany;
 			Set<Long> processedDishIdSet = new LinkedHashSet<Long>();
 			Long lastDishesId = null;
 			while (true) {
+				if (processedDishIdSet.size() >= maxDishesPerCompany) {
+					break;
+				}
+				// 末页只取还差的那几道，避免为了丢弃而多查一整页。
+				int remaining = maxDishesPerCompany - processedDishIdSet.size();
+				int currentPageSize = Math.min(queryPageSize, remaining);
 				DishCursorPage dishPage = DishQueryService.assertValidDishPage(
-						dishQueryService.queryOnShelfDishPage(companyId, bizDate, lastDishesId, queryPageSize),
-						companyId, lastDishesId, queryPageSize);
+						dishQueryService.queryOnShelfDishPage(companyId, bizDate, lastDishesId, currentPageSize),
+						companyId, lastDishesId, currentPageSize);
 				if (dishPage.getDishList().isEmpty()) {
 					break;
 				}
@@ -152,16 +175,27 @@ public class DishTagService {
 					}
 				}
 				processPage(companyId, bizDate, buildId, enrichedDishList);
-				if (dishPage.getDishList().size() < queryPageSize) {
+				if (dishPage.getDishList().size() < currentPageSize) {
 					break;
 				}
 				lastDishesId = dishPage.getLastDishesId();
 			}
 			long countAfter = dishQueryService.countOnShelfDishes(companyId, bizDate);
-			if (countBefore != countAfter || countBefore != processedDishIdSet.size()) {
+			// 【没触发闸时，完整性校验一字不改】——仍然要求分页取到的菜品数与前后计数三者相等，
+			// 这条能发现外部 count 与 page 两个接口自相矛盾。触发闸时无从校验总数，
+			// 只能要求恰好取满上限，否则超上限的企业永远发布不了。
+			// countBefore 恰好等于上限时不算触发闸：一道都没被截断，期望值就是 countBefore。
+			long expectedDishCount = capReached ? maxDishesPerCompany : countBefore;
+			if (countBefore != countAfter || expectedDishCount != processedDishIdSet.size()) {
 				throw new IllegalStateException("企业菜品分页数量与前后计数不一致");
 			}
 			setCache.publish(companyId, bizDate, buildId, setCatalog.publishRefs());
+			if (capReached) {
+				// 被闸掉的菜品当天对模块四不存在：不推荐，也不拦截。企业标识不进日志。
+				log.warn("企业在架菜品数超过单企业打标上限，超出部分当天不参与推荐与过敏拦截，"
+						+ "业务日={}，在架数={}，打标数={}，上限={}", bizDate, countBefore,
+						processedDishIdSet.size(), maxDishesPerCompany);
+			}
 			log.info("企业菜品标签快照发布完成，业务日={}，菜品数={}，方向集合数={}", bizDate, processedDishIdSet.size(),
 					setCatalog.publishRefs().size());
 			return true;

@@ -15,6 +15,8 @@ public class DegradeAccumulator {
     private final AtomicBoolean pageTruncated = new AtomicBoolean(false);
     private final AtomicBoolean batchUnreadable = new AtomicBoolean(false);
     private final AtomicBoolean allergenSuspectMiss = new AtomicBoolean(false);
+    private final AtomicBoolean schemaItemDropped = new AtomicBoolean(false);
+    private final AtomicBoolean dietRequirementDropped = new AtomicBoolean(false);
 
     /**
      * 记录页数截断；重复调用保持幂等。
@@ -41,9 +43,26 @@ public class DegradeAccumulator {
         }
     }
 
+    /**
+     * 记录个别条目因不合 Schema 被剔除；重复调用保持幂等，仅首次翻转时留痕。
+     * <p>剔除明细由 {@code ExtractionSchemaValidator} 记日志，这里只翻转降级标志。</p>
+     *
+     * @param dietRequirementDroppedInBatch 本次剔除是否含 {@code dietRequirements}；
+     *     含则必须抑制菜品推荐——那一类在模块四生成 REJECT 方向集合，少一条等于少一道排除
+     */
+    public void recordSchemaItemDropped(boolean dietRequirementDroppedInBatch) {
+        if (schemaItemDropped.compareAndSet(false, true)) {
+            log.info("任务降级：命中 {}，个别条目已剔除", PartialReason.SCHEMA_ITEM_DROPPED);
+        }
+        if (dietRequirementDroppedInBatch && dietRequirementDropped.compareAndSet(false, true)) {
+            log.info("任务降级：命中 {}，菜品推荐不再输出", PartialReason.DIET_REQUIREMENT_DROPPED);
+        }
+    }
+
     /** 是否命中过任何部分结果原因。 */
     public boolean partial() {
-        return pageTruncated.get() || batchUnreadable.get() || allergenSuspectMiss.get();
+        return pageTruncated.get() || batchUnreadable.get() || allergenSuspectMiss.get()
+                || schemaItemDropped.get() || dietRequirementDropped.get();
     }
 
     /** 页数或批次不完整时抑制饮食建议。 */
@@ -51,9 +70,10 @@ public class DegradeAccumulator {
         return pageTruncated.get() || batchUnreadable.get();
     }
 
-    /** 任一降级原因都抑制菜品推荐。 */
+    /** 任一降级原因都抑制菜品推荐；剔除了饮食注意同样必须抑制。 */
     public boolean suppressDishRecommend() {
-        return pageTruncated.get() || batchUnreadable.get() || allergenSuspectMiss.get();
+        return pageTruncated.get() || batchUnreadable.get() || allergenSuspectMiss.get()
+                || dietRequirementDropped.get();
     }
 
     /**
@@ -70,6 +90,14 @@ public class DegradeAccumulator {
         }
         if (allergenSuspectMiss.get()) {
             return PartialReason.ALLERGEN_SUSPECT_MISS;
+        }
+        // 抑制菜品推荐，排在只标记不抑制的那一类之前。
+        if (dietRequirementDropped.get()) {
+            return PartialReason.DIET_REQUIREMENT_DROPPED;
+        }
+        // 抑制范围为空，排在最后：任何其他原因都比它更需要被展示。
+        if (schemaItemDropped.get()) {
+            return PartialReason.SCHEMA_ITEM_DROPPED;
         }
         return null;
     }

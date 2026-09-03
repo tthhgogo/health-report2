@@ -24,6 +24,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.ValidationMessage;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.Iterator;
 import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -46,9 +52,70 @@ class PromptAndArchitectureContractTest {
 	private static final String[] HTTP_LOGGER_NAME_ARRAY = { "org.springframework.web.client", "org.apache.http",
 			"org.apache.http.wire", "org.apache.http.headers", "org.eclipse.jetty", "jdk.internal.httpclient" };
 
+	/**
+	 * 提示词「输出骨架」里的那份 JSON 必须自己就能通过正式 Schema。
+	 *
+	 * <p>它是模型唯一会照抄的整体结构。骨架里塞 {@code ""} 或空 {@code blockRefs} 当占位符，
+	 * 模型照抄就会被 Schema 拒——而 {@code sections} 不在可剔除白名单里，那是整批失败。
+	 * 2026-09-02 曾出现 23 处非法占位值，本断言防它复发。</p>
+	 */
+	@Test
+	void promptOutputSkeletonMustItselfPassTheCanonicalSchema() throws Exception {
+		String prompt = read(Paths.get("prompt/extraction.md"));
+		int sectionStart = prompt.indexOf("## 输出骨架");
+		assertThat(sectionStart).as("提示词缺少「输出骨架」一节").isGreaterThan(0);
+		int fenceStart = prompt.indexOf("```json", sectionStart);
+		int bodyStart = prompt.indexOf('\n', fenceStart) + 1;
+		int bodyEnd = prompt.indexOf("```", bodyStart);
+		String skeletonJson = prompt.substring(bodyStart, bodyEnd).trim();
+
+		ObjectMapper objectMapper = new ObjectMapper();
+		JsonNode skeletonNode = objectMapper.readTree(skeletonJson);
+		Set<ValidationMessage> violationSet = new ModelOutputSchemaRegistry(objectMapper)
+			.extraction()
+			.validate(skeletonNode);
+
+		assertThat(violationSet).as("输出骨架自身不合 Schema，模型照抄即失败").isEmpty();
+
+		assertExampleItemsPassSchema(prompt, objectMapper, skeletonNode);
+	}
+
+	/**
+	 * 提示词里「每种条目的完整形态」示例，逐条塞回对应数组后必须通过正式 Schema。
+	 *
+	 * <p><b>为什么要单独验这个。</b> 2026-09-02 骨架从「填好字段的模板」改成「全空数组 +
+	 * 字段名表格」，非法占位值确实没了，但模型也<b>看不到一个完整条目长什么样</b>了——
+	 * 下一次实测 {@code required} 违规从 1 条涨到 8 条，整批因超出剔除预算而作废。
+	 * 「示例合法」和「示例完整」必须同时锁住，只锁一头就会顾此失彼。</p>
+	 */
+	private void assertExampleItemsPassSchema(String prompt, ObjectMapper objectMapper,
+			JsonNode skeletonNode) throws Exception {
+		int sectionStart = prompt.indexOf("每种条目的完整形态");
+		assertThat(sectionStart).as("提示词缺少条目示例一节").isGreaterThan(0);
+		int fenceStart = prompt.indexOf("```json", sectionStart);
+		int bodyStart = prompt.indexOf('\n', fenceStart) + 1;
+		int bodyEnd = prompt.indexOf("```", bodyStart);
+		JsonNode exampleNode = objectMapper.readTree(prompt.substring(bodyStart, bodyEnd).trim());
+
+		ObjectNode document = skeletonNode.deepCopy();
+		Iterator<String> arrayNameIterator = exampleNode.fieldNames();
+		while (arrayNameIterator.hasNext()) {
+			String arrayName = arrayNameIterator.next();
+			assertThat(document.has(arrayName))
+				.as("示例里的 " + arrayName + " 不是骨架的顶层字段").isTrue();
+			document.putArray(arrayName).add(exampleNode.get(arrayName).deepCopy());
+		}
+		// 过敏原示例引用了块，覆盖检查的两个数组要跟着给，否则不是这一节要测的东西在报错。
+		document.putArray("allergenSectionBlockRefs").add(95).add(96);
+		document.putArray("allergenDataBlockRefs").add(96);
+
+		assertThat(new ModelOutputSchemaRegistry(objectMapper).extraction().validate(document))
+			.as("条目示例不合 Schema，模型照抄即被剔除").isEmpty();
+	}
+
 	@Test
 	void promptConstantsHeadersHistoryAndDigestsShouldStayAligned() throws Exception {
-		assertThat(PromptVersions.EXTRACTION).isEqualTo("extraction-2.4.0");
+		assertThat(PromptVersions.EXTRACTION).isEqualTo("extraction-2.4.6");
 		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.3");
 		assertPromptVersion("prompt/extraction.md", PromptVersions.EXTRACTION);
 		assertPromptVersion("prompt/dish_tag.md", PromptVersions.DISH_TAG);

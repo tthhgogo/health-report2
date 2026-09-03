@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LLM-A 健康问题召回探针输出",
+  "description": "只服务于纯图像输入的健康问题召回探针，不是生产契约。对应需求 §6（第 110~137 行）。来源标注由后端按 section / itemNo / indicatorName 拼装，不让模型直接给一句自由文本，避免它编一个看起来像原文的位置。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reportStatus", "problems"],
+  "properties": {
+    "reportStatus": {
+      "type": "string",
+      "enum": ["OK", "NO_REPORT_FEATURE", "UNREADABLE"],
+      "description": "OK=正常识别；NO_REPORT_FEATURE=看得清但不是体检报告；UNREADABLE=看不清。非 OK 时 problems 必须为空数组"
+    },
+    "problems": {
+      "type": "array",
+      "maxItems": 200,
+      "description": "需求 §6-4 的展示顺序：指标异常类全部在前（按报告章节顺序），总检结论类全部在后（按报告原文顺序）。数组顺序即展示顺序，不做严重程度分级",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceType", "page", "section", "itemNo", "indicatorName", "name", "rawText"],
+        "properties": {
+          "sourceType": {
+            "type": "string",
+            "enum": ["INDICATOR", "SUMMARY"],
+            "description": "需求 §6-2 的两类来源。INDICATOR=某项指标被报告明确标注为异常；SUMMARY=总检结论或医生建议里的诊断与提示"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "该问题出自第几张图像，从 1 起"
+          },
+          "section": {
+            "type": ["string", "null"],
+            "maxLength": 60,
+            "description": "章节名，逐字取自报告。INDICATOR=该指标所在章节如「血脂检查」；SUMMARY=承载它的章节原文名如「总检结论」「专家建议」。不属于任何章节时为 null"
+          },
+          "itemNo": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "报告原文【印着】的条目编号，如总检结论的「3.」。没印就是 null，不要自己编号"
+          },
+          "indicatorName": {
+            "type": ["string", "null"],
+            "maxLength": 60,
+            "description": "关联的指标名，逐字取自报告。sourceType=INDICATOR 时必填；SUMMARY 条目确实指向某个具体指标时也可以填，否则 null（需求 §6-3 据此决定显不显示跳转按钮）"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "问题名称，需求 §6-3 要求【直接引用报告原文表述，不做改写】。必须能在 rawText 里逐字找到"
+          },
+          "rawText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "报告原文完整描述，需求 §6-3 要求它便于用户与纸质报告核对。逐字转写，不概括、不省略"
+          }
+        }
+      }
+    }
+  }
+}

@@ -6,6 +6,7 @@ import com.example.healthreport.parse.ocr.OcrContentSplitter;
 import com.example.healthreport.parse.ocr.OcrResult;
 import com.example.healthreport.support.FailCode;
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -41,8 +42,23 @@ import java.util.Collections;
 @Component
 public class PaddleOcrVlClient implements PaddleOcrClient {
 
-    /** 固定指令：只要求转录图片文字，不做任何理解或改写。 */
-    static final String TRANSCRIBE_INSTRUCTION = "输出图片的文字";
+    /**
+     * 固定指令：只要求转录图片文字，不做任何理解或改写。
+     *
+     * <p><b>为什么写得这么细。</b> 原先只写「输出图片的文字」，实测同一张图三次调用
+     * 返回了三种格式：纯文本流、Markdown 表格、{@code <fcel>/<nl>} 表格标记
+     * （2026-09-02）。格式本身不是问题，但它决定 {@code OcrContentSplitter} 切出多少块，
+     * 而 {@code blockRefs} 的全部意义就是定位到「哪一块」。</p>
+     *
+     * <p>这是「尽量」的那一半——0.9B 模型的指令遵循有限，不依赖模型配合的那一半
+     * 在 {@link com.example.healthreport.parse.ocr.OcrContentSplitter} 里。</p>
+     */
+    static final String TRANSCRIBE_INSTRUCTION =
+            "逐行输出图片中的全部文字，一行一条，保持原有阅读顺序。"
+            + "不得省略任何可见文字，包括页眉、页脚、姓名性别年龄等个人信息、体检日期、"
+            + "章节标题、表头、签名与页码。"
+            + "不要输出 Markdown 表格，不要输出 <fcel>、<lcel>、<nl> 这类表格标记，"
+            + "不要添加解释、标题或任何图片上没有的字。";
 
     private static final byte[] PNG_SIGNATURE = {
             (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
@@ -176,6 +192,8 @@ public class PaddleOcrVlClient implements PaddleOcrClient {
             generator.writeStringField("model", connectionProperties.getModel());
             // 同一张图必须得到同一份文本，识别结果不接受采样波动。
             generator.writeNumberField("temperature", 0);
+            // 显式声明非流式：默认值由网关决定，流式响应的结构与这里的解析完全对不上。
+            generator.writeBooleanField("stream", false);
             generator.writeArrayFieldStart("messages");
             generator.writeStartObject();
             generator.writeStringField("role", "user");
@@ -235,8 +253,24 @@ public class PaddleOcrVlClient implements PaddleOcrClient {
             throw new OcrCallException(FailCode.SERVER_ERROR, 200, 0L);
         }
         try {
-            JsonNode root = objectMapper.readTree(responseBody);
-            JsonNode content = root.path("choices").path(0).path("message").path("content");
+            // 外层信封同样拒绝尾随内容，理由与 LLM-A 一致。
+            JsonNode root = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(responseBody);
+            JsonNode choice = root.path("choices").path(0);
+            // 【先判 finish_reason】不是 stop 就是被截断——半页 OCR 文本结构上完全合法，
+            // 而 LLM-A 补不回 OCR 里不存在的姓名、日期与数值（§4.4-①：证据链断了就丢弃）。
+            // 截断必须在这里响亮失败，不能当成一次成功识别继续往下走。
+            String finishReason = choice.path("finish_reason").asText("");
+            if (!"stop".equals(finishReason)) {
+                // 【只记白名单分类，不记原值】finish_reason 是外部响应字段；
+                // OCR 的响应正文就是报告全文，这条日志绝不能成为它的旁路。
+                log.error("OCR 响应未正常结束，响应长度={}，finishReasonKind={}",
+                        responseBody.length(),
+                        OpenAiCompatibleExtractionModelClient.classifyFinishReason(finishReason));
+                throw new OcrCallException(FailCode.SERVER_ERROR, 200, 0L);
+            }
+            JsonNode content = choice.path("message").path("content");
             if (!content.isTextual()) {
                 log.error("OCR 响应结构无效，响应长度={}，异常类型=InvalidStructure",
                         responseBody.length());

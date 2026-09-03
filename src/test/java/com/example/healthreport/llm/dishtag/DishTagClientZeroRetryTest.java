@@ -1,5 +1,6 @@
 package com.example.healthreport.llm.dishtag;
 
+import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
 import com.example.healthreport.dish.Dish;
 import com.example.healthreport.dish.DishIngredient;
 import com.example.healthreport.infra.DishTagModelClient;
@@ -25,7 +26,7 @@ class DishTagClientZeroRetryTest {
 		when(modelClient.call(anyString(), anyString())).thenThrow(new IllegalStateException("远程不可用"));
 		ObjectMapper mapper = new ObjectMapper();
 		DishTagClient client = new DishTagClient(modelClient, new DishTagPromptProvider(),
-				new DishTagContractValidator(mapper));
+				new DishTagContractValidator(mapper, new ModelOutputSchemaRegistry(mapper)));
 
 		assertThrows(DishTagCallException.class, () -> client.tag(input()));
 		verify(modelClient, times(1)).call(anyString(), anyString());
@@ -43,7 +44,7 @@ class DishTagClientZeroRetryTest {
 			.thenReturn("<think>\n我先试写一下格式：" + decoyJson + "\n</think>\n\n" + realJson);
 		ObjectMapper mapper = new ObjectMapper();
 		DishTagClient client = new DishTagClient(modelClient, new DishTagPromptProvider(),
-				new DishTagContractValidator(mapper));
+				new DishTagContractValidator(mapper, new ModelOutputSchemaRegistry(mapper)));
 
 		DishTagOutput output = client.tag(input());
 
@@ -58,7 +59,7 @@ class DishTagClientZeroRetryTest {
 		when(modelClient.call(anyString(), anyString())).thenReturn("<think>\n我先看看这批菜里有没有高脂的");
 		ObjectMapper mapper = new ObjectMapper();
 		DishTagClient client = new DishTagClient(modelClient, new DishTagPromptProvider(),
-				new DishTagContractValidator(mapper));
+				new DishTagContractValidator(mapper, new ModelOutputSchemaRegistry(mapper)));
 
 		assertThrows(DishTagBatchRejectedException.class, () -> client.tag(input()));
 	}
@@ -69,7 +70,7 @@ class DishTagClientZeroRetryTest {
 		when(modelClient.call(anyString(), anyString())).thenThrow(new RequestTooLargeException(9_999_999L, 1024));
 		ObjectMapper mapper = new ObjectMapper();
 		DishTagClient client = new DishTagClient(modelClient, new DishTagPromptProvider(),
-				new DishTagContractValidator(mapper));
+				new DishTagContractValidator(mapper, new ModelOutputSchemaRegistry(mapper)));
 
 		// DishTagService 只捕获 DishTagBatchRejectedException 与 DishTagCallException；
 		// 裸的 RequestTooLargeException 会中止整个夜间打标任务，而不是只丢这一批。
