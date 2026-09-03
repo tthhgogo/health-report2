@@ -4,7 +4,6 @@ import com.example.healthreport.constants.AllergenGroup;
 import com.example.healthreport.constants.AllergenGroups;
 import com.example.healthreport.constants.AllergenKey;
 import com.example.healthreport.constants.AllergenWord;
-import com.example.healthreport.constants.Bucket;
 import com.example.healthreport.constants.DietRequirementContents;
 import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.DietRequirementRule;
@@ -14,286 +13,227 @@ import com.example.healthreport.constants.NutritionContents;
 import com.example.healthreport.constants.NutritionKey;
 import com.example.healthreport.constants.NutritionRule;
 import com.example.healthreport.constants.ReviewStatus;
-import com.example.healthreport.safety.StructuredAdmission;
+import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.safety.HighRiskAdviceGate;
+import com.example.healthreport.support.text.TextNormalizer;
 import lombok.Getter;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
- * 模块三饮食建议组装器。
- * <p>公开入口只接收不含指标数据的 {@link DietAdviceInput}。高危或 OTHER 条目保留原文与来源，
- * 但不会生成结构化内容；未审核常量同样不会进入输出。</p>
+ * 模块三饮食建议组装器：「适宜多吃」与「忌吃少吃」两个食材清单（设计方案 §7.6）。
+ *
+ * <pre>
+ * 忌吃少吃 = allergenSet(avoid ∪ hidden) ∪ dietAvoidSet
+ * 适宜多吃 = (nutritionSet ∪ dietRecommendSet) − 忌吃少吃
+ * </pre>
+ *
+ * <p>三条硬约束：差集放在最后统一减一次；差集用宽松匹配（包含任一忌口 matchWord 即移除，
+ * 宁可多减）；hiddenFoods 一并进入忌吃少吃。{@code OTHER} 与被安全闸抑制的条目
+ * 不产生任何食材，但仍随 {@code entryList} 下发（带 quote 与 section），前端当前不渲染。</p>
  */
 @Service
 public class DietAdviceAssembler {
 
-    /** 多段报告原文保持段边界时使用的展示换行符，不改变段内原文。 */
-    private static final String RAW_TEXT_SEPARATOR = "\n";
+    private final HighRiskAdviceGate highRiskAdviceGate;
+    private final TextNormalizer textNormalizer = new TextNormalizer();
 
-    private final StructuredAdmission structuredAdmission;
+    public DietAdviceAssembler(HighRiskAdviceGate highRiskAdviceGate) {
+        this.highRiskAdviceGate = highRiskAdviceGate;
+    }
 
-    public DietAdviceAssembler(StructuredAdmission structuredAdmission) {
-        this.structuredAdmission = structuredAdmission;
+    /** 组装模块三；输入是第三次调用的已校验标签。 */
+    public Result assemble(DietTagsResult dietTags) {
+        if (dietTags == null) {
+            throw new IllegalArgumentException("模块三输入不能为空");
+        }
+        Set<String> recommendFoodSet = new LinkedHashSet<String>();
+        Set<String> avoidFoodSet = new LinkedHashSet<String>();
+        Set<String> avoidMatchWordSet = new LinkedHashSet<String>();
+        List<Entry> entryList = new ArrayList<Entry>();
+
+        for (DietTagsResult.DietTag tag : dietTags.getReject()) {
+            boolean suppressed = collectReject(tag, avoidFoodSet, avoidMatchWordSet);
+            entryList.add(toEntry(tag, "REJECT", suppressed));
+        }
+        for (DietTagsResult.DietTag tag : dietTags.getRecommend()) {
+            boolean suppressed = collectRecommend(tag, recommendFoodSet);
+            entryList.add(toEntry(tag, "RECOMMEND", suppressed));
+        }
+
+        // 差集必须放在最后统一减一次：报告同时说「补铁」和「低脂」时，
+        // 猪肝在营养推荐里也在饮食忌口里，只在维度内部判断会漏掉另一个维度的禁忌。
+        subtractLoosely(recommendFoodSet, avoidMatchWordSet);
+
+        List<String> recommendList = new ArrayList<String>(recommendFoodSet);
+        List<String> avoidList = new ArrayList<String>(avoidFoodSet);
+        return new Result(recommendList, avoidList,
+                recommendList.isEmpty() ? EmptyStateConstants.MODULE_THREE_RECOMMEND : null,
+                avoidList.isEmpty() ? EmptyStateConstants.MODULE_THREE_AVOID : null,
+                entryList, DisclaimerConstants.MODULE_THREE);
     }
 
     /**
-     * 组装三个始终存在的饮食建议分区。
+     * 收集忌吃少吃侧食材。
      *
-     * @param input 仅含建议枚举、报告原文与机械来源字段的输入
-     * @return 不含额外提示或警示文字的模块三结果
+     * @return 该条是否被按 OTHER 路径抑制（不产生食材）
      */
-    public Result assemble(DietAdviceInput input) {
-        if (input == null) {
-            throw new IllegalArgumentException("模块三输入不能为空");
+    private boolean collectReject(DietTagsResult.DietTag tag, Set<String> avoidFoodSet,
+                                  Set<String> avoidMatchWordSet) {
+        if ("OTHER".equals(tag.getEnumKey())) {
+            return true;
         }
-        List<AllergenCard> allergenCardList = new ArrayList<AllergenCard>(
-                input.getAllergenList().size());
-        for (DietAdviceInput.AllergenItem item : input.getAllergenList()) {
-            allergenCardList.add(allergen(item));
+        if ("ALLERGEN".equals(tag.getDimension())) {
+            // 过敏原不过安全闸（忌口本身就是要展示的安全信息，方向不能反）。
+            AllergenKey allergenKey = AllergenKey.valueOf(tag.getEnumKey());
+            AllergenGroup group = AllergenGroups.ALL.get(allergenKey);
+            if (group == null || !AllergenGroups.FOOD_BORNE_KEYS.contains(allergenKey)) {
+                // 非食入性过敏原：展示原文，不生成需避免食材（§7.2）。
+                return true;
+            }
+            for (AllergenWord word : group.getWordList()) {
+                if (word.getReviewStatus() != ReviewStatus.REVIEWED) {
+                    continue;
+                }
+                // avoid 与 hidden 两桶都进清单：需求 §7-3 的「易忽略食物」没有别的地方可去。
+                avoidFoodSet.add(word.getDisplayName());
+                avoidMatchWordSet.add(word.getMatchWord());
+            }
+            return false;
         }
-
-        List<NutritionCard> nutritionCardList = new ArrayList<NutritionCard>(
-                input.getNutritionList().size());
-        for (DietAdviceInput.AdviceItem<NutritionKey> item : input.getNutritionList()) {
-            nutritionCardList.add(nutrition(item));
+        // DIET 反向：过安全闸后取需避免食材。
+        if (highRiskAdviceGate.shouldSuppress(tag.getQuote())) {
+            return true;
         }
-
-        List<DietCard> dietCardList = new ArrayList<DietCard>(input.getDietList().size());
-        for (DietAdviceInput.AdviceItem<DietRequirementKey> item : input.getDietList()) {
-            dietCardList.add(diet(item));
+        DietRequirementRule rule = DietRequirementContents.ALL.get(
+                DietRequirementKey.valueOf(tag.getEnumKey()));
+        if (rule == null || rule.getReviewStatus() != ReviewStatus.REVIEWED) {
+            return true;
         }
-
-        return new Result(
-                new Section<AllergenCard>(allergenCardList,
-                        allergenCardList.isEmpty() ? EmptyStateConstants.MODULE_THREE_ALLERGEN : null),
-                new Section<NutritionCard>(nutritionCardList,
-                        nutritionCardList.isEmpty() ? EmptyStateConstants.MODULE_THREE_NUTRITION : null),
-                new Section<DietCard>(dietCardList,
-                        dietCardList.isEmpty() ? EmptyStateConstants.MODULE_THREE_DIET : null),
-                DisclaimerConstants.MODULE_THREE);
+        for (String food : rule.getAvoidFoodList()) {
+            avoidFoodSet.add(food);
+            avoidMatchWordSet.add(food);
+        }
+        return false;
     }
 
-    private AllergenCard allergen(DietAdviceInput.AllergenItem item) {
-        DietAdviceInput.StructuredValue<AllergenKey> value = item.getStructuredValue();
-        // 【高危表述安全闸不作用于过敏原】该闸只扫营养补充与饮食注意的原文。
-        // 过敏忌口本身就是要展示给用户的安全信息，用无关高危词（如「儿童」）连带抑制它，
-        // 反而会把该看见的忌口清单收掉；同时 adviceOtherCount 的口径是「建议条数」，
-        // 把过敏原计进去会让口径失真。这里只保留 OTHER 枚举本身走 OTHER 路径。
-        boolean otherPath = value.getEnumKey() == AllergenKey.OTHER;
+    /**
+     * 收集适宜多吃侧食材。
+     *
+     * @return 该条是否被按 OTHER 路径抑制（不产生食材）
+     */
+    private boolean collectRecommend(DietTagsResult.DietTag tag, Set<String> recommendFoodSet) {
+        if ("OTHER".equals(tag.getEnumKey())) {
+            return true;
+        }
+        if (highRiskAdviceGate.shouldSuppress(tag.getQuote())) {
+            return true;
+        }
+        if ("NUTRITION".equals(tag.getDimension())) {
+            NutritionRule rule = NutritionContents.ALL.get(NutritionKey.valueOf(tag.getEnumKey()));
+            if (rule == null || rule.getReviewStatus() != ReviewStatus.REVIEWED) {
+                return true;
+            }
+            recommendFoodSet.addAll(rule.getRecommendableFoodList());
+            recommendFoodSet.addAll(rule.getDisplayOnlyFoodList());
+            return false;
+        }
+        if ("DIET".equals(tag.getDimension())) {
+            DietRequirementRule rule = DietRequirementContents.ALL.get(
+                    DietRequirementKey.valueOf(tag.getEnumKey()));
+            if (rule == null || rule.getReviewStatus() != ReviewStatus.REVIEWED) {
+                return true;
+            }
+            recommendFoodSet.addAll(rule.getRecommendableFoodList());
+            recommendFoodSet.addAll(rule.getDisplayOnlyFoodList());
+            return false;
+        }
+        return true;
+    }
 
-        List<String> avoidIngredientList = new ArrayList<String>();
-        List<String> hiddenFoodList = new ArrayList<String>();
-        if (!otherPath) {
-            AllergenGroup group = AllergenGroups.ALL.get(value.getEnumKey());
-            if (group != null) {
-                for (AllergenWord word : group.getWordList()) {
-                    // 未经医务审核的词条不得进入展示或后续匹配输入。
-                    if (word.getReviewStatus() == ReviewStatus.REVIEWED) {
-                        if (word.getBucket() == Bucket.AVOID) {
-                            avoidIngredientList.add(word.getDisplayName());
-                        } else {
-                            hiddenFoodList.add(word.getDisplayName());
-                        }
-                    }
+    /**
+     * 宽松差集：适宜多吃里的食材只要【包含】忌吃少吃侧任意一个 matchWord 就移除。
+     * <p>误判代价不对称——少推荐一条只是少条信息，把过敏原推给用户是一级红线，宁可多减。</p>
+     */
+    private void subtractLoosely(Set<String> recommendFoodSet, Set<String> avoidMatchWordSet) {
+        List<String> normalizedAvoidList = new ArrayList<String>(avoidMatchWordSet.size());
+        for (String avoidWord : avoidMatchWordSet) {
+            String normalized = textNormalizer.normalize(avoidWord);
+            if (!normalized.isEmpty()) {
+                normalizedAvoidList.add(normalized);
+            }
+        }
+        Iterator<String> iterator = recommendFoodSet.iterator();
+        while (iterator.hasNext()) {
+            String normalizedFood = textNormalizer.normalize(iterator.next());
+            for (String avoidWord : normalizedAvoidList) {
+                if (normalizedFood.contains(avoidWord)) {
+                    iterator.remove();
+                    break;
                 }
             }
         }
-        boolean structuredContentAvailable = !avoidIngredientList.isEmpty()
-                || !hiddenFoodList.isEmpty();
-        return new AllergenCard(value.getEnumKey(), item.isFoodBorne(), item.getRawName(),
-                item.getRawResult(), item.getSource().getSourceLabel(), value.getRawTextList(),
-                // 过敏原不再经过高危闸，structuredOutputSuppressed 恒为 false。
-                joinRawText(value.getRawTextList()), false, structuredContentAvailable,
-                avoidIngredientList, hiddenFoodList);
     }
 
-    private NutritionCard nutrition(DietAdviceInput.AdviceItem<NutritionKey> item) {
-        DietAdviceInput.StructuredValue<NutritionKey> value = item.getStructuredValue();
-        boolean suppressed = structuredAdmission.shouldSuppress(value.getApplicability(),
-                value.getStructuredSafety(), value.getAdviceQuote(), value.getRawTextList());
-        boolean otherPath = suppressed || value.getEnumKey() == NutritionKey.OTHER;
-
-        NutritionRule rule = otherPath ? null : NutritionContents.ALL.get(value.getEnumKey());
-        boolean reviewed = rule != null && rule.getReviewStatus() == ReviewStatus.REVIEWED;
-        return new NutritionCard(value.getEnumKey(), item.getSource().getSourceLabel(),
-                value.getRawTextList(), joinRawText(value.getRawTextList()), suppressed, reviewed,
-                reviewed ? rule.getRecommendableFoodList() : Collections.<String>emptyList(),
-                reviewed ? rule.getDisplayOnlyFoodList() : Collections.<String>emptyList(),
-                reviewed ? rule.getIntakeNoteList() : Collections.<String>emptyList(),
-                reviewed ? rule.getPairingTipList() : Collections.<String>emptyList(),
-                reviewed ? rule.getContraindication() : null);
+    private Entry toEntry(DietTagsResult.DietTag tag, String direction, boolean suppressed) {
+        return new Entry(tag.getDimension(), tag.getEnumKey(), direction, tag.getSection(),
+                tag.getItemNo(), tag.getQuote(), tag.getRawText(), suppressed);
     }
 
-    private DietCard diet(DietAdviceInput.AdviceItem<DietRequirementKey> item) {
-        DietAdviceInput.StructuredValue<DietRequirementKey> value = item.getStructuredValue();
-        boolean suppressed = structuredAdmission.shouldSuppress(value.getApplicability(),
-                value.getStructuredSafety(), value.getAdviceQuote(), value.getRawTextList());
-        boolean otherPath = suppressed || value.getEnumKey() == DietRequirementKey.OTHER;
-
-        DietRequirementRule rule = otherPath ? null
-                : DietRequirementContents.ALL.get(value.getEnumKey());
-        boolean reviewed = rule != null && rule.getReviewStatus() == ReviewStatus.REVIEWED;
-        return new DietCard(value.getEnumKey(), item.getSource().getSourceLabel(),
-                value.getRawTextList(), joinRawText(value.getRawTextList()), suppressed, reviewed,
-                reviewed ? rule.getDisplayOnlyFoodList() : Collections.<String>emptyList(),
-                reviewed ? rule.getAvoidFoodList() : Collections.<String>emptyList(),
-                reviewed ? rule.getAvoidDishPatternList() : Collections.<String>emptyList(),
-                reviewed ? rule.getCookingTipList() : Collections.<String>emptyList(),
-                reviewed ? rule.getBehaviorTipList() : Collections.<String>emptyList(),
-                reviewed ? rule.getContraindication() : null);
-    }
-
-    private String joinRawText(List<String> rawTextList) {
-        StringBuilder builder = new StringBuilder();
-        for (String rawText : rawTextList) {
-            if (builder.length() > 0) {
-                builder.append(RAW_TEXT_SEPARATOR);
-            }
-            builder.append(rawText);
-        }
-        return builder.toString();
-    }
-
-    private static List<String> immutableCopy(List<String> sourceList) {
-        return Collections.unmodifiableList(new ArrayList<String>(sourceList));
-    }
-
-    /** 模块三完整返回结构，三个分区始终存在。 */
+    /** 模块三完整返回结构。 */
     @Getter
     public static final class Result {
-        private final Section<AllergenCard> allergenSection;
-        private final Section<NutritionCard> nutritionSection;
-        private final Section<DietCard> dietSection;
+        private final List<String> recommendFoodList;
+        private final List<String> avoidFoodList;
+        private final String recommendEmptyState;
+        private final String avoidEmptyState;
+        private final List<Entry> entryList;
         private final String disclaimer;
 
-        private Result(Section<AllergenCard> allergenSection,
-                       Section<NutritionCard> nutritionSection,
-                       Section<DietCard> dietSection, String disclaimer) {
-            this.allergenSection = allergenSection;
-            this.nutritionSection = nutritionSection;
-            this.dietSection = dietSection;
+        Result(List<String> recommendFoodList, List<String> avoidFoodList,
+               String recommendEmptyState, String avoidEmptyState,
+               List<Entry> entryList, String disclaimer) {
+            this.recommendFoodList = Collections.unmodifiableList(
+                    new ArrayList<String>(recommendFoodList));
+            this.avoidFoodList = Collections.unmodifiableList(new ArrayList<String>(avoidFoodList));
+            this.recommendEmptyState = recommendEmptyState;
+            this.avoidEmptyState = avoidEmptyState;
+            this.entryList = Collections.unmodifiableList(new ArrayList<Entry>(entryList));
             this.disclaimer = disclaimer;
         }
     }
 
-    /** 一个始终存在、按唯一排序计划排列的模块三分区。 */
+    /**
+     * 一条已校验建议的来源与抑制状态；前端当前不渲染，保留用于排障与恢复来源标注
+     * （设计方案 §7.6：section / itemNo / quote 不要因为当前不展示就删掉）。
+     */
     @Getter
-    public static final class Section<T> {
-        private final List<T> cardList;
-        private final String emptyState;
-
-        private Section(List<T> cardList, String emptyState) {
-            this.cardList = Collections.unmodifiableList(new ArrayList<T>(cardList));
-            this.emptyState = emptyState;
-        }
-    }
-
-    /** 过敏提醒卡片；结构化内容不可用时仍保留报告原文和来源。 */
-    @Getter
-    public static final class AllergenCard {
-        private final AllergenKey enumKey;
-        private final boolean foodBorne;
-        private final String rawName;
-        private final String rawResult;
-        private final String sourceLabel;
-        private final List<String> rawTextList;
+    public static final class Entry {
+        private final String dimension;
+        private final String enumKey;
+        private final String direction;
+        private final String section;
+        private final Integer itemNo;
+        private final String quote;
         private final String rawText;
         private final boolean structuredOutputSuppressed;
-        private final boolean structuredContentAvailable;
-        private final List<String> avoidIngredientList;
-        private final List<String> hiddenFoodList;
 
-        private AllergenCard(AllergenKey enumKey, boolean foodBorne, String rawName,
-                             String rawResult, String sourceLabel, List<String> rawTextList,
-                             String rawText, boolean structuredOutputSuppressed,
-                             boolean structuredContentAvailable, List<String> avoidIngredientList,
-                             List<String> hiddenFoodList) {
+        Entry(String dimension, String enumKey, String direction, String section, Integer itemNo,
+              String quote, String rawText, boolean structuredOutputSuppressed) {
+            this.dimension = dimension;
             this.enumKey = enumKey;
-            this.foodBorne = foodBorne;
-            this.rawName = rawName;
-            this.rawResult = rawResult;
-            this.sourceLabel = sourceLabel;
-            this.rawTextList = immutableCopy(rawTextList);
+            this.direction = direction;
+            this.section = section;
+            this.itemNo = itemNo;
+            this.quote = quote;
             this.rawText = rawText;
             this.structuredOutputSuppressed = structuredOutputSuppressed;
-            this.structuredContentAvailable = structuredContentAvailable;
-            this.avoidIngredientList = immutableCopy(avoidIngredientList);
-            this.hiddenFoodList = immutableCopy(hiddenFoodList);
-        }
-    }
-
-    /** 营养补充卡片；仅审核通过的内容常量会进入各列表。 */
-    @Getter
-    public static final class NutritionCard {
-        private final NutritionKey enumKey;
-        private final String sourceLabel;
-        private final List<String> rawTextList;
-        private final String rawText;
-        private final boolean structuredOutputSuppressed;
-        private final boolean structuredContentAvailable;
-        private final List<String> recommendableFoodList;
-        private final List<String> displayOnlyFoodList;
-        private final List<String> intakeNoteList;
-        private final List<String> pairingTipList;
-        private final String contraindication;
-
-        private NutritionCard(NutritionKey enumKey, String sourceLabel, List<String> rawTextList,
-                              String rawText, boolean structuredOutputSuppressed,
-                              boolean structuredContentAvailable,
-                              List<String> recommendableFoodList,
-                              List<String> displayOnlyFoodList, List<String> intakeNoteList,
-                              List<String> pairingTipList, String contraindication) {
-            this.enumKey = enumKey;
-            this.sourceLabel = sourceLabel;
-            this.rawTextList = immutableCopy(rawTextList);
-            this.rawText = rawText;
-            this.structuredOutputSuppressed = structuredOutputSuppressed;
-            this.structuredContentAvailable = structuredContentAvailable;
-            this.recommendableFoodList = immutableCopy(recommendableFoodList);
-            this.displayOnlyFoodList = immutableCopy(displayOnlyFoodList);
-            this.intakeNoteList = immutableCopy(intakeNoteList);
-            this.pairingTipList = immutableCopy(pairingTipList);
-            this.contraindication = contraindication;
-        }
-    }
-
-    /** 饮食注意卡片；仅审核通过的内容常量会进入各列表。 */
-    @Getter
-    public static final class DietCard {
-        private final DietRequirementKey enumKey;
-        private final String sourceLabel;
-        private final List<String> rawTextList;
-        private final String rawText;
-        private final boolean structuredOutputSuppressed;
-        private final boolean structuredContentAvailable;
-        private final List<String> displayOnlyFoodList;
-        private final List<String> avoidFoodList;
-        private final List<String> avoidDishPatternList;
-        private final List<String> cookingTipList;
-        private final List<String> behaviorTipList;
-        private final String contraindication;
-
-        private DietCard(DietRequirementKey enumKey, String sourceLabel,
-                         List<String> rawTextList, String rawText,
-                         boolean structuredOutputSuppressed, boolean structuredContentAvailable,
-                         List<String> displayOnlyFoodList, List<String> avoidFoodList,
-                         List<String> avoidDishPatternList, List<String> cookingTipList,
-                         List<String> behaviorTipList, String contraindication) {
-            this.enumKey = enumKey;
-            this.sourceLabel = sourceLabel;
-            this.rawTextList = immutableCopy(rawTextList);
-            this.rawText = rawText;
-            this.structuredOutputSuppressed = structuredOutputSuppressed;
-            this.structuredContentAvailable = structuredContentAvailable;
-            this.displayOnlyFoodList = immutableCopy(displayOnlyFoodList);
-            this.avoidFoodList = immutableCopy(avoidFoodList);
-            this.avoidDishPatternList = immutableCopy(avoidDishPatternList);
-            this.cookingTipList = immutableCopy(cookingTipList);
-            this.behaviorTipList = immutableCopy(behaviorTipList);
-            this.contraindication = contraindication;
         }
     }
 }

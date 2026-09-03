@@ -13,14 +13,13 @@ public final class AllergenGroup {
 
     private final AllergenKey key;
     private final String displayName;
-    /** false 表示非食物过敏原（尘螨、花粉等），只展示，不进菜品链路 */
-    private final boolean foodBorne;
     private final List<AllergenWord> wordList;
 
-    AllergenGroup(AllergenKey key, String displayName, boolean foodBorne, List<AllergenWord> wordList) {
+    // 是否食入性不再是字段（设计方案 §7.2）：由 AllergenGroups.FOOD_BORNE_KEYS 的
+    // 成员关系判断，避免同一事实存两处、改一处漏一处。
+    AllergenGroup(AllergenKey key, String displayName, List<AllergenWord> wordList) {
         this.key = key;
         this.displayName = displayName;
-        this.foodBorne = foodBorne;
         this.wordList = Collections.unmodifiableList(wordList);
     }
 }

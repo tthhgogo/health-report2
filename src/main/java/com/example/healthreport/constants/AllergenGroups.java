@@ -4,8 +4,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 过敏原组与词条常量。
@@ -23,7 +25,7 @@ public final class AllergenGroups {
 	}
 
 	/** 虾蟹类，19 个词条；蟹柳、蟹棒与海鲜酱在本组明确拒绝。 */
-	public static final AllergenGroup SHRIMP_CRAB = new AllergenGroup(AllergenKey.SHRIMP_CRAB, "虾蟹类", true,
+	public static final AllergenGroup SHRIMP_CRAB = new AllergenGroup(AllergenKey.SHRIMP_CRAB, "虾蟹类",
 			Arrays.asList(
 					AllergenWord.of("虾", "虾", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 							ReviewStatus.REVIEWED),
@@ -65,7 +67,7 @@ public final class AllergenGroups {
 							ReviewStatus.REVIEWED)));
 
 	/** 鱼类，8 个词条。 */
-	public static final AllergenGroup FISH = new AllergenGroup(AllergenKey.FISH, "鱼类", true, Arrays.asList(
+	public static final AllergenGroup FISH = new AllergenGroup(AllergenKey.FISH, "鱼类", Arrays.asList(
 			AllergenWord.of("鱼", "鱼", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("鱼肉", "鱼肉", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("鱼丸", "鱼丸", Bucket.HIDDEN, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
@@ -81,7 +83,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 牛奶及乳制品，15 个词条。 */
-	public static final AllergenGroup MILK = new AllergenGroup(AllergenKey.MILK, "牛奶及乳制品", true, Arrays.asList(
+	public static final AllergenGroup MILK = new AllergenGroup(AllergenKey.MILK, "牛奶及乳制品", Arrays.asList(
 			AllergenWord.of("牛奶", "牛奶", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("奶油", "奶油", Bucket.AVOID, EvidenceLevel.POSSIBLE, MatchMode.MODEL_ONLY,
 					ReviewStatus.REVIEWED), // 配方差异大，名称不保证含有；只作为线索进 LLM-B 提示词
@@ -106,7 +108,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 蛋类及其制品，14 个词条。 */
-	public static final AllergenGroup EGG = new AllergenGroup(AllergenKey.EGG, "蛋类及其制品", true, Arrays.asList(
+	public static final AllergenGroup EGG = new AllergenGroup(AllergenKey.EGG, "蛋类及其制品", Arrays.asList(
 			AllergenWord.of("鸡蛋", "鸡蛋", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("蛋液", "蛋液", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("蛋清", "蛋清", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
@@ -132,7 +134,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 花生，6 个词条。 */
-	public static final AllergenGroup PEANUT = new AllergenGroup(AllergenKey.PEANUT, "花生", true, Arrays.asList(
+	public static final AllergenGroup PEANUT = new AllergenGroup(AllergenKey.PEANUT, "花生", Arrays.asList(
 			AllergenWord.of("花生", "花生", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("花生米", "花生米", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 					ReviewStatus.REVIEWED),
@@ -146,7 +148,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 大豆，11 个词条。 */
-	public static final AllergenGroup SOY = new AllergenGroup(AllergenKey.SOY, "大豆", true, Arrays.asList(
+	public static final AllergenGroup SOY = new AllergenGroup(AllergenKey.SOY, "大豆", Arrays.asList(
 			AllergenWord.of("大豆", "大豆", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("黄豆", "黄豆", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("豆浆", "豆浆", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
@@ -166,7 +168,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 小麦麸质，12 个词条；红烧、酱爆、卤等做法词不进入本组。 */
-	public static final AllergenGroup WHEAT = new AllergenGroup(AllergenKey.WHEAT, "小麦麸质", true, Arrays.asList(
+	public static final AllergenGroup WHEAT = new AllergenGroup(AllergenKey.WHEAT, "小麦麸质", Arrays.asList(
 			AllergenWord.of("小麦", "小麦", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("面粉", "面粉", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("面包", "面包", Bucket.HIDDEN, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
@@ -190,7 +192,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 坚果，9 个词条。 */
-	public static final AllergenGroup NUTS = new AllergenGroup(AllergenKey.NUTS, "坚果", true, Arrays.asList(
+	public static final AllergenGroup NUTS = new AllergenGroup(AllergenKey.NUTS, "坚果", Arrays.asList(
 			AllergenWord.of("坚果", "坚果", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("核桃", "核桃", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("腰果", "腰果", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
@@ -205,26 +207,26 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 芒果，1 个词条 */
-	public static final AllergenGroup MANGO = new AllergenGroup(AllergenKey.MANGO, "芒果", true,
+	public static final AllergenGroup MANGO = new AllergenGroup(AllergenKey.MANGO, "芒果",
 			Arrays.asList(AllergenWord.of("芒果", "芒果", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 					ReviewStatus.REVIEWED)));
 
 	/** 牛肉，3 个词条 */
-	public static final AllergenGroup BEEF = new AllergenGroup(AllergenKey.BEEF, "牛肉", true, Arrays.asList(
+	public static final AllergenGroup BEEF = new AllergenGroup(AllergenKey.BEEF, "牛肉", Arrays.asList(
 			AllergenWord.of("牛肉", "牛肉", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("牛腩", "牛腩", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("牛排", "牛排", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 					ReviewStatus.REVIEWED)));
 
 	/** 羊肉，3 个词条 */
-	public static final AllergenGroup MUTTON = new AllergenGroup(AllergenKey.MUTTON, "羊肉", true, Arrays.asList(
+	public static final AllergenGroup MUTTON = new AllergenGroup(AllergenKey.MUTTON, "羊肉", Arrays.asList(
 			AllergenWord.of("羊肉", "羊肉", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("羊排", "羊排", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("羊蝎子", "羊蝎子", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 					ReviewStatus.REVIEWED)));
 
 	/** 软体动物及其制品，17 个词条。 */
-	public static final AllergenGroup MOLLUSK = new AllergenGroup(AllergenKey.MOLLUSK, "软体动物及其制品", true, Arrays.asList(
+	public static final AllergenGroup MOLLUSK = new AllergenGroup(AllergenKey.MOLLUSK, "软体动物及其制品", Arrays.asList(
 			AllergenWord.of("软体动物", "软体动物", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 					ReviewStatus.REVIEWED),
 			AllergenWord.of("贝类", "贝类", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
@@ -249,7 +251,7 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 芝麻及其制品，8 个词条。 */
-	public static final AllergenGroup SESAME = new AllergenGroup(AllergenKey.SESAME, "芝麻及其制品", true, Arrays.asList(
+	public static final AllergenGroup SESAME = new AllergenGroup(AllergenKey.SESAME, "芝麻及其制品", Arrays.asList(
 			AllergenWord.of("芝麻", "芝麻", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING, ReviewStatus.REVIEWED),
 			AllergenWord.of("白芝麻", "白芝麻", Bucket.AVOID, EvidenceLevel.DIRECT, MatchMode.SUBSTRING,
 					ReviewStatus.REVIEWED),
@@ -267,23 +269,23 @@ public final class AllergenGroups {
 					ReviewStatus.REVIEWED)));
 
 	/** 尘螨（非食物过敏原），0 个词条 */
-	public static final AllergenGroup DUST_MITE = new AllergenGroup(AllergenKey.DUST_MITE, "尘螨", false,
+	public static final AllergenGroup DUST_MITE = new AllergenGroup(AllergenKey.DUST_MITE, "尘螨",
 			new ArrayList<AllergenWord>(0));
 
 	/** 花粉（非食物过敏原），0 个词条 */
-	public static final AllergenGroup POLLEN = new AllergenGroup(AllergenKey.POLLEN, "花粉", false,
+	public static final AllergenGroup POLLEN = new AllergenGroup(AllergenKey.POLLEN, "花粉",
 			new ArrayList<AllergenWord>(0));
 
 	/** 动物皮屑（非食物过敏原），0 个词条 */
-	public static final AllergenGroup ANIMAL_DANDER = new AllergenGroup(AllergenKey.ANIMAL_DANDER, "动物皮屑", false,
+	public static final AllergenGroup ANIMAL_DANDER = new AllergenGroup(AllergenKey.ANIMAL_DANDER, "动物皮屑",
 			new ArrayList<AllergenWord>(0));
 
 	/** 霉菌（非食物过敏原），0 个词条 */
-	public static final AllergenGroup MOLD = new AllergenGroup(AllergenKey.MOLD, "霉菌", false,
+	public static final AllergenGroup MOLD = new AllergenGroup(AllergenKey.MOLD, "霉菌",
 			new ArrayList<AllergenWord>(0));
 
 	/** 蟑螂（非食物过敏原），0 个词条 */
-	public static final AllergenGroup COCKROACH = new AllergenGroup(AllergenKey.COCKROACH, "蟑螂", false,
+	public static final AllergenGroup COCKROACH = new AllergenGroup(AllergenKey.COCKROACH, "蟑螂",
 			new ArrayList<AllergenWord>(0));
 
 	/** 全部组，按声明顺序。 */
@@ -311,15 +313,28 @@ public final class AllergenGroups {
 		ALL = Collections.unmodifiableMap(map);
 	}
 
-	/** 参与菜品匹配的食入性组。非食物过敏原只展示，不进菜品链路。 */
-	public static List<AllergenGroup> foodBorneGroups() {
-		List<AllergenGroup> resultList = new ArrayList<>(ALL.size());
+	/** 13 个食入性过敏原 Key 的唯一真源；非食物过敏原只展示，不进菜品链路。 */
+	public static final Set<AllergenKey> FOOD_BORNE_KEYS = Collections.unmodifiableSet(EnumSet.of(
+			AllergenKey.SHRIMP_CRAB, AllergenKey.FISH, AllergenKey.MILK, AllergenKey.EGG,
+			AllergenKey.PEANUT, AllergenKey.SOY, AllergenKey.WHEAT, AllergenKey.NUTS,
+			AllergenKey.MANGO, AllergenKey.BEEF, AllergenKey.MUTTON, AllergenKey.MOLLUSK,
+			AllergenKey.SESAME));
+
+	/** 参与菜品匹配的食入性组，按声明顺序的不可变列表。 */
+	private static final List<AllergenGroup> FOOD_BORNE_GROUP_LIST;
+	static {
+		List<AllergenGroup> groupList = new ArrayList<>(FOOD_BORNE_KEYS.size());
 		for (AllergenGroup group : ALL.values()) {
-			if (group.isFoodBorne()) {
-				resultList.add(group);
+			if (FOOD_BORNE_KEYS.contains(group.getKey())) {
+				groupList.add(group);
 			}
 		}
-		return resultList;
+		FOOD_BORNE_GROUP_LIST = Collections.unmodifiableList(groupList);
+	}
+
+	/** 参与菜品匹配的食入性组。 */
+	public static List<AllergenGroup> foodBorneGroups() {
+		return FOOD_BORNE_GROUP_LIST;
 	}
 
 }

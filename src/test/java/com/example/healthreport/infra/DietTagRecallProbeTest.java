@@ -54,7 +54,7 @@ import java.util.Set;
 @Tag("image-probe")
 class DietTagRecallProbeTest {
 
-    private static final String PROMPT_DEFAULT = "prompt/diet-tags-probe.md";
+    private static final String PROMPT_DEFAULT = "prompt/diet-tags.md";
     private static final String SCHEMA_DEFAULT = "schema/diet_tags_probe.schema.json";
     private static final String OUTPUT_DIR_DEFAULT = "target/diet-tag-recall";
     private static final Set<String> TOP_FIELDS = fields("reportStatus", "recommend", "reject");
@@ -65,7 +65,7 @@ class DietTagRecallProbeTest {
     /** 食入性过敏原枚举；非食物过敏原（尘螨、花粉等）本模块不收，给不出「需避免的食材」。 */
     private static final Set<String> ALLERGEN_KEYS = fields("SHRIMP_CRAB", "FISH", "MILK", "EGG",
             "PEANUT", "SOY", "WHEAT", "NUTS", "MANGO", "BEEF", "MUTTON", "MOLLUSK", "SESAME",
-            "OTHER");
+            "DUST_MITE", "POLLEN", "ANIMAL_DANDER", "MOLD", "COCKROACH", "OTHER");
     private static final Set<String> NUTRITION_KEYS = fields("IRON", "CALCIUM", "PROTEIN",
             "VITAMIN_D", "VITAMIN_B12", "FOLATE", "DIETARY_FIBER", "ZINC", "POTASSIUM", "OTHER");
     private static final Set<String> DIET_KEYS = fields("LOW_FAT", "LOW_SODIUM", "LOW_ADDED_SUGAR",
@@ -80,7 +80,7 @@ class DietTagRecallProbeTest {
      */
     private static final Set<String> DIET_RECOMMEND_KEYS = fields("LOW_PURINE", "HIGH_FIBER");
 
-    /** 非食物过敏原：出现在输出里就说明规则 1 没执行，本模块给不出「需避免的食材」。 */
+    /** 非食入性过敏原：生产契约收进 reject 仅展示，不产生食材（设计方案 §4.2、§7.2）。 */
     private static final Set<String> NON_FOOD_ALLERGENS = fields("DUST_MITE", "POLLEN",
             "ANIMAL_DANDER", "MOLD", "COCKROACH");
 
@@ -120,8 +120,8 @@ class DietTagRecallProbeTest {
                 .as("gateway HTTP status; response body saved under " + outputDir).isEqualTo(200);
 
         // 复用生产解析：finish_reason 非 stop 判死、content / reasoning_content 双通道同一套裁决。
-        String content = new OpenAiCompatibleExtractionModelClient(objectMapper, properties(baseUrl, model, apiKey))
-                .extractContent(result.envelope, 0);
+        String content = new OpenAiCompatibleHealthReportAnalysisModelClient(objectMapper, properties(baseUrl, model, apiKey))
+                .extractContent(result.envelope, "PROBE");
         JsonNode root = objectMapper.readTree(content);
         Files.write(outputDir.resolve("diet-tags.json"),
                 objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
@@ -180,11 +180,12 @@ class DietTagRecallProbeTest {
             softly.assertThat(keysOf(dimension).contains(enumKey))
                     .as(label + ".enumKey=" + enumKey + " does not belong to dimension " + dimension)
                     .isTrue();
-            // 非食物过敏原本模块给不出「需避免的食材」，收进来只会在页面上列一片空清单。
-            softly.assertThat(NON_FOOD_ALLERGENS.contains(enumKey))
-                    .as(label + ".enumKey=" + enumKey + " is a non-food allergen;"
-                            + " this module can only advise on foods")
-                    .isFalse();
+            // 非食入性过敏原是合法输出，但方向恒为 reject（仅展示，不产生食材）。
+            if (NON_FOOD_ALLERGENS.contains(enumKey)) {
+                softly.assertThat(arrayName)
+                        .as(label + ".enumKey=" + enumKey + " non-food allergen must be in reject")
+                        .isEqualTo("reject");
+            }
 
             // ★ 需求 §8-2：方向由维度与枚举确定性推出，放反会把该排除的菜推给用户。
             softly.assertThat(arrayName)
@@ -458,8 +459,8 @@ class DietTagRecallProbeTest {
         }
     }
 
-    private ExtractionProperties properties(String baseUrl, String model, String apiKey) {
-        ExtractionProperties extractionProperties = new ExtractionProperties();
+    private HealthReportAnalysisModelProperties properties(String baseUrl, String model, String apiKey) {
+        HealthReportAnalysisModelProperties extractionProperties = new HealthReportAnalysisModelProperties();
         extractionProperties.setBaseUrl(baseUrl);
         extractionProperties.setModel(model);
         extractionProperties.setApiKey(apiKey);

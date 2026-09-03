@@ -5,12 +5,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.infra.S3FileStorage;
-import com.example.healthreport.parse.CapacityPrecheckService;
-import com.example.healthreport.parse.ContentType;
-import com.example.healthreport.parse.FormatDetector;
-import com.example.healthreport.parse.OcrProperties;
-import com.example.healthreport.parse.OcrRequestEncoding;
-import com.example.healthreport.parse.ReadabilityChecker;
+import com.example.healthreport.render.CapacityPrecheckService;
+import com.example.healthreport.render.ContentType;
+import com.example.healthreport.render.FormatDetector;
 import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.support.FailCode;
@@ -53,8 +50,6 @@ class FileUploadServiceTest {
 
 	private FormatDetector formatDetector;
 
-	private ReadabilityChecker readabilityChecker;
-
 	private CapacityPrecheckService capacityPrecheckService;
 
 	private CtHealthReportFileService fileService;
@@ -63,27 +58,23 @@ class FileUploadServiceTest {
 
 	private IdCanonicalizer idCanonicalizer;
 
-	private OcrProperties ocrProperties;
-
 	private FileUploadService service;
 
 	@BeforeEach
 	void setUp() {
 		formatDetector = mock(FormatDetector.class);
-		readabilityChecker = mock(ReadabilityChecker.class);
 		capacityPrecheckService = mock(CapacityPrecheckService.class);
 		fileService = mock(CtHealthReportFileService.class);
 		fileStorage = new RecordingFileStorage();
 		idCanonicalizer = mock(IdCanonicalizer.class);
-		ocrProperties = ocrPropertiesWithSixMibEffectiveLimit();
 		when(idCanonicalizer.newFileId()).thenReturn(FILE_ID);
 		// 让插库与写对象记进同一份日志，才能断言跨对象的先后顺序。
 		doAnswer(invocation -> {
 			fileStorage.callLog.add("insert");
 			return 1;
 		}).when(fileService).insertFromApi(any(CtHealthReportFileEntity.class));
-		service = new FileUploadService(formatDetector, readabilityChecker, capacityPrecheckService, fileService,
-				fileStorage, idCanonicalizer, ocrProperties,
+		service = new FileUploadService(formatDetector, capacityPrecheckService, fileService,
+				fileStorage, idCanonicalizer,
 				Clock.fixed(Instant.parse("2026-08-26T00:00:00Z"), ZoneOffset.UTC));
 	}
 
@@ -111,45 +102,30 @@ class FileUploadServiceTest {
 		assertThat(entity.getContentHash()).hasSize(64);
 		assertThat(entity.getCloudFileKey()).isEqualTo("health-report/" + FILE_ID);
 		assertThat(entity.getExpireAt()).isEqualTo("2026-08-26T00:30:00");
-		verify(readabilityChecker).check(contentBytes, ContentType.PDF);
 		assertThat(fileStorage.writtenKey).isEqualTo(entity.getCloudFileKey());
 		assertThat(fileStorage.writtenBytes).isEqualTo(contentBytes);
 	}
 
 	@Test
-	void shouldApplyCalculatedLowerEffectiveImageLimitBeforeStorage() {
-		byte[] contentBytes = new byte[8 * 1024 * 1024];
+	void shouldApplyProductImageLimitBeforeStorage() {
+		// OCR 退出后图片上限只剩产品口径 10MB；模型请求体约束由压缩器与客户端上限承担。
+		byte[] contentBytes = new byte[11 * 1024 * 1024];
 		contentBytes[0] = (byte) 0xFF;
 		contentBytes[1] = (byte) 0xD8;
 		when(formatDetector.detect(contentBytes)).thenReturn(ContentType.JPG);
 
-		assertThat(ocrProperties.getEffectiveOcrImageBytes()).isEqualTo(6L * 1024L * 1024L);
-
 		assertThatThrownBy(() -> service.upload(file(contentBytes), USER_ID, COMPANY_ID)).isInstanceOfSatisfying(
 				HealthReportException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_TOO_LARGE));
-		verify(readabilityChecker, never()).check(any(byte[].class), any(ContentType.class));
 		assertThat(fileStorage.writeCount).isZero();
 		verify(fileService, never()).insertFromApi(any(CtHealthReportFileEntity.class));
-	}
-
-	private OcrProperties ocrPropertiesWithSixMibEffectiveLimit() {
-		OcrProperties properties = new OcrProperties();
-		properties.setMaxEncodedImageBytes(6L * 1024L * 1024L);
-		properties.setMaxRequestBodyBytes(7L * 1024L * 1024L);
-		properties.setRequestEncoding(OcrRequestEncoding.MULTIPART);
-		properties.setAcceptsEncodedBytes(Boolean.TRUE);
-		properties.setAppliesExifOrientation(Boolean.TRUE);
-		properties.setReturnsImageDimensions(Boolean.TRUE);
-		properties.afterPropertiesSet();
-		return properties;
 	}
 
 	@Test
 	void shouldNotWriteStorageWhenCapacityPrecheckFails() {
 		byte[] contentBytes = new byte[] { 1 };
-		when(formatDetector.detect(contentBytes)).thenReturn(ContentType.DOCX);
-		when(capacityPrecheckService.precheckPages(contentBytes, ContentType.DOCX))
+		when(formatDetector.detect(contentBytes)).thenReturn(ContentType.PDF);
+		when(capacityPrecheckService.precheckPages(contentBytes, ContentType.PDF))
 			.thenThrow(new HealthReportException(FailCode.PAGE_LIMIT_EXCEEDED, 400));
 
 		assertThatThrownBy(() -> service.upload(file(contentBytes), USER_ID, COMPANY_ID)).isInstanceOfSatisfying(

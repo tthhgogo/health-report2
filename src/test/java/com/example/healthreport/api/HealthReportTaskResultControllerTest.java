@@ -76,7 +76,6 @@ class HealthReportTaskResultControllerTest {
 			.andExpect(status().isOk())
 			.andExpect(jsonPath("$.partial").value(false))
 			.andExpect(jsonPath("$.partialReason").doesNotExist())
-			.andExpect(jsonPath("$.suppressDietAdvice").value(false))
 			.andExpect(jsonPath("$.suppressDishRecommend").value(false))
 			.andExpect(jsonPath("$.processedPages").value(0))
 			.andExpect(jsonPath("$.totalPages").value(0));

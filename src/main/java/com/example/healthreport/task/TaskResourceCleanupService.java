@@ -40,27 +40,43 @@ public class TaskResourceCleanupService {
      * 提交的本来就是部分删除的结果。真要回滚反而更糟——已经从 S3 删掉的对象回滚不了，
      * 数据库却把行恢复了，留下指向不存在对象的行。</p>
      *
-     * <p>并发安全由 {@code deleteByFileAndTask} 的条件删返回行数保证，与事务无关。
-     * 单个文件失败只影响它自己，其余照删，剩下的留给下一轮巡检。</p>
+     * <p><b>删对象之前必须先认领。</b>条件删只能事后发现归属变化，发现时 S3 对象已经没了：
+     * FAILED 可重析任务被删除的同时用户重新发起分析，同一 fileId 在「查出行」与「删对象」
+     * 之间绑上新任务，旧清理却把对象删掉——新任务指向不存在的对象，且不可恢复。
+     * {@code claimForCleanup} 用单行 CAS 把行置为 CLEANING（S3 调用期间不持任何数据库锁），
+     * 绑定要求 {@code status='UPLOADED'}，认领成功后重绑必然失败；认领 0 行说明归属已变，
+     * 跳过、绝不触碰对象存储。S3 删除失败保留 CLEANING 行，下一轮巡检重新认领重试。</p>
      *
      * @return 是否全部清理成功；失败项保留供后续生命周期巡检继续清理
      */
     public boolean deleteFiles(String taskId) {
         final List<CtHealthReportFileEntity> fileEntityList;
         try {
-            fileEntityList = fileService.findByTaskId(taskId);
+            List<CtHealthReportFileEntity> foundList = fileService.findByTaskId(taskId);
+            // 外部返回值边界校验（§0.3.1）：null 视同无待清理行，与 TaskRenderService 口径一致。
+            fileEntityList = foundList == null
+                    ? java.util.Collections.<CtHealthReportFileEntity>emptyList() : foundList;
         } catch (RuntimeException exception) {
             logCleanupFailure("待清理文件查询失败", exception);
             return false;
         }
         boolean allDeleted = true;
         int deletedCount = 0;
+        int skippedCount = 0;
         for (CtHealthReportFileEntity fileEntity : fileEntityList) {
             try {
+                int claimedRows = fileService.claimForCleanup(fileEntity.getFileId(), taskId);
+                if (claimedRows != 1) {
+                    // 行已被重新绑定或已删除：对象归新任务所有，本任务的清理义务对它已消失。
+                    skippedCount++;
+                    log.info("清理认领落空已跳过，taskId={}，fileId={}", taskId, fileEntity.getFileId());
+                    continue;
+                }
                 fileStorage.delete(fileEntity.getCloudFileKey());
                 int affectedRows = fileService.deleteByFileAndTask(fileEntity.getFileId(), taskId);
                 if (affectedRows != 1) {
-                    throw new IllegalStateException("文件归属在清理事务内发生变化");
+                    // 认领成功后行不可能被改走，这里只剩不变量校验。
+                    throw new IllegalStateException("文件归属在清理认领后发生变化");
                 }
                 deletedCount++;
             } catch (RuntimeException exception) {
@@ -71,14 +87,20 @@ public class TaskResourceCleanupService {
         // 报告原文被删干净了没有，是数据生命周期承诺里唯一可核查的一条（§4.5）。
         // 只有这条日志能证明它发生过——file 行删完之后就再也查不出来了。
         // 【不记 cloudFileKey】它是 health-report/{fileId}，等价于记 fileId，没有必要。
-        log.info("任务原文件清理完成，taskId={}，待清理数={}，已删除数={}，全部成功={}",
-                taskId, fileEntityList.size(), deletedCount, allDeleted);
+        log.info("任务原文件清理完成，taskId={}，待清理数={}，已删除数={}，认领落空数={}，全部成功={}",
+                taskId, fileEntityList.size(), deletedCount, skippedCount, allDeleted);
         return allDeleted;
     }
 
-    /** 删除已过期孤儿上传；失败行保留供下一轮继续处理。 */
+    /** 删除已过期孤儿上传；失败行保留供下一轮继续处理。认领语义同 {@link #deleteFiles}。 */
     public boolean deleteOrphan(CtHealthReportFileEntity fileEntity) {
         try {
+            int claimedRows = fileService.claimOrphanForCleanup(fileEntity.getFileId());
+            if (claimedRows != 1) {
+                // 过期边界上被绑走或已删：不再是孤儿，绝不触碰对象存储。
+                log.info("孤儿清理认领落空已跳过，fileId={}", fileEntity.getFileId());
+                return true;
+            }
             fileStorage.delete(fileEntity.getCloudFileKey());
             fileService.deleteOrphan(fileEntity.getFileId());
             // 孤儿是「插了 file 行但对象没写成 / 建了任务但没提交」留下的（§4.1）。

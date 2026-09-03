@@ -15,7 +15,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 分析业务线程池配置。
- * <p>完整任务与 LLM 批次必须使用不同线程池，避免父任务占满线程后等待子批次造成饥饿死锁。</p>
+ * <p>只有一个有界任务池（P0-33e）：三阶段模型调用在任务线程内严格串行，
+ * 不存在批次并发池；心跳走独立调度线程，避免被阻塞的任务线程拖死。</p>
  */
 @Slf4j
 @Configuration
@@ -33,16 +34,6 @@ public class ExecutorConfig {
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
-    /** 创建独立的 W×4 LLM 批次池。 */
-    @Bean(name = "llmBatchExecutor", destroyMethod = "shutdown")
-    public ThreadPoolExecutor llmBatchExecutor(AnalysisExecutorProperties properties) {
-        int batchWorkerCount = properties.calculateWorkerCount() * 4;
-        return new ThreadPoolExecutor(batchWorkerCount, batchWorkerCount, 0L, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<Runnable>(batchWorkerCount),
-                namedThreadFactory("health-llm-batch-"),
-                new ThreadPoolExecutor.AbortPolicy());
-    }
-
     /** 心跳独占调度线程，不依赖被阻塞的任务池或批次池。 */
     @Bean(name = "analysisHeartbeatScheduler", destroyMethod = "shutdown")
     public ScheduledExecutorService analysisHeartbeatScheduler() {
@@ -50,12 +41,11 @@ public class ExecutorConfig {
     }
 
     private void logCapacity(AnalysisExecutorProperties properties, int workerCount) {
-        int quotaUpperBound = properties.getModelConcurrencyQuota() / (4 * properties.getInstanceCount());
+        int quotaUpperBound = properties.getModelConcurrencyQuota() / properties.getInstanceCount();
         int memoryUpperBound = (properties.getHeapBudgetMb() - properties.getWebReservedMb())
                 / properties.getTaskPeakMb();
-        log.info("分析线程池容量已确定：模型配额上界={}，内存上界={}，任务线程数={}，批次线程数={}，队列容量={}",
-                quotaUpperBound, memoryUpperBound, workerCount, workerCount * 4,
-                properties.getQueueCapacity());
+        log.info("分析线程池容量已确定：模型配额上界={}，内存上界={}，任务线程数={}，队列容量={}",
+                quotaUpperBound, memoryUpperBound, workerCount, properties.getQueueCapacity());
     }
 
     private ThreadFactory namedThreadFactory(final String prefix) {

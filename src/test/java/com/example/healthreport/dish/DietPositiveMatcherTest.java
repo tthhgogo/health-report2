@@ -30,7 +30,7 @@ class DietPositiveMatcherTest {
 	@Test
 	void everyNonNeutralSafetyStateShouldRefuseToRecommend() {
 		Dish dish = dish("冬瓜炖蛋", "冬瓜", "200", "鸡蛋", "100");
-		for (TagState state : Arrays.asList(TagState.REJECT, TagState.UNKNOWN, TagState.TAG_MISSING,
+		for (TagState state : Arrays.asList(TagState.REJECT, TagState.UNKNOWN,
 				TagState.RECOMMEND)) {
 			assertThat(matcher.match(dish, DietRequirementKey.LOW_PURINE, state).getState())
 				.isEqualTo(TagState.NEUTRAL);

@@ -1,25 +1,22 @@
 package com.example.healthreport.task;
 
 import com.example.healthreport.infra.S3FileStorage;
-import com.example.healthreport.parse.CapacityPrecheckService;
-import com.example.healthreport.parse.ContentType;
-import com.example.healthreport.parse.FormatDetector;
-import com.example.healthreport.parse.OcrProperties;
-import com.example.healthreport.parse.ReadabilityChecker;
+import com.example.healthreport.render.CapacityPrecheckService;
+import com.example.healthreport.render.ContentType;
+import com.example.healthreport.render.FormatDetector;
 import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import com.example.healthreport.support.IdCanonicalizer;
 import com.example.healthreport.support.SensitiveLog;
+import com.example.healthreport.support.Sha256Hex;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 
@@ -30,12 +27,13 @@ import java.time.LocalDateTime;
 @Service
 public class FileUploadService {
 
+	/** PDF/OFD 单文件 20MiB 上限，来自设计方案 §3.1 产品容量口径。 */
 	static final long DOCUMENT_MAX_BYTES = 20L * 1024L * 1024L;
+
+	/** JPG/PNG 单文件 10MiB 上限，来自设计方案 §3.1 产品容量口径。 */
 	static final long PRODUCT_IMAGE_MAX_BYTES = 10L * 1024L * 1024L;
 
 	private final FormatDetector formatDetector;
-
-	private final ReadabilityChecker readabilityChecker;
 
 	private final CapacityPrecheckService capacityPrecheckService;
 
@@ -45,29 +43,25 @@ public class FileUploadService {
 
 	private final IdCanonicalizer idCanonicalizer;
 
-	private final OcrProperties ocrProperties;
-
 	private final Clock clock;
 
 	@Autowired
-	public FileUploadService(FormatDetector formatDetector, ReadabilityChecker readabilityChecker,
+	public FileUploadService(FormatDetector formatDetector,
 			CapacityPrecheckService capacityPrecheckService, CtHealthReportFileService fileService,
-			S3FileStorage fileStorage, IdCanonicalizer idCanonicalizer, OcrProperties ocrProperties) {
-		this(formatDetector, readabilityChecker, capacityPrecheckService, fileService, fileStorage, idCanonicalizer,
-				ocrProperties, Clock.systemDefaultZone());
+			S3FileStorage fileStorage, IdCanonicalizer idCanonicalizer) {
+		this(formatDetector, capacityPrecheckService, fileService, fileStorage, idCanonicalizer,
+				Clock.systemDefaultZone());
 	}
 
 	/** 可注入时钟的构造器，仅用于确定性测试。 */
-	public FileUploadService(FormatDetector formatDetector, ReadabilityChecker readabilityChecker,
+	public FileUploadService(FormatDetector formatDetector,
 			CapacityPrecheckService capacityPrecheckService, CtHealthReportFileService fileService,
-			S3FileStorage fileStorage, IdCanonicalizer idCanonicalizer, OcrProperties ocrProperties, Clock clock) {
+			S3FileStorage fileStorage, IdCanonicalizer idCanonicalizer, Clock clock) {
 		this.formatDetector = formatDetector;
-		this.readabilityChecker = readabilityChecker;
 		this.capacityPrecheckService = capacityPrecheckService;
 		this.fileService = fileService;
 		this.fileStorage = fileStorage;
 		this.idCanonicalizer = idCanonicalizer;
-		this.ocrProperties = ocrProperties;
 		this.clock = clock;
 	}
 
@@ -91,7 +85,7 @@ public class FileUploadService {
 		byte[] contentBytes = readBytes(multipartFile);
 		ContentType contentType = formatDetector.detect(contentBytes);
 		assertByteLimit(contentBytes.length, contentType);
-		readabilityChecker.check(contentBytes, contentType);
+		// 可读性与页数预检一次解析同时完成（CapacityPrecheckService，前置条件是上面的 detect）。
 		int precheckPages = capacityPrecheckService.precheckPages(contentBytes, contentType);
 
 		String fileId = idCanonicalizer.newFileId();
@@ -153,14 +147,10 @@ public class FileUploadService {
 	}
 
 	private void assertByteLimit(int contentLength, ContentType contentType) {
-		long maxBytes = DOCUMENT_MAX_BYTES;
-		if (contentType == ContentType.JPG || contentType == ContentType.PNG) {
-			long effectiveOcrImageBytes = ocrProperties.getEffectiveOcrImageBytes();
-			if (effectiveOcrImageBytes <= 0L) {
-				throw new HealthReportException(FailCode.SERVER_ERROR, 500);
-			}
-			maxBytes = Math.min(PRODUCT_IMAGE_MAX_BYTES, effectiveOcrImageBytes);
-		}
+		// OCR 退出后图片上限只剩产品口径：模型请求体的约束由压缩器（单页 ≤1MiB）
+		// 与客户端请求体上限承担，上传原始字节数与请求体积已经解耦，不再反推。
+		long maxBytes = contentType == ContentType.JPG || contentType == ContentType.PNG
+				? PRODUCT_IMAGE_MAX_BYTES : DOCUMENT_MAX_BYTES;
 		if ((long) contentLength > maxBytes) {
 			throw new HealthReportException(FailCode.FILE_TOO_LARGE, 400);
 		}
@@ -180,25 +170,10 @@ public class FileUploadService {
 		fileEntity.setContentType(contentType.name());
 		fileEntity.setSizeBytes((long) contentBytes.length);
 		fileEntity.setPrecheckPages(precheckPages);
-		fileEntity.setContentHash(sha256(contentBytes));
+		fileEntity.setContentHash(Sha256Hex.of(contentBytes));
 		fileEntity.setCloudFileKey(objectKey);
 		fileEntity.setExpireAt(LocalDateTime.now(clock).plusMinutes(30L));
 		return fileEntity;
-	}
-
-	private String sha256(byte[] contentBytes) {
-		try {
-			MessageDigest digest = MessageDigest.getInstance("SHA-256");
-			byte[] hashBytes = digest.digest(contentBytes);
-			StringBuilder result = new StringBuilder(hashBytes.length * 2);
-			for (byte hashByte : hashBytes) {
-				result.append(String.format("%02x", hashByte & 0xFF));
-			}
-			return result.toString();
-		}
-		catch (NoSuchAlgorithmException exception) {
-			throw new IllegalStateException("运行环境缺少SHA-256", exception);
-		}
 	}
 
 	/**

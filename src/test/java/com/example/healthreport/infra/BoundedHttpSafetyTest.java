@@ -23,7 +23,7 @@ class BoundedHttpSafetyTest {
 
         assertThat(handler.hasError(response)).isTrue();
         assertThatThrownBy(() -> handler.handleError(response))
-                .isInstanceOfSatisfying(LlmCallException.class,
+                .isInstanceOfSatisfying(HealthReportAnalysisCallException.class,
                         exception -> assertThat(exception.getHttpStatus()).isEqualTo(500));
     }
 

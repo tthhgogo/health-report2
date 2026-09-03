@@ -23,7 +23,7 @@ public class FileBindingService {
 
 	static final int MIN_FILE_COUNT = 1;
 	static final int MAX_FILE_COUNT = 5;
-	static final int MAX_PRECHECK_PAGES = 60;
+	static final int MAX_PRECHECK_PAGES = 30;
 	static final long MAX_TOTAL_BYTES = 60L * 1024L * 1024L;
 
 	private final CtHealthReportFileService fileService;

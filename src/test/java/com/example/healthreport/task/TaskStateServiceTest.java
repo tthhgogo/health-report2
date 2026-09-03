@@ -116,15 +116,15 @@ class TaskStateServiceTest {
     @Test
     void partialPersistenceShouldUseAccumulatorSeverityInsteadOfLastHit() {
         DegradeAccumulator accumulator = new DegradeAccumulator();
-        accumulator.recordPageTruncated();
-        accumulator.recordAllergenSuspectMiss();
+        accumulator.recordSchemaItemDropped();
+        accumulator.recordDietTagDropped();
         when(taskService.markPartial(TASK_ID,
-                com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name())).thenReturn(1);
+                com.example.healthreport.support.PartialReason.DIET_TAG_DROPPED.name())).thenReturn(1);
 
         assertThat(stateService.markPartial(TASK_ID, accumulator)).isTrue();
 
         verify(taskService).markPartial(TASK_ID,
-                com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name());
+                com.example.healthreport.support.PartialReason.DIET_TAG_DROPPED.name());
     }
 
     @Test
@@ -136,9 +136,9 @@ class TaskStateServiceTest {
         when(taskService.transition(TASK_ID, TaskStatus.EXTRACTING.name(),
                 TaskStatus.ASSEMBLING.name(), TaskStage.ASSEMBLING.name(), 80)).thenReturn(1);
         DegradeAccumulator accumulator = new DegradeAccumulator();
-        accumulator.recordPageTruncated();
+        accumulator.recordSchemaItemDropped();
         when(taskService.markPartial(TASK_ID,
-                com.example.healthreport.support.PartialReason.PAGE_TRUNCATED.name())).thenReturn(1);
+                com.example.healthreport.support.PartialReason.SCHEMA_ITEM_DROPPED.name())).thenReturn(1);
         when(taskService.succeed(eq(TASK_ID), any(LocalDateTime.class), any(LocalDateTime.class)))
                 .thenReturn(1);
 
@@ -160,7 +160,7 @@ class TaskStateServiceTest {
                     .contains("任务领取 CAS 成功", "原状态=QUEUED，新状态=PARSING")
                     .contains("原状态=PARSING，新状态=EXTRACTING")
                     .contains("原状态=EXTRACTING，新状态=ASSEMBLING")
-                    .contains("partialReason=PAGE_TRUNCATED")
+                    .contains("partialReason=SCHEMA_ITEM_DROPPED")
                     .contains("分析结果草稿写入缓存完成")
                     .contains("status=SUCCEEDED")
                     .contains(TASK_ID);

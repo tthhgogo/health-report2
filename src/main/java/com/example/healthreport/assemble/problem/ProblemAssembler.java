@@ -1,126 +1,95 @@
 package com.example.healthreport.assemble.problem;
 
-import com.example.healthreport.assemble.sort.DisplayOrder;
+import com.example.healthreport.assemble.indicator.IndicatorAssembler;
 import com.example.healthreport.constants.DisclaimerConstants;
 import com.example.healthreport.constants.EmptyStateConstants;
-import com.example.healthreport.llm.extraction.SummaryCategory;
-import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
+import com.example.healthreport.llm.extraction.ProblemsResult;
+import com.example.healthreport.render.PageImageSequence;
 import lombok.Getter;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * 模块二健康问题组装器。
- * <p>三类来源只认 LLM-A 的准入字段；本类不从指标状态派生健康问题，也不做风险排序。</p>
+ * 模块二健康问题组装器（设计方案 §6）。
+ * <p>{@code problems} 数组即最终展示列表，准入完全由模型判定。Java 只做三件事：
+ * 拼来源标注、按指标名精确查表关联跳转、下发。展示名直接用 {@code name}
+ * ——不把 status 翻译成「偏高」拼进问题名。</p>
  */
 @Service
 public class ProblemAssembler {
 
-    /** 来源标签中章节与检查项之间的固定连接符，仅用于展示字段拼接。 */
+    /** 来源标注中章节与指标名之间的固定连接符。 */
     private static final String SOURCE_SEPARATOR = "–";
 
-    /** 多段报告原文保持段边界时使用的展示换行符，不改变段内原文。 */
-    private static final String RAW_TEXT_SEPARATOR = "\n";
-
-    private final DisplayOrder displayOrder;
-
-    public ProblemAssembler(DisplayOrder displayOrder) {
-        this.displayOrder = displayOrder;
-    }
-
     /**
-     * 按唯一排序计划组装健康问题，数值与文字检查项在前，总检结论在后。
+     * 组装模块二。
+     *
+     * @param moduleOne 已组装的模块一，用于 indicatorName → indicatorId 的精确查表；
+     *     匹配不到或同名不唯一时不下发跳转按钮，绝不模糊匹配
      */
-    public Result assemble(ValidatedExtractionOutput output, int fileCount) {
-        DisplayOrder.DisplayPlan plan = displayOrder.plan(output, fileCount);
-        List<Item> itemList = new ArrayList<Item>(plan.getSectionFindingList().size()
-                + plan.getSummaryConclusionList().size());
-        for (DisplayOrder.SectionFinding sectionFinding : plan.getSectionFindingList()) {
-            if (sectionFinding.isNumeric()) {
-                ValidatedExtractionOutput.Indicator indicator =
-                        (ValidatedExtractionOutput.Indicator) sectionFinding.getItem();
-                if (indicator.isIncludeInHealthProblems()) {
-                    itemList.add(numeric(output, plan, indicator));
-                }
-            } else {
-                ValidatedExtractionOutput.TextualFinding finding =
-                        (ValidatedExtractionOutput.TextualFinding) sectionFinding.getItem();
-                if (finding.isIncludeInHealthProblems()) {
-                    itemList.add(textual(output, plan, finding));
-                }
-            }
-        }
-        for (ValidatedExtractionOutput.SummaryConclusion summary : plan.getSummaryConclusionList()) {
-            if (summary.isIncludeInHealthProblems() && hasHealthOrDietCategory(summary)) {
-                itemList.add(summary(output, plan, summary));
-            }
+    public Result assemble(ProblemsResult problems, PageImageSequence images, int fileCount,
+                           IndicatorAssembler.Result moduleOne) {
+        Map<String, String> indicatorIdByName = uniqueIndicatorIds(moduleOne);
+        List<Item> itemList = new ArrayList<Item>(problems.getProblems().size());
+        for (ProblemsResult.Problem problem : problems.getProblems()) {
+            itemList.add(toItem(problem, images, fileCount, indicatorIdByName));
         }
         String emptyState = itemList.isEmpty() ? EmptyStateConstants.MODULE_TWO : null;
         return new Result(itemList, emptyState, DisclaimerConstants.MODULE_TWO);
     }
 
-    private Item numeric(ValidatedExtractionOutput output, DisplayOrder.DisplayPlan plan,
-                         ValidatedExtractionOutput.Indicator indicator) {
-        boolean generated = indicator.getProblemName() == null;
-        String displayName = generated
-                ? indicator.getName() + " " + indicator.getConclusionText()
-                : indicator.getProblemName();
-        DisplayOrder.DisplayGroup group = plan.groupOf(indicator);
-        List<String> rawTextList = output.rawTextList(indicator.getSegmentIdList());
-        return new Item(SourceType.INDICATOR_NUMERIC, displayName, generated,
-                group.getDisplayName() + SOURCE_SEPARATOR + indicator.getName(),
-                rawTextList, joinRawText(rawTextList), plan.indicatorIdOf(indicator));
-    }
-
-    private Item textual(ValidatedExtractionOutput output, DisplayOrder.DisplayPlan plan,
-                         ValidatedExtractionOutput.TextualFinding finding) {
-        DisplayOrder.DisplayGroup group = plan.groupOf(finding);
-        List<String> rawTextList = output.rawTextList(finding.getSegmentIdList());
-        return new Item(SourceType.INDICATOR_TEXTUAL, finding.getTitle(), false,
-                group.getDisplayName() + SOURCE_SEPARATOR + finding.getTitle(),
-                rawTextList, joinRawText(rawTextList), null);
-    }
-
-    private Item summary(ValidatedExtractionOutput output, DisplayOrder.DisplayPlan plan,
-                         ValidatedExtractionOutput.SummaryConclusion summary) {
-        DisplayOrder.DisplayGroup group = plan.groupOf(summary);
-        List<String> rawTextList = output.rawTextList(summary.getSegmentIdList());
-        String sourceLabel = group.getDisplayName();
-        if (summary.getItemNo() != null) {
-            sourceLabel += "第" + summary.getItemNo() + "条";
+    private Item toItem(ProblemsResult.Problem problem, PageImageSequence images, int fileCount,
+                        Map<String, String> indicatorIdByName) {
+        String sectionName = problem.getSection() == null || problem.getSection().trim().isEmpty()
+                ? "" : problem.getSection();
+        String sourceLabel;
+        if ("INDICATOR".equals(problem.getSourceType())) {
+            sourceLabel = sectionName.isEmpty()
+                    ? problem.getIndicatorName()
+                    : sectionName + SOURCE_SEPARATOR + problem.getIndicatorName();
+        } else {
+            sourceLabel = problem.getItemNo() == null
+                    ? sectionName
+                    : sectionName + "第" + problem.getItemNo() + "条";
         }
-        String rawText = joinRawText(rawTextList);
-        return new Item(SourceType.SUMMARY, rawText, false, sourceLabel,
-                rawTextList, rawText, null);
+        if (fileCount > 1) {
+            int fileIndex = images.locate(problem.getPage()).getFileIndex();
+            sourceLabel = "报告" + (fileIndex + 1) + "-" + sourceLabel;
+        }
+        // 精确查表：匹配不到就是匹配不到，宁可不显示按钮也不能跳到一张不是它的卡片。
+        String indicatorId = problem.getIndicatorName() == null
+                ? null : indicatorIdByName.get(problem.getIndicatorName());
+        return new Item(problem.getSourceType(), problem.getName(), sourceLabel,
+                problem.getRawText(), indicatorId);
     }
 
-    private boolean hasHealthOrDietCategory(ValidatedExtractionOutput.SummaryConclusion summary) {
-        return summary.getCategoryList().contains(SummaryCategory.HEALTH_PROBLEM)
-                || summary.getCategoryList().contains(SummaryCategory.DIET_ADVICE);
-    }
-
-    private String joinRawText(List<String> rawTextList) {
-        StringBuilder builder = new StringBuilder();
-        for (String rawText : rawTextList) {
-            if (builder.length() > 0) {
-                builder.append(RAW_TEXT_SEPARATOR);
+    /** 模块一里名称唯一的指标才可作为跳转目标；同名多卡时全部放弃。 */
+    private Map<String, String> uniqueIndicatorIds(IndicatorAssembler.Result moduleOne) {
+        Map<String, String> idByName = new HashMap<String, String>();
+        Set<String> duplicatedNameSet = new HashSet<String>();
+        if (moduleOne == null) {
+            return idByName;
+        }
+        for (IndicatorAssembler.Group group : moduleOne.getGroupList()) {
+            for (IndicatorAssembler.Card card : group.getCardList()) {
+                if (idByName.containsKey(card.getName())) {
+                    duplicatedNameSet.add(card.getName());
+                } else {
+                    idByName.put(card.getName(), card.getIndicatorId());
+                }
             }
-            builder.append(rawText);
         }
-        return builder.toString();
-    }
-
-    /** 健康问题来源类型，前端仅为数值指标显示跳转入口。 */
-    public enum SourceType {
-        /** 有数值、有结论的指标。 */
-        INDICATOR_NUMERIC,
-        /** 无数值但有结论的文字检查项。 */
-        INDICATOR_TEXTUAL,
-        /** 报告总检或汇总结论。 */
-        SUMMARY
+        for (String duplicatedName : duplicatedNameSet) {
+            idByName.remove(duplicatedName);
+        }
+        return idByName;
     }
 
     /** 模块二完整返回结构。 */
@@ -130,7 +99,7 @@ public class ProblemAssembler {
         private final String emptyState;
         private final String disclaimer;
 
-        private Result(List<Item> itemList, String emptyState, String disclaimer) {
+        Result(List<Item> itemList, String emptyState, String disclaimer) {
             this.itemList = Collections.unmodifiableList(new ArrayList<Item>(itemList));
             this.emptyState = emptyState;
             this.disclaimer = disclaimer;
@@ -140,22 +109,17 @@ public class ProblemAssembler {
     /** 一条仅引用报告原文的健康问题。 */
     @Getter
     public static final class Item {
-        private final SourceType sourceType;
+        private final String sourceType;
         private final String displayName;
-        private final boolean displayNameGenerated;
         private final String sourceLabel;
-        private final List<String> rawTextList;
         private final String rawText;
         private final String indicatorId;
 
-        private Item(SourceType sourceType, String displayName, boolean displayNameGenerated,
-                     String sourceLabel, List<String> rawTextList, String rawText,
-                     String indicatorId) {
+        Item(String sourceType, String displayName, String sourceLabel, String rawText,
+             String indicatorId) {
             this.sourceType = sourceType;
             this.displayName = displayName;
-            this.displayNameGenerated = displayNameGenerated;
             this.sourceLabel = sourceLabel;
-            this.rawTextList = Collections.unmodifiableList(new ArrayList<String>(rawTextList));
             this.rawText = rawText;
             this.indicatorId = indicatorId;
         }

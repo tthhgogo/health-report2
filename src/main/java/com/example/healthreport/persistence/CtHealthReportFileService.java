@@ -80,6 +80,34 @@ public class CtHealthReportFileService {
 		return fileMapper.selectList(queryWrapper);
 	}
 
+	/**
+	 * 清理认领 CAS：仍归属该任务的行置为 CLEANING，返回受影响行数。
+	 * <p>单行短事务 UPDATE，与绑定的条件更新在行锁上天然串行：认领成功后
+	 * {@code bindConditionally} 的 {@code status='UPLOADED'} 条件必然落空，行不可能再被绑定；
+	 * 返回 0 说明归属已变（被重新绑定或行已删），调用方必须跳过、不得触碰对象存储。
+	 * CLEANING 行可重复认领——S3 删除失败后下一轮巡检靠这个重试。</p>
+	 */
+	public int claimForCleanup(String fileId, String taskId) {
+		LambdaUpdateWrapper<CtHealthReportFileEntity> updateWrapper = new LambdaUpdateWrapper<CtHealthReportFileEntity>();
+		updateWrapper.set(CtHealthReportFileEntity::getStatus, FileStatus.CLEANING.name())
+			.set(CtHealthReportFileEntity::getUpdateBy, SystemActor.HEALTH_REPORT_WORKER)
+			.eq(CtHealthReportFileEntity::getFileId, fileId)
+			.eq(CtHealthReportFileEntity::getTaskId, taskId)
+			.in(CtHealthReportFileEntity::getStatus, FileStatus.UPLOADED.name(), FileStatus.CLEANING.name());
+		return fileMapper.update(null, updateWrapper);
+	}
+
+	/** 孤儿清理认领 CAS：仍未绑定任务的行置为 CLEANING；语义同 {@link #claimForCleanup}。 */
+	public int claimOrphanForCleanup(String fileId) {
+		LambdaUpdateWrapper<CtHealthReportFileEntity> updateWrapper = new LambdaUpdateWrapper<CtHealthReportFileEntity>();
+		updateWrapper.set(CtHealthReportFileEntity::getStatus, FileStatus.CLEANING.name())
+			.set(CtHealthReportFileEntity::getUpdateBy, SystemActor.HEALTH_REPORT_WORKER)
+			.eq(CtHealthReportFileEntity::getFileId, fileId)
+			.isNull(CtHealthReportFileEntity::getTaskId)
+			.in(CtHealthReportFileEntity::getStatus, FileStatus.UPLOADED.name(), FileStatus.CLEANING.name());
+		return fileMapper.update(null, updateWrapper);
+	}
+
 	/** 对象存储删除成功后物理删除仍属于该任务的 file 行。 */
 	public int deleteByFileAndTask(String fileId, String taskId) {
 		LambdaQueryWrapper<CtHealthReportFileEntity> deleteWrapper = new LambdaQueryWrapper<CtHealthReportFileEntity>();

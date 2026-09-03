@@ -1,13 +1,17 @@
 package com.example.healthreport.assemble.dishrecommend;
 
-import com.example.healthreport.dish.TagState;
 import lombok.Getter;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** 模块四组装输入；生产实例由 {@link DishRecommendInputFactory} 完成三类标签事实的合并。 */
+/**
+ * 模块四组装输入；生产实例由 {@link DishRecommendInputFactory} 完成方向集合的合并。
+ *
+ * <p>在线只消费 Redis 的 RECOMMEND / REJECT 方向集合（设计方案 §8.9），
+ * 每个命中只有方向、标签文案与推荐理由三样东西——五态裁决只存在于凌晨构建阶段。</p>
+ */
 @Getter
 public final class DishRecommendInput {
 
@@ -28,7 +32,7 @@ public final class DishRecommendInput {
 		this.candidateList = Collections.unmodifiableList(new ArrayList<Candidate>(candidateList));
 	}
 
-	/** 一道菜及其全部维度事实；必须先完整裁决后才能参与截断。 */
+	/** 一道菜及其全部方向命中；必须先完整裁决后才能参与截断。 */
 	@Getter
 	public static final class Candidate {
 
@@ -49,54 +53,28 @@ public final class DishRecommendInput {
 
 	}
 
-	/** 一个维度用于裁决和展示的确定性事实。 */
+	/** 一个方向集合的命中：方向、标签文案，推荐方向另带报告原文理由。 */
 	@Getter
 	public static final class Match {
 
-		private final TagState state;
-
-		private final boolean rejectCapable;
-
-		private final boolean allergy;
-
-		private final TagType tagType;
+		private final boolean reject;
 
 		private final String tagText;
 
+		/** 推荐理由（报告原文）；拒绝方向恒为 null——不推荐菜只输出标签不输出理由。 */
 		private final String rawText;
 
-		public Match(TagState state, boolean rejectCapable, boolean allergy, TagType tagType, String tagText,
-				String rawText) {
-			if (state == null || tagType == null || tagText == null) {
-				throw new IllegalArgumentException("维度匹配字段不能为空");
+		public Match(boolean reject, String tagText, String rawText) {
+			if (tagText == null || tagText.length() == 0) {
+				throw new IllegalArgumentException("标签文案不能为空");
 			}
-			if (state == TagState.RECOMMEND && (rawText == null || rawText.length() == 0)) {
-				throw new IllegalArgumentException("推荐维度必须携带报告原文");
+			if (!reject && (rawText == null || rawText.length() == 0)) {
+				throw new IllegalArgumentException("推荐方向必须携带报告原文");
 			}
-			this.state = state;
-			this.rejectCapable = rejectCapable;
-			this.allergy = allergy;
-			this.tagType = tagType;
+			this.reject = reject;
 			this.tagText = tagText;
 			this.rawText = rawText;
 		}
-
-	}
-
-	/** 模块四标签类型。 */
-	public enum TagType {
-
-		/** 营养补充正面标签。 */
-		NUTRITION,
-
-		/** 过敏拒绝标签。 */
-		ALLERGY,
-
-		/** 饮食注意拒绝标签。 */
-		DIET_AVOID,
-
-		/** 饮食注意正面标签，由凌晨 Java 主料确证结果产出。 */
-		DIET_OK
 
 	}
 

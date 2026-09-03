@@ -2,7 +2,7 @@ package com.example.healthreport.infra;
 
 /**
  * LLM-B 直连模型接口。
- * <p>只返回模型 content 原文（含未剥离的思考段）；不做业务 Schema 校验、
+ * <p>只返回模型 content 原文（网关忽略关闭参数时可能含未剥离的思考段）；不做业务 Schema 校验、
  * 不剥离思考段、不重试——剥离在 {@code ThinkSegmentStripper}，校验在
  * {@code DishTagContractValidator}。</p>
  */

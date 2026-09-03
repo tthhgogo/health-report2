@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
 /**
  * {@code ct_health_report_task} 任务状态真源实体。
  * <p>
- * 不承载报告正文、OCR 文本或结构化健康结论。
+ * 不承载报告正文、识别文本或结构化健康结论。
  * </p>
  */
 @Data

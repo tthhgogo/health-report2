@@ -45,10 +45,9 @@ class ExtractionValidationArchitectureTest {
     }
 
     @Test
-    void validatedOutputShouldNotExposeIdentityOrWholeSegmentMap() {
-        assertThatThrownBy(() -> ValidatedExtractionOutput.class.getMethod("getPatientIdentityList"))
-                .isInstanceOf(NoSuchMethodException.class);
-        assertThatThrownBy(() -> ValidatedExtractionOutput.class.getMethod("getSegmentByIdMap"))
+    void extractionOutcomeShouldNotExposeIdentityFields() {
+        // 汇总结果不得携带身份字段：patients 在同一性校验后即被剥离（withoutPatients）。
+        assertThatThrownBy(() -> ExtractionOutcome.class.getMethod("getPatients"))
                 .isInstanceOf(NoSuchMethodException.class);
     }
 

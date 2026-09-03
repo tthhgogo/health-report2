@@ -1,8 +1,8 @@
 package com.example.healthreport.infra;
 
-import com.example.healthreport.parse.ExtractionImageCompressor;
-import com.example.healthreport.parse.pdf.PdfPageRenderer;
-import com.example.healthreport.parse.segment.TextNormalizer;
+import com.example.healthreport.render.ExtractionImageCompressor;
+import com.example.healthreport.render.pdf.PdfPageRenderer;
+import com.example.healthreport.support.text.TextNormalizer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.assertj.core.api.SoftAssertions;
@@ -44,7 +44,7 @@ import java.util.Set;
  * mime 与实际字节不一致时，按字节嗅探的网关能认、按声明走的会直接报错。</p>
  *
  * <p>PDF→图沿用生产组件 {@link PdfPageRenderer} 与 {@link ExtractionImageCompressor}，
- * 响应解析沿用 {@link OpenAiCompatibleExtractionModelClient#extractContent}——
+ * 响应解析沿用 {@link OpenAiCompatibleHealthReportAnalysisModelClient#extractContent}——
  * 探针与生产链路的差异必须只有「没有文本块」这一个变量，
  * 自己另写一套渲染或解析，测出来的东西就不能用来推断生产行为。</p>
  *
@@ -161,8 +161,8 @@ class ExtractionImageOnlyProbeTest {
                 .as("gateway HTTP status; response body saved under " + outputDir).isEqualTo(200);
 
         // 复用生产解析：finish_reason 非 stop 直接失败，content / reasoning_content 双通道同一套裁决。
-        String content = new OpenAiCompatibleExtractionModelClient(objectMapper, properties(baseUrl, model, apiKey))
-                .extractContent(rawEnvelope, 0);
+        String content = new OpenAiCompatibleHealthReportAnalysisModelClient(objectMapper, properties(baseUrl, model, apiKey))
+                .extractContent(rawEnvelope, "PROBE");
         JsonNode root = objectMapper.readTree(content);
         Files.write(outputDir.resolve("probe-output.json"),
                 objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
@@ -188,8 +188,8 @@ class ExtractionImageOnlyProbeTest {
 
     // ---------- 调用 ----------
 
-    private ExtractionProperties properties(String baseUrl, String model, String apiKey) {
-        ExtractionProperties extractionProperties = new ExtractionProperties();
+    private HealthReportAnalysisModelProperties properties(String baseUrl, String model, String apiKey) {
+        HealthReportAnalysisModelProperties extractionProperties = new HealthReportAnalysisModelProperties();
         extractionProperties.setBaseUrl(baseUrl);
         extractionProperties.setModel(model);
         extractionProperties.setApiKey(apiKey);
@@ -464,7 +464,7 @@ class ExtractionImageOnlyProbeTest {
 
     private String stripped(String text) {
         return textNormalizer.normalize(text == null ? "" : text)
-                .getNormalizedText().replaceAll("\\s+", "");
+                .replaceAll("\\s+", "");
     }
 
     // ---------- ⑤ 摘要 ----------

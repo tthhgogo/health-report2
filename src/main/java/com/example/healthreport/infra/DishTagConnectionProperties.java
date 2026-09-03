@@ -28,9 +28,8 @@ public class DishTagConnectionProperties {
 
     /**
      * 输出 token 上限。
-     * <p><b>必须留出思考段的余量</b>：qwen3 的思考内联在 content 里，
-     * 配小了会在思考还没结束时被截断，{@code finish_reason} 变成 {@code length}，
-     * 连 {@code </think>} 都没有——整批作废。显式失败可接受，但配小了会批批失败。</p>
+     * <p>请求已显式关闭深度思考；仍保留足以容纳结构化 JSON 的余量，并兼容网关忽略
+     * {@code enable_thinking=false} 后返回思考段的异常情况。任何截断都按整批作废处理。</p>
      */
     private int maxTokens = 8192;
 

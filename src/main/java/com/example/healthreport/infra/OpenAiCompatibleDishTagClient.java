@@ -10,7 +10,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.ClientHttpRequest;
-import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StreamUtils;
@@ -21,7 +20,6 @@ import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Collections;
 
 /**
@@ -31,7 +29,7 @@ import java.util.Collections;
  * LLM-B 的请求里只有菜名、食材名、重量与枚举展示名，响应里只有标签，
  * <b>不含健康数据、不含用户标识</b>（§6.2.1 分界表），因此允许在 DEBUG 级记录完整正文。
  * 照抄 LLM-A 那套「正文一个字都不进日志」会把这条链路的排障能力一起抄掉，
- * 而它恰恰是最需要看正文的一条——思考段与 JSON 混在一起，出问题必须能看到原文。</p>
+ * 网关忽略关闭思考参数时，思考段仍可能与 JSON 混在一起，出问题必须能看到原文。</p>
  *
  * <p>不重试、不加拦截器、不复用全局 RestTemplate；不剥离思考段，原样返回 content。</p>
  */
@@ -70,7 +68,7 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
             throw exception;
         } catch (IOException exception) {
             log.error("LLM-B 请求体序列化失败", exception);
-            throw new DishTagModelCallException(0, 0L);
+            throw new DishTagModelCallException(0);
         }
 
         HttpHeaders headers = new HttpHeaders();
@@ -91,23 +89,22 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
                     bodyWriter(bodyBytes, headers),
                     new BoundedResponseExtractor((int) connectionProperties.getMaxResponseBodyBytes()));
             return extractContent(rawResponse, System.currentTimeMillis() - startMillis);
-        } catch (LlmCallException exception) {
+        } catch (HealthReportAnalysisCallException exception) {
             // StatusOnlyErrorHandler 只看状态码、绝不读错误 body，这一点与哪个模型无关，
             // 因此复用它而不是复制一份；在边界上换成 LLM-B 自己的异常类型。
             log.warn("LLM-B 调用失败，耗时={}ms，状态码={}",
                     System.currentTimeMillis() - startMillis, exception.getHttpStatus());
-            throw new DishTagModelCallException(exception.getHttpStatus(),
-                    System.currentTimeMillis() - startMillis);
+            throw new DishTagModelCallException(exception.getHttpStatus());
         } catch (ResponseTooLargeException exception) {
             log.error("LLM-B 响应体超限，耗时={}ms", System.currentTimeMillis() - startMillis, exception);
-            throw new DishTagModelCallException(200, System.currentTimeMillis() - startMillis);
+            throw new DishTagModelCallException(200);
         } catch (ResourceAccessException exception) {
             log.warn("LLM-B 网络调用失败，耗时={}ms", System.currentTimeMillis() - startMillis, exception);
-            throw new DishTagModelCallException(0, System.currentTimeMillis() - startMillis);
+            throw new DishTagModelCallException(0);
         } catch (RestClientException exception) {
             log.error("LLM-B HTTP 调用失败，耗时={}ms，异常类型={}",
                     System.currentTimeMillis() - startMillis, exception.getClass().getName());
-            throw new DishTagModelCallException(0, System.currentTimeMillis() - startMillis);
+            throw new DishTagModelCallException(0);
         }
         // 全案零重试：任何错误从这里直接返回上层，由离线编排整批作废。
     }
@@ -118,7 +115,6 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
         factory.setReadTimeout(properties.getReadTimeoutMillis());
         factory.setBufferRequestBody(true);
         RestTemplate template = new RestTemplate(factory);
-        template.setInterceptors(new ArrayList<ClientHttpRequestInterceptor>(0));
         template.setErrorHandler(new StatusOnlyErrorHandler());
         return template;
     }
@@ -153,6 +149,11 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
             // 本客户端按单个 JSON 信封有界读取；显式禁用 SSE，避免等待长连接关闭直至读超时。
             generator.writeBooleanField("stream", false);
             generator.writeNumberField("max_tokens", connectionProperties.getMaxTokens());
+            // 菜品标签是有限枚举分类，不使用模型思考过程；网关忽略参数时仍由
+            // ThinkSegmentStripper 兼容剥离，不能让部署能力成为解析正确性的前提。
+            generator.writeObjectFieldStart("chat_template_kwargs");
+            generator.writeBooleanField("enable_thinking", false);
+            generator.writeEndObject();
             generator.writeArrayFieldStart("messages");
             generator.writeStartObject();
             generator.writeStringField("role", "system");
@@ -179,7 +180,7 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
     String extractContent(String responseBody, long elapsedMillis) {
         if (responseBody == null) {
             log.error("LLM-B 响应为空，耗时={}ms", elapsedMillis);
-            throw new DishTagModelCallException(200, elapsedMillis);
+            throw new DishTagModelCallException(200);
         }
         try {
             // 外层信封同样拒绝尾随内容，理由与 LLM-A 一致。
@@ -190,12 +191,12 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
             String finishReason = choice.path("finish_reason").asText("");
             if (!"stop".equals(finishReason)) {
                 log.error("LLM-B 响应未正常结束，finishReason={}，耗时={}ms", finishReason, elapsedMillis);
-                throw new DishTagModelCallException(200, elapsedMillis);
+                throw new DishTagModelCallException(200);
             }
             JsonNode content = choice.path("message").path("content");
             if (!content.isTextual()) {
                 log.error("LLM-B 响应结构无效，耗时={}ms", elapsedMillis);
-                throw new DishTagModelCallException(200, elapsedMillis);
+                throw new DishTagModelCallException(200);
             }
             log.info("LLM-B 调用完成，耗时={}ms，状态码=200，响应正文字符数={}",
                     elapsedMillis, content.asText().length());
@@ -206,7 +207,7 @@ public class OpenAiCompatibleDishTagClient implements DishTagModelClient {
         } catch (IOException exception) {
             log.error("LLM-B 响应解析失败，耗时={}ms，异常类型={}",
                     elapsedMillis, exception.getClass().getName());
-            throw new DishTagModelCallException(200, elapsedMillis);
+            throw new DishTagModelCallException(200);
         }
     }
 }

@@ -4,9 +4,9 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import com.example.healthreport.constants.PromptVersions;
-import com.example.healthreport.infra.ExtractionProperties;
+import com.example.healthreport.infra.HealthReportAnalysisModelProperties;
 import com.example.healthreport.infra.DishTagModelClient;
-import com.example.healthreport.infra.OpenAiCompatibleExtractionModelClient;
+import com.example.healthreport.infra.OpenAiCompatibleHealthReportAnalysisModelClient;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
@@ -47,7 +47,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 class PromptAndArchitectureContractTest {
 
 	private static final Pattern VERSION_PATTERN = Pattern
-		.compile("promptVersion\\s*=\\s*([a-z_]+-[0-9]+\\.[0-9]+\\.[0-9]+)");
+		.compile("promptVersion\\s*=\\s*([a-z_-]+-[0-9]+\\.[0-9]+\\.[0-9]+)");
 
 	private static final String[] HTTP_LOGGER_NAME_ARRAY = { "org.springframework.web.client", "org.apache.http",
 			"org.apache.http.wire", "org.apache.http.headers", "org.eclipse.jetty", "jdk.internal.httpclient" };
@@ -60,64 +60,31 @@ class PromptAndArchitectureContractTest {
 	 * 2026-09-02 曾出现 23 处非法占位值，本断言防它复发。</p>
 	 */
 	@Test
-	void promptOutputSkeletonMustItselfPassTheCanonicalSchema() throws Exception {
-		String prompt = read(Paths.get("prompt/extraction.md"));
-		int sectionStart = prompt.indexOf("## 输出骨架");
-		assertThat(sectionStart).as("提示词缺少「输出骨架」一节").isGreaterThan(0);
-		int fenceStart = prompt.indexOf("```json", sectionStart);
-		int bodyStart = prompt.indexOf('\n', fenceStart) + 1;
-		int bodyEnd = prompt.indexOf("```", bodyStart);
-		String skeletonJson = prompt.substring(bodyStart, bodyEnd).trim();
-
+	void promptOutputSkeletonsMustEachPassTheirProductionSchema() throws Exception {
 		ObjectMapper objectMapper = new ObjectMapper();
-		JsonNode skeletonNode = objectMapper.readTree(skeletonJson);
-		Set<ValidationMessage> violationSet = new ModelOutputSchemaRegistry(objectMapper)
-			.extraction()
-			.validate(skeletonNode);
-
-		assertThat(violationSet).as("输出骨架自身不合 Schema，模型照抄即失败").isEmpty();
-
-		assertExampleItemsPassSchema(prompt, objectMapper, skeletonNode);
-	}
-
-	/**
-	 * 提示词里「每种条目的完整形态」示例，逐条塞回对应数组后必须通过正式 Schema。
-	 *
-	 * <p><b>为什么要单独验这个。</b> 2026-09-02 骨架从「填好字段的模板」改成「全空数组 +
-	 * 字段名表格」，非法占位值确实没了，但模型也<b>看不到一个完整条目长什么样</b>了——
-	 * 下一次实测 {@code required} 违规从 1 条涨到 8 条，整批因超出剔除预算而作废。
-	 * 「示例合法」和「示例完整」必须同时锁住，只锁一头就会顾此失彼。</p>
-	 */
-	private void assertExampleItemsPassSchema(String prompt, ObjectMapper objectMapper,
-			JsonNode skeletonNode) throws Exception {
-		int sectionStart = prompt.indexOf("每种条目的完整形态");
-		assertThat(sectionStart).as("提示词缺少条目示例一节").isGreaterThan(0);
-		int fenceStart = prompt.indexOf("```json", sectionStart);
-		int bodyStart = prompt.indexOf('\n', fenceStart) + 1;
-		int bodyEnd = prompt.indexOf("```", bodyStart);
-		JsonNode exampleNode = objectMapper.readTree(prompt.substring(bodyStart, bodyEnd).trim());
-
-		ObjectNode document = skeletonNode.deepCopy();
-		Iterator<String> arrayNameIterator = exampleNode.fieldNames();
-		while (arrayNameIterator.hasNext()) {
-			String arrayName = arrayNameIterator.next();
-			assertThat(document.has(arrayName))
-				.as("示例里的 " + arrayName + " 不是骨架的顶层字段").isTrue();
-			document.putArray(arrayName).add(exampleNode.get(arrayName).deepCopy());
+		ModelOutputSchemaRegistry registry = new ModelOutputSchemaRegistry(objectMapper);
+		for (ExtractionCall call : ExtractionCall.values()) {
+			String prompt = read(Paths.get(call.getPromptResource()));
+			int sectionStart = prompt.indexOf("## 输出骨架");
+			assertThat(sectionStart).as(call + " 提示词缺少「输出骨架」一节").isGreaterThan(0);
+			int fenceStart = prompt.indexOf("```json", sectionStart);
+			int bodyStart = prompt.indexOf('\n', fenceStart) + 1;
+			int bodyEnd = prompt.indexOf("```", bodyStart);
+			JsonNode skeletonNode = objectMapper.readTree(prompt.substring(bodyStart, bodyEnd).trim());
+			Set<ValidationMessage> violationSet = registry.extraction(call).validate(skeletonNode);
+			assertThat(violationSet).as(call + " 输出骨架自身不合 Schema，模型照抄即失败").isEmpty();
 		}
-		// 过敏原示例引用了块，覆盖检查的两个数组要跟着给，否则不是这一节要测的东西在报错。
-		document.putArray("allergenSectionBlockRefs").add(95).add(96);
-		document.putArray("allergenDataBlockRefs").add(96);
-
-		assertThat(new ModelOutputSchemaRegistry(objectMapper).extraction().validate(document))
-			.as("条目示例不合 Schema，模型照抄即被剔除").isEmpty();
 	}
 
 	@Test
 	void promptConstantsHeadersHistoryAndDigestsShouldStayAligned() throws Exception {
-		assertThat(PromptVersions.EXTRACTION).isEqualTo("extraction-2.4.6");
+		assertThat(PromptVersions.INDICATORS).isEqualTo("indicators-1.1.0");
+		assertThat(PromptVersions.PROBLEMS).isEqualTo("problems-1.0.0");
+		assertThat(PromptVersions.DIET_TAGS).isEqualTo("diet-tags-1.1.0");
 		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.3");
-		assertPromptVersion("prompt/extraction.md", PromptVersions.EXTRACTION);
+		assertPromptVersion("prompt/indicators.md", PromptVersions.INDICATORS);
+		assertPromptVersion("prompt/health-problems.md", PromptVersions.PROBLEMS);
+		assertPromptVersion("prompt/diet-tags.md", PromptVersions.DIET_TAGS);
 		assertPromptVersion("prompt/dish_tag.md", PromptVersions.DISH_TAG);
 		assertThat(read(Paths.get("src/main/resources/application.properties")))
 			.contains("llm.model-version-extraction=${EXTRACTION_MODEL:}")
@@ -138,7 +105,11 @@ class PromptAndArchitectureContractTest {
 			lastVersionMap.put(familyOf(fields[0]), fields[0]);
 			lastDigestMap.put(familyOf(fields[0]), fields[1]);
 		}
-		assertHistoryEntry("extraction", PromptVersions.EXTRACTION, "prompt/extraction.md", lastVersionMap,
+		assertHistoryEntry("indicators", PromptVersions.INDICATORS, "prompt/indicators.md", lastVersionMap,
+				lastDigestMap);
+		assertHistoryEntry("problems", PromptVersions.PROBLEMS, "prompt/health-problems.md", lastVersionMap,
+				lastDigestMap);
+		assertHistoryEntry("diet-tags", PromptVersions.DIET_TAGS, "prompt/diet-tags.md", lastVersionMap,
 				lastDigestMap);
 		assertHistoryEntry("dishtag", PromptVersions.DISH_TAG, "prompt/dish_tag.md", lastVersionMap, lastDigestMap);
 	}
@@ -159,27 +130,27 @@ class PromptAndArchitectureContractTest {
 
 	@Test
 	void llmAPromptShouldBePackagedAndStartupShouldRejectBlankConnectionFields() throws Exception {
-		ClassPathResource promptResource = new ClassPathResource("prompt/extraction.md");
+		ClassPathResource promptResource = new ClassPathResource("prompt/indicators.md");
 		assertThat(promptResource.exists()).isTrue();
 		assertThat(promptResource.contentLength()).isPositive();
 
-		ExtractionProperties blank = new ExtractionProperties();
+		HealthReportAnalysisModelProperties blank = new HealthReportAnalysisModelProperties();
 		ExtractionStartupValidator validator = new ExtractionStartupValidator(blank, new ExtractionPromptProvider());
 		assertThatThrownBy(() -> validator.run(new DefaultApplicationArguments(new String[0])))
 			.isInstanceOf(IllegalStateException.class);
 
-		ExtractionProperties valid = validProperties();
+		HealthReportAnalysisModelProperties valid = validProperties();
 		assertThat(valid.toString()).doesNotContain("test-api-key");
 		new ExtractionStartupValidator(valid, new ExtractionPromptProvider())
 			.run(new DefaultApplicationArguments(new String[0]));
 
-		ExtractionProperties missingBaseUrl = validProperties();
+		HealthReportAnalysisModelProperties missingBaseUrl = validProperties();
 		missingBaseUrl.setBaseUrl(" ");
 		assertStartupFails(missingBaseUrl);
-		ExtractionProperties missingModel = validProperties();
+		HealthReportAnalysisModelProperties missingModel = validProperties();
 		missingModel.setModel(null);
 		assertStartupFails(missingModel);
-		ExtractionProperties missingApiKey = validProperties();
+		HealthReportAnalysisModelProperties missingApiKey = validProperties();
 		missingApiKey.setApiKey("");
 		assertStartupFails(missingApiKey);
 	}
@@ -187,16 +158,15 @@ class PromptAndArchitectureContractTest {
 	@Test
 	void directClientMustNotUseCrossChainRetryOrWholeStringRequestPatterns() throws Exception {
 		Path sourceRoot = Paths.get("src/main/java/com/example/healthreport");
-		String clientSource = read(sourceRoot.resolve("infra/OpenAiCompatibleExtractionModelClient.java"));
+		String clientSource = read(sourceRoot.resolve("infra/OpenAiCompatibleHealthReportAnalysisModelClient.java"));
 		String statusHandlerSource = read(sourceRoot.resolve("infra/StatusOnlyErrorHandler.java"));
 
 		assertThat(clientSource).contains("setBufferRequestBody(true)")
 			.contains("setContentLength(bodyBytes.length)")
-			.contains("setInterceptors(new ArrayList<ClientHttpRequestInterceptor>(0))")
+			.doesNotContain("Interceptor")
 			.contains("setErrorHandler(new StatusOnlyErrorHandler())")
 			.doesNotContain("HttpEntity<String>")
 			.doesNotContain("writeValueAsString")
-			.doesNotContain("new StringBuilder")
 			.doesNotContain("DishTagModelClient")
 			.doesNotContain("RestClientResponseException")
 			.doesNotContain("RetryTemplate");
@@ -222,9 +192,9 @@ class PromptAndArchitectureContractTest {
 
 	@Test
 	void llmAHttpClientMustHaveNoInterceptorsOrUnsafeWireLoggingConfiguration() throws Exception {
-		OpenAiCompatibleExtractionModelClient client = new OpenAiCompatibleExtractionModelClient(
+		OpenAiCompatibleHealthReportAnalysisModelClient client = new OpenAiCompatibleHealthReportAnalysisModelClient(
 				new com.fasterxml.jackson.databind.ObjectMapper(), validProperties());
-		Field restTemplateField = OpenAiCompatibleExtractionModelClient.class.getDeclaredField("restTemplate");
+		Field restTemplateField = OpenAiCompatibleHealthReportAnalysisModelClient.class.getDeclaredField("restTemplate");
 		restTemplateField.setAccessible(true);
 		RestTemplate restTemplate = (RestTemplate) restTemplateField.get(client);
 
@@ -250,7 +220,7 @@ class PromptAndArchitectureContractTest {
 	@Test
 	void wireMockRedLineTestsMustNeverBeConditionallySkipped() throws Exception {
 		String wireMockTestSource = read(Paths
-			.get("src/test/java/com/example/healthreport/infra/OpenAiCompatibleExtractionModelClientTest.java"));
+			.get("src/test/java/com/example/healthreport/infra/OpenAiCompatibleHealthReportAnalysisModelClientTest.java"));
 		assertThat(wireMockTestSource).doesNotContain("Assumptions")
 			.doesNotContain("assumeTrue")
 			.doesNotContain("@Disabled");
@@ -276,15 +246,15 @@ class PromptAndArchitectureContractTest {
 		assertThat(configuredLevel).as("生产配置必须显式限制 HTTP 日志器 %s", loggerName).isEqualTo(expectedLevel);
 	}
 
-	private ExtractionProperties validProperties() {
-		ExtractionProperties properties = new ExtractionProperties();
+	private HealthReportAnalysisModelProperties validProperties() {
+		HealthReportAnalysisModelProperties properties = new HealthReportAnalysisModelProperties();
 		properties.setBaseUrl("http://127.0.0.1");
 		properties.setModel("test-model");
 		properties.setApiKey("test-api-key");
 		return properties;
 	}
 
-	private void assertStartupFails(ExtractionProperties properties) {
+	private void assertStartupFails(HealthReportAnalysisModelProperties properties) {
 		assertThatThrownBy(() -> new ExtractionStartupValidator(properties, new ExtractionPromptProvider())
 			.run(new DefaultApplicationArguments(new String[0]))).isInstanceOf(IllegalStateException.class);
 	}

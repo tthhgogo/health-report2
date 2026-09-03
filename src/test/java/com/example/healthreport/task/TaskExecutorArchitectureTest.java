@@ -22,7 +22,7 @@ class TaskExecutorArchitectureTest {
     }
 
     @Test
-    void analysisAndBatchExecutorsShouldBeDistinctFixedBoundedPools() {
+    void analysisExecutorShouldBeTheOnlyFixedBoundedPool() {
         AnalysisExecutorProperties properties = new AnalysisExecutorProperties();
         properties.setModelConcurrencyQuota(16);
         properties.setInstanceCount(1);
@@ -33,18 +33,18 @@ class TaskExecutorArchitectureTest {
         ExecutorConfig config = new ExecutorConfig();
 
         ThreadPoolExecutor analysisExecutor = config.analysisExecutor(properties);
-        ThreadPoolExecutor batchExecutor = config.llmBatchExecutor(properties);
         try {
-            assertThat(analysisExecutor).isNotSameAs(batchExecutor);
-            assertThat(analysisExecutor.getCorePoolSize()).isEqualTo(4);
-            assertThat(analysisExecutor.getMaximumPoolSize()).isEqualTo(4);
+            // W = min(配额 16 ÷ 实例 1, 内存 (2048-512)/256 = 6) = 6：单任务只占 1 个在途配额。
+            assertThat(analysisExecutor.getCorePoolSize()).isEqualTo(6);
+            assertThat(analysisExecutor.getMaximumPoolSize()).isEqualTo(6);
             assertThat(analysisExecutor.getQueue().remainingCapacity()).isEqualTo(3);
             assertThat(analysisExecutor.getRejectedExecutionHandler())
                     .isInstanceOf(ThreadPoolExecutor.AbortPolicy.class);
-            assertThat(batchExecutor.getCorePoolSize()).isEqualTo(16);
         } finally {
             analysisExecutor.shutdownNow();
-            batchExecutor.shutdownNow();
         }
+        // 批次池已随三阶段串行契约删除（P0-33e）：不存在第二个业务线程池 Bean。
+        assertThat(ExecutorConfig.class.getDeclaredMethods())
+                .noneMatch(method -> method.getName().equals("llmBatchExecutor"));
     }
 }

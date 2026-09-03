@@ -8,14 +8,15 @@ import lombok.Getter;
 
 /**
  * Redis 中保存并由结果接口下发的最小结果契约。
- * <p>不含姓名、性别、完整 OCR 文本或完整 segment 集合。</p>
+ * <p>不含姓名、性别、页面图或模型原始响应。
+ * 曾有 {@code suppressDietAdvice} 字段，2026-09-03 随文档一并删除：
+ * 全案没有任何规则会把它置 true。</p>
  */
 @Getter
 public class AnalysisResult {
 
     private final boolean partial;
     private final PartialReason partialReason;
-    private final boolean suppressDietAdvice;
     private final boolean suppressDishRecommend;
     private final int processedPages;
     private final int totalPages;
@@ -25,14 +26,12 @@ public class AnalysisResult {
     @JsonCreator
     AnalysisResult(@JsonProperty("partial") boolean partial,
                    @JsonProperty("partialReason") PartialReason partialReason,
-                   @JsonProperty("suppressDietAdvice") boolean suppressDietAdvice,
                    @JsonProperty("suppressDishRecommend") boolean suppressDishRecommend,
                    @JsonProperty("processedPages") int processedPages,
                    @JsonProperty("totalPages") int totalPages,
                    @JsonProperty("modules") AnalysisModules modules) {
         this.partial = partial;
         this.partialReason = partialReason;
-        this.suppressDietAdvice = suppressDietAdvice;
         this.suppressDishRecommend = suppressDishRecommend;
         this.processedPages = processedPages;
         this.totalPages = totalPages;
@@ -51,13 +50,11 @@ public class AnalysisResult {
             throw new IllegalArgumentException("页数统计不合法");
         }
         AnalysisModules safeModules = modules == null ? AnalysisModules.empty() : modules;
-        if (accumulator.suppressDietAdvice()) {
-            safeModules = safeModules.withoutDietAdviceAndDishRecommend();
-        } else if (accumulator.suppressDishRecommend()) {
+        if (accumulator.suppressDishRecommend()) {
             safeModules = safeModules.withoutDishRecommend();
         }
         return new AnalysisResult(accumulator.partial(), accumulator.primaryReason(),
-                accumulator.suppressDietAdvice(), accumulator.suppressDishRecommend(),
+                accumulator.suppressDishRecommend(),
                 processedPages, totalPages, safeModules);
     }
 }

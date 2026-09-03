@@ -8,66 +8,58 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.networknt.schema.ValidationMessage;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.springframework.stereotype.Component;
 
 /**
- * 在任何业务处理前执行 LLM-A Schema 校验，并把可定位到单个条目的违规<b>剔除</b>而不是整批作废。
+ * 三次调用共用的 Schema 校验：可定位到单个条目的违规按条目剔除，其余整阶段作废。
  *
- * <p><b>为什么不再一票否决。</b> 实测单条目不合 Schema 的概率约 1.2%，而整批作废模式下
- * 一批的通过率是 {@code (1-p)^条目数}——一份 24 页报告约 200 条，整任务成功率只有 8%。
- * 失败率被条目数指数放大，靠优化提示词压不住这个乘方（2026-09-02 实测，§4.4-①）。</p>
+ * <p><b>为什么不一票否决</b>：整批作废模式下一个阶段的通过率是 {@code (1-p)^条目数}，
+ * 失败率被条目数指数放大（设计方案 §4.4）。可剔除的只有各阶段的业务条目数组；
+ * 顶层字段坏了剔除救不回来，直接失败。</p>
  *
- * <p><b>什么不剔除。</b> {@code allergens} 是一级红线，静默少一条等于把格式错误伪装成漏抽，
- * 还会污染 {@code ALLERGEN_SUSPECT_MISS} 的含义；{@code sections} 被其他条目按
- * {@code sectionIndex} 引用，剔除会破坏引用完整性。这两个数组连同顶层字段一律整批作废。</p>
+ * <p>同一阶段的剔除共用 20% 修复预算（至少允许 1 条），
+ * 超预算即该阶段失败，任务 {@code FAILED / SERVER_ERROR}（开发方案 §6.5）。</p>
  */
 @Slf4j
 @Component
 public class ExtractionSchemaValidator {
 
-    /** 允许按条目剔除的数组；不在表内的一律整批作废。 */
-    private static final Set<String> DROPPABLE_ARRAY_SET = Collections.unmodifiableSet(
-            new HashSet<String>(Arrays.asList("indicators", "textualFindings", "summaryConclusions",
-                    "nutritionSupplements", "dietRequirements")));
-
-    /**
-     * 单批可剔除条目占比上限。
-     * <p>偶发一两条是模型的正常抖动，剔掉即可；<b>大比例剔除说明这一批整体跑偏</b>，
-     * 那时候放行会得到一份严重残缺却只标着 partial 的报告，不如响亮地失败。</p>
-     */
+    /** 单阶段可剔除条目占比上限；大比例剔除说明整阶段跑偏，响亮失败好过残缺放行。 */
     private static final double MAX_DROP_RATIO = 0.20D;
 
-    /**
-     * 无论占比如何都允许剔除的条目数下限。
-     * <p>没有它，只有两三个条目的小批次（封面页、单项复查）剔一条就超 20%，
-     * 整任务因此失败——那恰恰是本次改动要消除的失败形态。</p>
-     */
+    /** 无论占比如何都允许剔除的条目数下限，防止小样本一条即超预算。 */
     private static final int MIN_ALLOWED_DROPS = 1;
 
-    /** 违规路径形如 {@code $.indicators[6].status}；没有数组下标的一律不可剔除。 */
-    private static final Pattern ITEM_PATH_PATTERN =
-            Pattern.compile("^\\$\\.([A-Za-z]+)\\[(\\d+)\\]");
+    /** 各调用允许按条目剔除的数组路径模式：捕获组 1 = 容器指针、组 2 = 条目下标。 */
+    private static final Pattern INDICATOR_ITEM_PATTERN =
+            Pattern.compile("^\\$\\.(sections\\[\\d+\\]\\.indicators)\\[(\\d+)\\]");
+    private static final Pattern PATIENT_ITEM_PATTERN =
+            Pattern.compile("^\\$\\.(patients)\\[(\\d+)\\]");
+    /** 章节自身的违规（如 page 不满足最小值）：整章剔除，预算按该章条目数计（R20）。 */
+    private static final Pattern SECTION_ITEM_PATTERN =
+            Pattern.compile("^\\$\\.(sections)\\[(\\d+)\\]");
+    private static final Pattern PROBLEM_ITEM_PATTERN =
+            Pattern.compile("^\\$\\.(problems)\\[(\\d+)\\]");
+    private static final Pattern DIET_TAG_ITEM_PATTERN =
+            Pattern.compile("^\\$\\.(recommend|reject)\\[(\\d+)\\]");
 
     private final ObjectMapper objectMapper;
-
-    private final ModelOutputSchema modelOutputSchema;
+    private final ModelOutputSchemaRegistry schemaRegistry;
 
     public ExtractionSchemaValidator(ObjectMapper objectMapper,
                                      ModelOutputSchemaRegistry schemaRegistry) {
@@ -75,18 +67,16 @@ public class ExtractionSchemaValidator {
             throw new IllegalArgumentException("Schema 校验依赖不能为空");
         }
         this.objectMapper = objectMapper;
-        this.modelOutputSchema = schemaRegistry.extraction();
+        this.schemaRegistry = schemaRegistry;
     }
 
     /**
      * 解析并校验模型响应。
      *
-     * @param rawContent 模型返回的 JSON 正文
-     * @param batchIndex 仅用于日志定位，不进入任何业务判断
-     * @return 已通过完整版 Schema 的输出，以及被剔除的条目统计
-     * @throws HealthReportException 违规无法通过剔除条目消除时固定映射 SERVER_ERROR，调用方不得重试
+     * @return 已通过对应生产 Schema 的输出与剔除统计
+     * @throws HealthReportException 违规无法用条目剔除消除时固定映射 SERVER_ERROR，调用方不得重试
      */
-    public SchemaValidationOutcome validate(String rawContent, int batchIndex) {
+    public SchemaValidationOutcome validate(ExtractionCall call, String rawContent) {
         JsonNode rootNode;
         try {
             // 尾随内容必须拒绝：默认配置会静默丢掉 JSON 之后的解释性文字。
@@ -94,140 +84,211 @@ public class ExtractionSchemaValidator {
                     .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                     .readTree(rawContent);
         } catch (IOException | RuntimeException exception) {
-            log.error("LLM-A Schema 校验失败，batchIndex={}，阶段=JSON解析，异常类型={}",
-                    batchIndex, exception.getClass().getName());
+            log.error("模型输出 Schema 校验失败，call={}，阶段=JSON解析，异常类型={}",
+                    call, exception.getClass().getName());
             throw fail();
         }
         if (rootNode == null || !rootNode.isObject()) {
-            log.error("LLM-A Schema 校验失败，batchIndex={}，阶段=根节点不是对象", batchIndex);
+            log.error("模型输出 Schema 校验失败，call={}，阶段=根节点不是对象", call);
             throw fail();
         }
 
-        Set<ValidationMessage> violationSet = validateQuietly(rootNode, batchIndex);
+        ModelOutputSchema schema = schemaRegistry.extraction(call);
+        Set<ValidationMessage> violationSet = validateQuietly(schema, rootNode, call);
         if (violationSet.isEmpty()) {
-            return new SchemaValidationOutcome(rootNode,
-                    Collections.<String, Integer>emptyMap());
+            return new SchemaValidationOutcome(rootNode, 0);
         }
 
-        Map<String, Set<Integer>> dropIndexByArray = planDrops(violationSet, batchIndex);
-        // 存在无法定位到单个条目的违规：顶层坏了，剔除救不回来。
-        if (dropIndexByArray == null) {
+        Map<String, Set<Integer>> dropIndexByContainer = planDrops(call, violationSet);
+        if (dropIndexByContainer == null) {
             throw fail();
         }
-        if (exceedsDropBudget(rootNode, dropIndexByArray, batchIndex)) {
+        int droppedCount = 0;
+        for (Map.Entry<String, Set<Integer>> entry : dropIndexByContainer.entrySet()) {
+            if ("sections".equals(entry.getKey())) {
+                // 整章剔除按该章条目数入账，防止「一章 30 条按 1 条计」绕过预算。
+                for (Integer sectionIndex : entry.getValue()) {
+                    droppedCount += Math.max(1, rootNode.path("sections")
+                            .path(sectionIndex.intValue()).path("indicators").size());
+                }
+            } else {
+                droppedCount += entry.getValue().size();
+            }
+        }
+        if (exceedsDropBudget(call, rootNode, droppedCount)) {
             throw fail();
         }
-        ObjectNode prunedNode = pruneItems((ObjectNode) rootNode, dropIndexByArray);
+        JsonNode prunedNode = pruneItems(rootNode, dropIndexByContainer, call);
 
-        Set<ValidationMessage> remainingSet = validateQuietly(prunedNode, batchIndex);
+        Set<ValidationMessage> remainingSet = validateQuietly(schema, prunedNode, call);
         if (!remainingSet.isEmpty()) {
-            // 剔除后仍不合法：违规不在被剔除的那些条目上，或数组整体约束不满足。
-            log.error("LLM-A Schema 校验失败，batchIndex={}，阶段=剔除后仍不合法，剩余违规数={}，{}",
-                    batchIndex, remainingSet.size(), summarize(remainingSet));
+            log.error("模型输出 Schema 校验失败，call={}，阶段=剔除后仍不合法，剩余违规数={}",
+                    call, remainingSet.size());
             throw fail();
         }
-
-        Map<String, Integer> droppedCountByArray = new LinkedHashMap<String, Integer>();
-        for (Map.Entry<String, Set<Integer>> entry : dropIndexByArray.entrySet()) {
-            droppedCountByArray.put(entry.getKey(), entry.getValue().size());
-        }
-        return new SchemaValidationOutcome(prunedNode, droppedCountByArray);
+        log.info("模型输出条目剔除完成，call={}，剔除条目数={}", call, droppedCount);
+        return new SchemaValidationOutcome(prunedNode, droppedCount);
     }
 
     /**
-     * 校验并记录违规的<b>关键字与 JSON 路径</b>。
-     * <p>{@code ValidationMessage} 的正文可能带模型输出的值（患者姓名、检验结果），
-     * 一个字都不记；路径形如 {@code $.indicators[3].status}，不含任何健康数据。</p>
+     * {@code ValidationMessage} 正文可能带模型输出的值（患者姓名、检验结果），一个字都不记。
      */
-    private Set<ValidationMessage> validateQuietly(JsonNode node, int batchIndex) {
+    private Set<ValidationMessage> validateQuietly(ModelOutputSchema schema, JsonNode node,
+                                                   ExtractionCall call) {
         try {
-            return modelOutputSchema.validate(node);
+            return schema.validate(node);
         } catch (RuntimeException exception) {
-            log.error("LLM-A Schema 校验失败，batchIndex={}，阶段=校验器异常，异常类型={}",
-                    batchIndex, exception.getClass().getName());
+            log.error("模型输出 Schema 校验失败，call={}，阶段=校验器异常，异常类型={}",
+                    call, exception.getClass().getName());
             throw fail();
         }
     }
 
     /**
-     * 把违规归到可剔除的条目上。
-     *
-     * @return 每个数组要剔除的下标；只要有一条违规无法定位到可剔除条目就返回 {@code null}
+     * 把违规归到可剔除条目上；任一违规定位不到即返回 {@code null}（整阶段作废）。
      */
-    private Map<String, Set<Integer>> planDrops(Set<ValidationMessage> violationSet, int batchIndex) {
+    private Map<String, Set<Integer>> planDrops(ExtractionCall call,
+                                                Set<ValidationMessage> violationSet) {
         Map<String, Set<Integer>> resultMap = new LinkedHashMap<String, Set<Integer>>();
         for (ValidationMessage violation : violationSet) {
-            Matcher matcher = ITEM_PATH_PATTERN.matcher(violation.getPath());
-            if (!matcher.find() || !DROPPABLE_ARRAY_SET.contains(matcher.group(1))) {
-                log.error("LLM-A Schema 校验失败，batchIndex={}，阶段=违规无法定位到可剔除条目，"
-                        + "关键字={}，路径={}，违规总数={}", batchIndex, violation.getType(),
-                        violation.getPath(), violationSet.size());
+            Matcher matcher = matchDroppable(call, violation.getPath());
+            if (matcher == null) {
+                log.error("模型输出 Schema 校验失败，call={}，阶段=违规无法定位到可剔除条目，"
+                                + "关键字={}，路径={}，违规总数={}",
+                        call, violation.getType(), violation.getPath(), violationSet.size());
                 return null;
             }
-            String arrayField = matcher.group(1);
-            Set<Integer> indexSet = resultMap.get(arrayField);
+            String containerPath = matcher.group(1);
+            Set<Integer> indexSet = resultMap.get(containerPath);
             if (indexSet == null) {
                 indexSet = new TreeSet<Integer>();
-                resultMap.put(arrayField, indexSet);
+                resultMap.put(containerPath, indexSet);
             }
             indexSet.add(Integer.valueOf(matcher.group(2)));
         }
-        log.warn("LLM-A 条目剔除，batchIndex={}，{}", batchIndex, summarize(violationSet));
         return resultMap;
     }
 
-    /** 剔除量超过预算即认为整批不可信；分母是全部可剔除数组的条目总数。 */
-    private boolean exceedsDropBudget(JsonNode rootNode, Map<String, Set<Integer>> dropIndexByArray,
-                                      int batchIndex) {
-        int droppableTotal = 0;
-        for (String arrayField : DROPPABLE_ARRAY_SET) {
-            droppableTotal += rootNode.path(arrayField).size();
+    private Matcher matchDroppable(ExtractionCall call, String violationPath) {
+        List<Pattern> patternList = new ArrayList<Pattern>(2);
+        switch (call) {
+            case INDICATORS:
+                patternList.add(INDICATOR_ITEM_PATTERN);
+                patternList.add(PATIENT_ITEM_PATTERN);
+                // 必须排在最后：sections[n].indicators[m] 也能被它匹配，特异度低的兜底。
+                patternList.add(SECTION_ITEM_PATTERN);
+                break;
+            case PROBLEMS:
+                patternList.add(PROBLEM_ITEM_PATTERN);
+                break;
+            case DIET_TAGS:
+            default:
+                patternList.add(DIET_TAG_ITEM_PATTERN);
+                break;
         }
-        int dropTotal = 0;
-        for (Set<Integer> indexSet : dropIndexByArray.values()) {
-            dropTotal += indexSet.size();
+        for (Pattern pattern : patternList) {
+            Matcher matcher = pattern.matcher(violationPath);
+            if (matcher.find()) {
+                return matcher;
+            }
         }
-        int allowed = Math.max(MIN_ALLOWED_DROPS, (int) (droppableTotal * MAX_DROP_RATIO));
-        if (dropTotal <= allowed) {
-            return false;
-        }
-        log.error("LLM-A Schema 校验失败，batchIndex={}，阶段=剔除量超预算，"
-                        + "拟剔除={}，可剔除条目总数={}，上限={}（{}% 或至少 {} 条）",
-                batchIndex, dropTotal, droppableTotal, allowed, (int) (MAX_DROP_RATIO * 100),
-                MIN_ALLOWED_DROPS);
-        return true;
+        return null;
     }
 
-    /** 按下标倒序移除，避免前面的删除影响后面的下标。 */
-    private ObjectNode pruneItems(ObjectNode rootNode, Map<String, Set<Integer>> dropIndexByArray) {
-        ObjectNode prunedNode = rootNode.deepCopy();
-        for (Map.Entry<String, Set<Integer>> entry : dropIndexByArray.entrySet()) {
-            ArrayNode arrayNode = (ArrayNode) prunedNode.get(entry.getKey());
-            if (arrayNode == null) {
-                continue;
+    /** 分母是该阶段的全部可剔除条目数；条目总数为 0 却有条目违规不可能发生，防御性按失败处理。 */
+    private boolean exceedsDropBudget(ExtractionCall call, JsonNode rootNode, int droppedCount) {
+        int totalItems = countItems(call, rootNode);
+        if (totalItems <= 0) {
+            return true;
+        }
+        int allowed = Math.max(MIN_ALLOWED_DROPS, (int) Math.floor(totalItems * MAX_DROP_RATIO));
+        if (droppedCount > allowed) {
+            log.error("模型输出条目剔除超预算，call={}，剔除条目数={}，条目总数={}，预算={}",
+                    call, droppedCount, totalItems, allowed);
+            return true;
+        }
+        return false;
+    }
+
+    private int countItems(ExtractionCall call, JsonNode rootNode) {
+        switch (call) {
+            case INDICATORS: {
+                int count = rootNode.path("patients").size();
+                for (JsonNode sectionNode : rootNode.path("sections")) {
+                    count += sectionNode.path("indicators").size();
+                }
+                return count;
             }
-            List<Integer> descendingIndexList = new ArrayList<Integer>(entry.getValue());
-            Collections.reverse(descendingIndexList);
-            for (Integer index : descendingIndexList) {
-                if (index.intValue() < arrayNode.size()) {
-                    arrayNode.remove(index.intValue());
+            case PROBLEMS:
+                return rootNode.path("problems").size();
+            case DIET_TAGS:
+            default:
+                return rootNode.path("recommend").size() + rootNode.path("reject").size();
+        }
+    }
+
+    /** 按容器路径逐个删除条目；下标从大到小删避免位移。 */
+    private JsonNode pruneItems(JsonNode rootNode, Map<String, Set<Integer>> dropIndexByContainer,
+                                ExtractionCall call) {
+        JsonNode workingNode = rootNode.deepCopy();
+        List<Map.Entry<String, Set<Integer>>> orderedEntryList =
+                new ArrayList<Map.Entry<String, Set<Integer>>>(dropIndexByContainer.entrySet());
+        // 嵌套容器（sections[n].indicators）先处理，顶层 sections 最后处理：
+        // 先移整章会让嵌套容器引用的章下标整体位移。
+        Collections.sort(orderedEntryList, new Comparator<Map.Entry<String, Set<Integer>>>() {
+            @Override
+            public int compare(Map.Entry<String, Set<Integer>> left,
+                               Map.Entry<String, Set<Integer>> right) {
+                boolean leftTopSections = "sections".equals(left.getKey());
+                boolean rightTopSections = "sections".equals(right.getKey());
+                return Boolean.compare(leftTopSections, rightTopSections);
+            }
+        });
+        for (Map.Entry<String, Set<Integer>> entry : orderedEntryList) {
+            JsonNode containerNode = resolveContainer(workingNode, entry.getKey());
+            if (!(containerNode instanceof ArrayNode)) {
+                log.error("模型输出条目剔除失败，call={}，阶段=容器不是数组，容器={}", call, entry.getKey());
+                throw fail();
+            }
+            ArrayNode arrayNode = (ArrayNode) containerNode;
+            List<Integer> descendingList = new ArrayList<Integer>(entry.getValue());
+            for (int position = descendingList.size() - 1; position >= 0; position--) {
+                int dropIndex = descendingList.get(position).intValue();
+                if (dropIndex < 0 || dropIndex >= arrayNode.size()) {
+                    log.error("模型输出条目剔除失败，call={}，阶段=下标越界，容器={}", call, entry.getKey());
+                    throw fail();
+                }
+                arrayNode.remove(dropIndex);
+            }
+        }
+        // 剔除后 indicators 变空的章节整个移除：Schema 要求每章节至少一条指标。
+        if (call == ExtractionCall.INDICATORS && workingNode.path("sections").isArray()) {
+            ArrayNode sectionsNode = (ArrayNode) workingNode.path("sections");
+            Iterator<JsonNode> sectionIterator = sectionsNode.iterator();
+            while (sectionIterator.hasNext()) {
+                if (sectionIterator.next().path("indicators").size() == 0) {
+                    sectionIterator.remove();
                 }
             }
         }
-        return prunedNode;
+        return workingNode;
     }
 
-    /** 只汇总关键字与路径，绝不包含违规值。 */
-    private String summarize(Set<ValidationMessage> violationSet) {
-        Set<String> keywordSet = new LinkedHashSet<String>();
-        Set<String> pathSet = new LinkedHashSet<String>();
-        for (ValidationMessage violation : violationSet) {
-            keywordSet.add(violation.getType());
-            if (pathSet.size() < 12) {
-                pathSet.add(violation.getPath());
+    /** 把 {@code sections[3].indicators} 这类容器路径解析到节点。 */
+    private JsonNode resolveContainer(JsonNode rootNode, String containerPath) {
+        JsonNode currentNode = rootNode;
+        for (String segment : containerPath.split("\\.")) {
+            int bracket = segment.indexOf('[');
+            if (bracket < 0) {
+                currentNode = currentNode.path(segment);
+            } else {
+                String fieldName = segment.substring(0, bracket);
+                int arrayIndex = Integer.parseInt(
+                        segment.substring(bracket + 1, segment.length() - 1));
+                currentNode = currentNode.path(fieldName).path(arrayIndex);
             }
         }
-        return "关键字=" + keywordSet + "，路径=" + pathSet;
+        return currentNode;
     }
 
     private HealthReportException fail() {

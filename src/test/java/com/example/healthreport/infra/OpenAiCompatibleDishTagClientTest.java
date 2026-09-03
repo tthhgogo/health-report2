@@ -21,9 +21,10 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** LLM-B 直连的真实 HTTP 层验证：消息结构、思考段透传、截断拒绝与零重试。 */
+/** LLM-B 直连的真实 HTTP 层验证：关闭思考、消息结构、兼容思考段、截断拒绝与零重试。 */
 class OpenAiCompatibleDishTagClientTest {
 
+    /** WireMock 暴露的 OpenAI 兼容对话补全路径。 */
     private static final String PATH = "/v1/chat/completions";
 
     private WireMockServer wireMockServer;
@@ -55,6 +56,11 @@ class OpenAiCompatibleDishTagClientTest {
         assertThat(root.path("temperature").asInt()).isZero();
         assertThat(root.path("stream").asBoolean()).isFalse();
         assertThat(root.path("max_tokens").asInt()).isEqualTo(4096);
+        JsonNode chatTemplateArguments = root.path("chat_template_kwargs");
+        assertThat(chatTemplateArguments.isObject()).isTrue();
+        assertThat(chatTemplateArguments.has("enable_thinking")).isTrue();
+        assertThat(chatTemplateArguments.path("enable_thinking").isBoolean()).isTrue();
+        assertThat(chatTemplateArguments.path("enable_thinking").asBoolean()).isFalse();
         assertThat(root.path("messages").size()).isEqualTo(2);
         assertThat(root.path("messages").path(0).path("role").asText()).isEqualTo("system");
         assertThat(root.path("messages").path(0).path("content").asText()).isEqualTo("提示词正文");

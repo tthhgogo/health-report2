@@ -10,11 +10,10 @@ import lombok.Getter;
  * <p><b>每个模块是一个对象，不是列表</b>：四个组装器各产出恰好一个 {@code Result}，
  * 用长度恒为 1 的数组包起来在契约上表达不出「只能有一个」，将来有人往里塞第二个元素
  * 也不会有任何东西拦住。模块被抑制或未产出时字段为 {@code null}，
- * 与 {@code AnalysisResult} 上已有的 {@code suppressDietAdvice} /
- * {@code suppressDishRecommend} 布尔位对齐。</p>
+ * 与 {@code AnalysisResult} 上的 {@code suppressDishRecommend} 布尔位对齐。</p>
  *
  * <p><b>已知缺口</b>：字段类型仍是 {@code Object}，类型系统对「模块 DTO 里混进姓名、性别或
- * 完整 OCR 原文」提供不了任何约束，R48 目前的唯一防线是
+ * 完整报告原文」提供不了任何约束，R48 目前的唯一防线是
  * {@code TaskResultCacheTest#serializedAssembledModulesShouldExcludeIdentityAndCompleteSourcePayloadFields}
  * ——它用四个组装器的真实产物序列化后做哨兵串断言，是有效的，但属于测试级而非结构级保障。</p>
  *
@@ -48,12 +47,7 @@ public class AnalysisModules {
         return new AnalysisModules(null, null, null, null);
     }
 
-    /** 页数或批次不完整时清空模块三、四，保留已验证的模块一、二。 */
-    public AnalysisModules withoutDietAdviceAndDishRecommend() {
-        return new AnalysisModules(healthIndicators, healthProblems, null, null);
-    }
-
-    /** 仅过敏抽取可疑时清空模块四。 */
+    /** 饮食标签发生剔除时清空模块四，模块三保留其余已校验条目。 */
     public AnalysisModules withoutDishRecommend() {
         return new AnalysisModules(healthIndicators, healthProblems, dietAdvice, null);
     }

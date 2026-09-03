@@ -31,8 +31,10 @@
 - Spring Boot：**2.7.x**
 - 使用 `javax.*`，**绝不**迁移到 `jakarta.*`
 - 构建工具：保持仓库既有选择；新仓库用 Maven
-- 既定技术栈：MyBatis-Plus、PDFBox 2.0.x、Apache POI、ofdrw、TinyPinyin、MySQL 8.0.14+、
-  Redis、xxl-job、Dify **1.6.0**、PaddleOCR、Amazon S3
+- 既定技术栈：MyBatis-Plus、PDFBox 2.0.x、ofdrw（reader + converter）、TinyPinyin、MySQL 8.0.14+、
+  Redis、xxl-job、Amazon S3
+  （2026-09-03：OCR/PaddleOCR 与 Dify 已整体退出；Apache POI 随 Word 第一期不支持一并移除，
+  见设计方案 §3.2.1、§3.5）
 - **不引入 Kafka**；是否使用消息队列以及任务调度方式完全以设计方案为准，本文件不另行指定
 - 未经明确批准不引入新数据库或知识库
 - 未经明确批准不替换对象存储（S3 → OSS/MinIO 等）
@@ -48,11 +50,11 @@ switch 表达式与模式匹配、`Map.of` / `List.of` / `Set.of`、`Stream.toLi
 
 ## 3. 分层职责
 
-**OCR / 解析器只负责识别；LLM-A 输出经过原文引用约束的结构化总结，负责版面理解、章节归属、语义分类、健康问题准入和枚举归一化；Java只负责 Schema 校验、 来源引用校验、简单安全兜底、集合运算、数值计算和排序，不新增或改写医疗语义。**
+**文件转图层只负责把各种格式统一渲染成页面图；LLM-A 输出结构化总结，负责版面理解、章节归属、语义分类、健康问题准入和枚举归一化；Java 只负责 Schema 校验、页码/枚举/方向校验、简单安全兜底、集合运算、数值计算和排序，不新增或改写医疗语义。**
 
 | 层 | 该做的 | 不该做的 |
 |---|---|---|
-| OCR / 解析器 | 输出原子文本块 + 坐标 | 不拼行、不切区域、不判断表格结构 |
+| 文件转图 | 渲染页面图、压缩、EXIF 归一化 | 任何判断，也不抽取文本 |
 | LLM-A | 语义理解、版面理解、分类、归一化 | —— |
 | Java | 确定性的字符串包含、集合交并、数值比较、排序、阈值 | 不做版面启发式、不做需要理解上下文的推断 |
 
@@ -116,11 +118,11 @@ CurrentUserProvider    获取当前 userId
 DishQueryService       查询当日在架菜品与食材
 ```
 
-> **`PaddleOcrClient` 已移出本列**：已有完整实现 `PaddleOcrVlClient`
-> （OpenAI 兼容协议，接入契约见设计方案 §5.6.7），接口不再保留 `default` 空实现。
+> **OCR 客户端族已整体删除**（2026-09-03）：纯图片链路下 PaddleOCR 退出，
+> `PaddleOcrClient` / `PaddleOcrVlClient` 及其配置不再存在（设计方案 §3.5）。
 >
 > **`DifyClient` 已删除**：LLM-B 于 2026-08-27 由走 Dify 改为直连模型 API，
-> 与 LLM-A、OCR 同一个网关同一套协议，接入契约见设计方案 §13.2。
+> 与体检报告分析模型同一个网关同一套协议，接入契约见开发方案 §13.2。
 
 > **`LlmAModelClient` 不在此列**：LLM-A 直连模型 API，已有完整实现，
 > 只有 base-url / model / apiKey 走部署配置。分界与理由以设计方案为准，本文件只登记类清单。

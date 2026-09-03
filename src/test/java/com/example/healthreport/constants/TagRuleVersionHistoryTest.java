@@ -46,7 +46,7 @@ class TagRuleVersionHistoryTest {
         for (Map.Entry<AllergenKey, AllergenGroup> entry : AllergenGroups.ALL.entrySet()) {
             AllergenGroup group = entry.getValue();
             append(builder, "allergen", entry.getKey(), group.getDisplayName(),
-                    group.isFoodBorne());
+                    AllergenGroups.FOOD_BORNE_KEYS.contains(group.getKey()));
             for (AllergenWord word : group.getWordList()) {
                 append(builder, word.getMatchWord(), word.getDisplayName(), word.getBucket(),
                         word.getEvidenceLevel(), word.getMatchMode(), word.getReviewStatus());
@@ -54,7 +54,8 @@ class TagRuleVersionHistoryTest {
         }
         for (AllergenExceptions.Rule rule : AllergenExceptions.ALL) {
             append(builder, "exception", rule.getAllergenKey(), rule.getMatchWord(),
-                    rule.getSourceField(), rule.getExceptionPhrase(), rule.getReviewStatus());
+                    // SourceField 单值枚举已删除；序列化保留同值字面量以维持摘要稳定（例外恒作用于菜名）。
+                    "DISH_NAME", rule.getExceptionPhrase(), rule.getReviewStatus());
         }
         for (Map.Entry<NutritionKey, NutritionRule> entry : NutritionContents.ALL.entrySet()) {
             NutritionRule rule = entry.getValue();

@@ -85,8 +85,8 @@ class AnalysisTaskBindingIntegrationTest {
 	}
 
 	@Test
-	void shouldRejectSixtyOnePagesBeforeCreatingTaskOrBindingFile() {
-		insertFile(LocalDateTime.now().plusMinutes(10), 61);
+	void shouldRejectThirtyOnePagesBeforeCreatingTaskOrBindingFile() {
+		insertFile(LocalDateTime.now().plusMinutes(10), 31);
 
 		assertThatThrownBy(() -> taskCreateService.precheck(Collections.singletonList(FILE_ID), USER_ID, COMPANY_ID))
 			.isInstanceOfSatisfying(HealthReportException.class,

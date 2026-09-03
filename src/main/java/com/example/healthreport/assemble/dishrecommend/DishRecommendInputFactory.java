@@ -10,9 +10,8 @@ import com.example.healthreport.constants.AllergenKey;
 import com.example.healthreport.constants.DietRequirementContents;
 import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.NutritionKey;
-import com.example.healthreport.dish.TagState;
-import com.example.healthreport.llm.extraction.ValidatedExtractionOutput;
-import com.example.healthreport.safety.StructuredAdmission;
+import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.safety.HighRiskAdviceGate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -37,28 +36,28 @@ public class DishRecommendInputFactory {
 
 	private final DishSetMemberCodec memberCodec;
 
-	private final StructuredAdmission structuredAdmission;
+	private final HighRiskAdviceGate highRiskAdviceGate;
 
 	public DishRecommendInputFactory(DishRecommendSetCache setCache, DishSetMemberCodec memberCodec,
-			StructuredAdmission structuredAdmission) {
+			HighRiskAdviceGate highRiskAdviceGate) {
 		this.setCache = setCache;
 		this.memberCodec = memberCodec;
-		this.structuredAdmission = structuredAdmission;
+		this.highRiskAdviceGate = highRiskAdviceGate;
 	}
 
 	/**
 	 * 读取当前企业当天与报告相关的方向集合，先并集、再做正向减拒绝差集。 在线不查询菜品库、食材表或标签表，也不运行主料与关键词匹配。
 	 */
-	public DishRecommendInput create(String companyId, LocalDate bizDate, ValidatedExtractionOutput output,
+	public DishRecommendInput create(String companyId, LocalDate bizDate, DietTagsResult dietTags,
 			boolean suppressDishRecommend) {
-		if (companyId == null || companyId.length() == 0 || bizDate == null || output == null) {
+		if (companyId == null || companyId.length() == 0 || bizDate == null || dietTags == null) {
 			throw new IllegalArgumentException("模块四输入工厂参数不能为空");
 		}
 		if (suppressDishRecommend) {
 			return new DishRecommendInput(true, false, Collections.<DishRecommendInput.Candidate>emptyList());
 		}
 
-		AdviceDimensions dimensions = dimensions(output);
+		AdviceDimensions dimensions = dimensions(dietTags);
 		List<SetDescriptor> descriptorList = descriptors(dimensions);
 		if (descriptorList.isEmpty()) {
 			return new DishRecommendInput(false, dimensions.formalAdvicePresent,
@@ -69,8 +68,8 @@ public class DishRecommendInputFactory {
 			setRefList.add(descriptor.setRef);
 		}
 		Map<DishTagSetRef, Set<String>> memberByRefMap = setCache.read(companyId, bizDate, setRefList);
-		Set<String> positiveMemberSet = union(descriptorList, memberByRefMap, TagState.RECOMMEND);
-		Set<String> rejectMemberSet = union(descriptorList, memberByRefMap, TagState.REJECT);
+		Set<String> positiveMemberSet = union(descriptorList, memberByRefMap, false);
+		Set<String> rejectMemberSet = union(descriptorList, memberByRefMap, true);
 		positiveMemberSet.removeAll(rejectMemberSet);
 
 		Set<String> candidateMemberSet = new LinkedHashSet<String>(positiveMemberSet);
@@ -98,11 +97,11 @@ public class DishRecommendInputFactory {
 	}
 
 	private Set<String> union(List<SetDescriptor> descriptorList, Map<DishTagSetRef, Set<String>> memberByRefMap,
-			TagState state) {
+			boolean reject) {
 		Set<String> resultSet = new LinkedHashSet<String>();
 		for (SetDescriptor descriptor : descriptorList) {
 			Set<String> memberSet = memberByRefMap.get(descriptor.setRef);
-			if (descriptor.state == state && memberSet != null) {
+			if (descriptor.reject == reject && memberSet != null) {
 				resultSet.addAll(memberSet);
 			}
 		}
@@ -119,46 +118,62 @@ public class DishRecommendInputFactory {
 			if (dimensionMemberSet == null || !dimensionMemberSet.contains(member)) {
 				continue;
 			}
-			if (descriptor.state == TagState.RECOMMEND && (rejected || !positiveMemberSet.contains(member))) {
+			if (!descriptor.reject && (rejected || !positiveMemberSet.contains(member))) {
 				// 任一拒绝方向命中后，不恢复任何正向标签或推荐理由。
 				continue;
 			}
-			matchList.add(new DishRecommendInput.Match(descriptor.state, descriptor.state == TagState.REJECT,
-					descriptor.allergy, descriptor.tagType, descriptor.tagText, descriptor.rawText));
+			matchList.add(new DishRecommendInput.Match(descriptor.reject, descriptor.tagText,
+					descriptor.rawText));
 		}
 		return matchList;
 	}
 
-	private AdviceDimensions dimensions(ValidatedExtractionOutput output) {
+	/**
+	 * 从第三次调用的已校验标签收集生效维度（设计方案 §8.10）。
+	 * <p>只有已通过 Schema/枚举/方向校验且存在正式方向集合的标签才拼 Redis Key：
+	 * 五个非食入性过敏原与 OTHER 在映射前过滤，只保留模块三展示；
+	 * 营养补充与饮食注意条目还要过高危表述安全闸（只扫 quote，命中按 OTHER 路径处理）。</p>
+	 */
+	private AdviceDimensions dimensions(DietTagsResult dietTags) {
 		AdviceDimensions dimensions = new AdviceDimensions();
-		for (ValidatedExtractionOutput.Allergen allergen : output.getAllergenList()) {
-			if (allergen.getEnumKey() == AllergenKey.OTHER) {
+		for (DietTagsResult.DietTag tag : dietTags.getReject()) {
+			if ("OTHER".equals(tag.getEnumKey())) {
 				// OTHER 没有稳定的离线集合；模块三展示原文，模块四不临时查库匹配。
 				continue;
 			}
-			AllergenGroup group = AllergenGroups.ALL.get(allergen.getEnumKey());
-			if (group != null && group.isFoodBorne()) {
-				addRawText(dimensions.allergenRawTextByKeyMap, allergen.getEnumKey(),
-						output.rawTextList(allergen.getSegmentIdList()));
+			if ("ALLERGEN".equals(tag.getDimension())) {
+				AllergenKey allergenKey = AllergenKey.valueOf(tag.getEnumKey());
 				dimensions.formalAdvicePresent = true;
+				if (AllergenGroups.FOOD_BORNE_KEYS.contains(allergenKey)) {
+					// 负向只需要维度 Key：不推荐菜只输出标签，不携带报告原文理由。
+					dimensions.allergenRejectKeySet.add(allergenKey);
+				}
+			}
+			else if ("DIET".equals(tag.getDimension())) {
+				dimensions.formalAdvicePresent = true;
+				if (!highRiskAdviceGate.shouldSuppress(tag.getQuote())) {
+					dimensions.dietRejectKeySet.add(DietRequirementKey.valueOf(tag.getEnumKey()));
+				}
 			}
 		}
-		for (ValidatedExtractionOutput.AdviceItem<NutritionKey> nutrition : output.getNutritionSupplementList()) {
-			List<String> rawTextList = output.rawTextList(nutrition.getSegmentIdList());
-			if (nutrition.getEnumKey() != NutritionKey.OTHER
-					&& !structuredAdmission.shouldSuppress(nutrition.getApplicability(),
-							nutrition.getStructuredSafety(), nutrition.getAdviceQuote(), rawTextList)) {
-				addRawText(dimensions.nutritionRawTextByKeyMap, nutrition.getEnumKey(), rawTextList);
-				dimensions.formalAdvicePresent = true;
+		for (DietTagsResult.DietTag tag : dietTags.getRecommend()) {
+			if ("OTHER".equals(tag.getEnumKey())) {
+				continue;
 			}
-		}
-		for (ValidatedExtractionOutput.AdviceItem<DietRequirementKey> diet : output.getDietRequirementList()) {
-			List<String> rawTextList = output.rawTextList(diet.getSegmentIdList());
-			if (diet.getEnumKey() != DietRequirementKey.OTHER
-					&& !structuredAdmission.shouldSuppress(diet.getApplicability(), diet.getStructuredSafety(),
-							diet.getAdviceQuote(), rawTextList)) {
-				addRawText(dimensions.dietRawTextByKeyMap, diet.getEnumKey(), rawTextList);
+			if ("NUTRITION".equals(tag.getDimension())) {
 				dimensions.formalAdvicePresent = true;
+				if (!highRiskAdviceGate.shouldSuppress(tag.getQuote())) {
+					addRawText(dimensions.nutritionRawTextByKeyMap, NutritionKey.valueOf(tag.getEnumKey()),
+							Collections.singletonList(tag.getRawText()));
+				}
+			}
+			else if ("DIET".equals(tag.getDimension())) {
+				dimensions.formalAdvicePresent = true;
+				if (!highRiskAdviceGate.shouldSuppress(tag.getQuote())) {
+					addRawText(dimensions.dietRecommendRawTextByKeyMap,
+							DietRequirementKey.valueOf(tag.getEnumKey()),
+							Collections.singletonList(tag.getRawText()));
+				}
 			}
 		}
 		return dimensions;
@@ -166,35 +181,36 @@ public class DishRecommendInputFactory {
 
 	private List<SetDescriptor> descriptors(AdviceDimensions dimensions) {
 		List<SetDescriptor> resultList = new ArrayList<SetDescriptor>();
-		for (Map.Entry<AllergenKey, LinkedHashSet<String>> entry : dimensions.allergenRawTextByKeyMap.entrySet()) {
-			AllergenGroup group = AllergenGroups.ALL.get(entry.getKey());
+		for (AllergenKey allergenKey : dimensions.allergenRejectKeySet) {
+			AllergenGroup group = AllergenGroups.ALL.get(allergenKey);
 			resultList.add(new SetDescriptor(
 					new DishTagSetRef(DishTagSetRef.Category.ALLERGEN, DishTagSetRef.Direction.REJECT,
-							entry.getKey().name()),
-					TagState.REJECT, true, DishRecommendInput.TagType.ALLERGY, group.getDisplayName() + "过敏",
-					joinRawText(entry.getValue())));
+							allergenKey.name()),
+					true, group.getDisplayName() + "过敏", null));
 		}
-		for (Map.Entry<DietRequirementKey, LinkedHashSet<String>> entry : dimensions.dietRawTextByKeyMap.entrySet()) {
+		for (DietRequirementKey dietKey : dimensions.dietRejectKeySet) {
 			resultList.add(new SetDescriptor(
 					new DishTagSetRef(DishTagSetRef.Category.DIET, DishTagSetRef.Direction.REJECT,
-							entry.getKey().name()),
-					TagState.REJECT, false, DishRecommendInput.TagType.DIET_AVOID, dietRejectTagText(entry.getKey()),
-					null));
-			if (positiveDiet(entry.getKey())) {
-				resultList.add(new SetDescriptor(
-						new DishTagSetRef(DishTagSetRef.Category.DIET, DishTagSetRef.Direction.RECOMMEND,
-								entry.getKey().name()),
-						TagState.RECOMMEND, false, DishRecommendInput.TagType.DIET_OK,
-						DietRequirementContents.ALL.get(entry.getKey()).getRecommendTagText(),
-						joinRawText(entry.getValue())));
+							dietKey.name()),
+					true, dietRejectTagText(dietKey), null));
+		}
+		for (Map.Entry<DietRequirementKey, LinkedHashSet<String>> entry : dimensions.dietRecommendRawTextByKeyMap
+			.entrySet()) {
+			// 方向校验已保证只有 LOW_PURINE、HIGH_FIBER 能进 recommend；这里再按常量政策核对一次。
+			if (!positiveDiet(entry.getKey())) {
+				continue;
 			}
+			resultList.add(new SetDescriptor(
+					new DishTagSetRef(DishTagSetRef.Category.DIET, DishTagSetRef.Direction.RECOMMEND,
+							entry.getKey().name()),
+					false, DietRequirementContents.ALL.get(entry.getKey()).getRecommendTagText(),
+					joinRawText(entry.getValue())));
 		}
 		for (Map.Entry<NutritionKey, LinkedHashSet<String>> entry : dimensions.nutritionRawTextByKeyMap.entrySet()) {
 			resultList.add(new SetDescriptor(
 					new DishTagSetRef(DishTagSetRef.Category.NUTRITION, DishTagSetRef.Direction.RECOMMEND,
 							entry.getKey().name()),
-					TagState.RECOMMEND, false, DishRecommendInput.TagType.NUTRITION, nutritionTagText(entry.getKey()),
-					joinRawText(entry.getValue())));
+					false, nutritionTagText(entry.getKey()), joinRawText(entry.getValue())));
 		}
 		return resultList;
 	}
@@ -276,11 +292,13 @@ public class DishRecommendInputFactory {
 	/** 报告中生效维度及其去重后的原文证据。 */
 	private static final class AdviceDimensions {
 
-		private final Map<AllergenKey, LinkedHashSet<String>> allergenRawTextByKeyMap = new LinkedHashMap<AllergenKey, LinkedHashSet<String>>();
+		private final Set<AllergenKey> allergenRejectKeySet = new LinkedHashSet<AllergenKey>();
+
+		private final Set<DietRequirementKey> dietRejectKeySet = new LinkedHashSet<DietRequirementKey>();
 
 		private final Map<NutritionKey, LinkedHashSet<String>> nutritionRawTextByKeyMap = new LinkedHashMap<NutritionKey, LinkedHashSet<String>>();
 
-		private final Map<DietRequirementKey, LinkedHashSet<String>> dietRawTextByKeyMap = new LinkedHashMap<DietRequirementKey, LinkedHashSet<String>>();
+		private final Map<DietRequirementKey, LinkedHashSet<String>> dietRecommendRawTextByKeyMap = new LinkedHashMap<DietRequirementKey, LinkedHashSet<String>>();
 
 		private boolean formalAdvicePresent;
 
@@ -291,22 +309,15 @@ public class DishRecommendInputFactory {
 
 		private final DishTagSetRef setRef;
 
-		private final TagState state;
-
-		private final boolean allergy;
-
-		private final DishRecommendInput.TagType tagType;
+		private final boolean reject;
 
 		private final String tagText;
 
 		private final String rawText;
 
-		private SetDescriptor(DishTagSetRef setRef, TagState state, boolean allergy, DishRecommendInput.TagType tagType,
-				String tagText, String rawText) {
+		private SetDescriptor(DishTagSetRef setRef, boolean reject, String tagText, String rawText) {
 			this.setRef = setRef;
-			this.state = state;
-			this.allergy = allergy;
-			this.tagType = tagType;
+			this.reject = reject;
 			this.tagText = tagText;
 			this.rawText = rawText;
 		}

@@ -1,8 +1,8 @@
 package com.example.healthreport.infra;
 
-import com.example.healthreport.parse.CompressedPageImage;
-import com.example.healthreport.parse.ExtractionImageCompressor;
-import com.example.healthreport.parse.pdf.PdfPageRenderer;
+import com.example.healthreport.render.CompressedPageImage;
+import com.example.healthreport.render.ExtractionImageCompressor;
+import com.example.healthreport.render.pdf.PdfPageRenderer;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -397,7 +397,7 @@ final class ProbeModelCall {
     }
 
     /**
-     * 【不用生产的 StatusOnlyErrorHandler】它在 exchange 里就把非 2xx 抛成 LlmCallException，
+     * 【不用生产的 StatusOnlyErrorHandler】它在 exchange 里就把非 2xx 抛成 HealthReportAnalysisCallException，
      * 响应正文连读都读不到——而网关报错时那段正文（限流原因、模型名写错、上下文超限）
      * 正是唯一有用的信息。探针把它原样落到本地文件，不进日志，与生产的脱敏红线不冲突。
      */

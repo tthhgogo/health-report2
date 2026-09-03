@@ -27,7 +27,6 @@
         <mybatis-plus.version>3.5.5</mybatis-plus.version>
         <mysql-connector.version>8.0.33</mysql-connector.version>
         <pdfbox.version>2.0.30</pdfbox.version>
-        <poi.version>5.2.5</poi.version>
         <ofdrw.version>2.4.0</ofdrw.version>
         <tinypinyin.version>2.0.3</tinypinyin.version>
         <json-schema-validator.version>1.0.87</json-schema-validator.version>
@@ -67,18 +66,14 @@
             <version>${pdfbox.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.apache.poi</groupId>
-            <artifactId>poi-ooxml</artifactId>
-            <version>${poi.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.poi</groupId>
-            <artifactId>poi-scratchpad</artifactId>
-            <version>${poi.version}</version>
-        </dependency>
-        <dependency>
             <groupId>org.ofdrw</groupId>
             <artifactId>ofdrw-reader</artifactId>
+            <version>${ofdrw.version}</version>
+        </dependency>
+        <dependency>
+            <!-- OFD 逐页转图（ImageMaker）；与 ofdrw-reader 同族同版本，Word 删除后 OFD 是唯一新增渲染路径 -->
+            <groupId>org.ofdrw</groupId>
+            <artifactId>ofdrw-converter</artifactId>
             <version>${ofdrw.version}</version>
         </dependency>
         <dependency>
@@ -168,7 +163,9 @@
                 <directory>schema</directory>
                 <targetPath>schema</targetPath>
                 <includes>
-                    <include>extraction_output.schema.json</include>
+                    <include>indicators.schema.json</include>
+                    <include>health_problems.schema.json</include>
+                    <include>diet_tags.schema.json</include>
                     <include>dish_tag_output.schema.json</include>
                 </includes>
             </resource>
@@ -196,7 +193,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <!-- 性能与真实 OCR 门禁必须显式选择，普通单测不得误报为已执行。 -->
-                    <excludedGroups>pre-release-only,external-ocr,image-probe</excludedGroups>
+                    <excludedGroups>pre-release-only,image-probe</excludedGroups>
                 </configuration>
             </plugin>
         </plugins>
@@ -212,7 +209,6 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <groups>release-gate</groups>
-                            <excludedGroups>external-ocr</excludedGroups>
                         </configuration>
                     </plugin>
                 </plugins>
@@ -228,21 +224,6 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <groups>image-probe</groups>
-                            <excludedGroups>none</excludedGroups>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-        <profile>
-            <id>pre-release-ocr</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <configuration>
-                            <groups>external-ocr</groups>
                             <excludedGroups>none</excludedGroups>
                         </configuration>
                     </plugin>

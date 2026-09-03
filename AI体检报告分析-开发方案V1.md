@@ -35,7 +35,9 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 
 ### 0.2 已登记的冲突
 
-**本文与设计方案当前无冲突。** 设计方案相对产品需求的偏离统一登记在设计方案 §12；其中
+**本文与设计方案当前无冲突。** 曾登记的 Word 过渡方案冲突已于 2026-09-03 随裁决消除：
+**第一期不支持 DOC/DOCX，上传识别即拒**（设计方案 §3.2.1、§12-16，本文 §5.4）。
+设计方案相对产品需求的偏离统一登记在设计方案 §12；其中
 §12-12 明确覆盖所有进入 `rejectSet` 的菜，包括过敏原 `REJECT` 和饮食注意 `REJECT`，不能缩写成
 只有过敏冲突。
 
@@ -49,22 +51,21 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 
 ```
 ① 分层职责（AGENTS.md §3、设计方案 §0-2）
-   Java 只做：Schema 校验、来源引用校验、安全降级、集合运算、数值计算、排序
-   Java 不做：改写模型的语义结论（status / isFoodBorne / includeInHealthProblems / enumKey）
+   Java 只做：Schema 校验、页码/枚举/方向校验、安全降级、菜品集合运算、数值计算、排序
+   Java 不做：改写模型的语义结论（status / sourceType / dimension / enumKey）
              版面推断（相邻块配对、bbox 同行、表格行列还原、按坐标聚类）
              为「只告警」而扫语义词表
 
-② 生产链路里的词表只有三类、四个执行点，全部是「往安全方向降级或拦截」
-   过敏漏抽类   §6.5-A 高风险交叉扫描  +  §6.5-C 阳性行覆盖扫描
+② 生产链路里的词表执行点全部是「往安全方向降级或拦截」
    高危表述类   §7.4  高危表述安全闸
-   过敏兜底类   §7.5.5 过敏关键词兜底（与模型结果取并集，只增不减 REJECT）
+   过敏兜底类   §7.5.5 离线菜品过敏关键词兜底（与模型结果取并集，只增不减 REJECT）
    除此之外不得出现 ConclusionLabelWords / NormalStatementWords / AllergenSectionWords
    的任何生产代码引用（§11.1-R1 用 ArchUnit 断言）
 
-③ MySQL 不存报告正文、OCR 文本和结构化健康结论；这些不进普通应用日志，
+③ MySQL 不存报告正文、页面图和结构化健康结论；这些不进普通应用日志，
    排障期仅可进入 §9.2 规定的独立敏感 DEBUG logger
    —— 注意措辞：**不是「MySQL 不含任何敏感信息」**，`origin_name` 就是已登记的例外
-   姓名 / 性别 / 完整 OCR 文本：只在工作线程内存，从不写 Redis
+   姓名 / 性别 / 页面图 / 三次原始模型响应：只在工作线程内存，从不写 Redis
    四模块要展示的原文片段：随结果写 Redis，TTL 2h
    ⚠️ 【已登记的例外】ct_health_report_file.origin_name 是敏感元数据
       （常含姓名与体检属性），约束见 §3.2 —— 不要再说"MySQL 不含任何敏感信息"
@@ -73,8 +74,8 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 
 #### 0.3.1 边界层的值必须显式校验，不能靠 Java 类型（2026-08-27 补）
 
-**领域对象在构造器里把非法值拒掉，这套习惯在本仓库是有效的**——`Dish`、`Segment`、
-`OcrResult`、`DishTagInput` 都这么做，所以它们的消费方可以按「构造即安全」写，
+**领域对象在构造器里把非法值拒掉，这套习惯在本仓库是有效的**——`Dish`、`PageImage`、
+`ValidatedDietAdvice`、`DishTagInput` 都应这么做，所以它们的消费方可以按「构造即安全」写，
 不必到处补 null 判断。
 
 **但这套保护在边界层是失效的**，因为那里的值不是 Java 造出来的：
@@ -122,13 +123,11 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 | **`origin_name` 是否保留原始文件名** | 敏感元数据面，非阻塞但需表态 | 本文 §3.2 |
 | **对象存储 `health-report/` 前缀的 Bucket 生命周期规则** | **上线阻断**——它是「孤儿对象永久残留」的最后兜底，不依赖应用代码正确。主控制是 §4.1 的写入顺序（先插库行再写对象），但那只能兜住我们想到的路径 | 本文 §4.1 |
 | **`S3FileStorage.delete` 对不存在的 key 必须幂等成功** | **阻塞编码之外的正确性**——§4.1 的四种失败形态里有两种会去删不存在的对象；抛异常会让 file 行永远删不掉，孤儿清理原地卡死 | 本文 §4.1 |
-| **网关是否透传 qwen3 的关闭思考参数**（LLM-B） | **不阻塞正确性**——剥离逻辑无条件保留（§13.2.3）；只影响 token 成本与 `max-tokens` 该配多大 | 本文 §13.2.3 |
-| **LLM-A 直连的整条出网链路是否留存请求体** | **上线阻断** | 见下的六项核查；LLM-A 是全案最敏感的一次出网 |
-| **§6.2.4 的 ⛔ 三项**（base-url / model / apiKey）与服务端限额 | **只阻塞端到端联调与上线**，不阻塞编码——协议已选定，代码可写完并用 WireMock 验（§6.2.1.1） | 本文 §6.2.4 |
-| **OCR 的单图字节上限与请求体字节上限**（`ocr.max-encoded-image-bytes`、`ocr.max-request-body-bytes`） | **阻塞上线，不再阻塞编码**——协议与编码方式已由接入截图确认（§5.6.7），代码已按 JSON+Base64 写完并用 WireMock 验过；但这两个数推出 `effectiveOcrImageBytes`，进而决定 §5.1 的实际上传上限，**没有真值就不能上线**。`OcrProperties` 无默认值，缺失即启动失败 | 本文 §5.6.2.1、§5.6.7 |
-| **OCR 网关是否接受 `data:image/png;base64,…` 形式的 `image_url`** | **阻塞端到端联调**——平台示例给的是 `http://…/nan.png` 外链，我们**不能用外链**（§5.6.7 的理由）。若网关只认外链，等于要求把报告页图发布到可按 URL 取回的位置，那是 §6.2.1 拒绝 Dify 的同一条理由，需要重新决策而不是改代码 | 本文 §5.6.7 |
-| **扫描版 OFD 目前无法走 OCR**——`parse/ofd` 没有页面渲染器，`RenderedPageImageProcessor` 要的 `BufferedImage` 只有 `PdfPageRenderer` 能产出 | **功能缺口，非上线阻断**：这类文件会以零 segment 落到 `UNREADABLE`，是显式失败不是静默降级。要支持须用 ofdrw 补一个渲染器并补 bbox/尺度契约验证 | 本文 §5.7 |
-| **OCR 出网链路是否留存请求体**——与 §0.4.1 的六项同源，但 OCR 是**第二次**把报告图像发出去 | **上线阻断** | 见 §0.4.1；把 OCR 网关一并纳入那六项核查 |
+| **网关是否透传 qwen3 的关闭思考参数**（菜品离线打标模型） | **不阻塞正确性**——剥离逻辑无条件保留（§13.2.3）；只影响 token 成本与 `max-tokens` 该配多大 | 本文 §13.2.3 |
+| **体检报告分析模型直连的整条出网链路是否留存请求体** | **上线阻断** | 见下的六项核查；三次报告分析请求组成全案最敏感的出网链路 |
+| **§6.4 的 ⛔ 三项**（base-url / model / apiKey）与服务端限额 | **只阻塞端到端联调与上线**，不阻塞编码——协议已选定，代码可写完并用 WireMock 验 | 本文 §6.4 |
+| **网关是否支持 `response_format=json_object`**（体检报告分析链路已发送该字段） | **联调前必验**——不支持则三次调用直接 400；届时从客户端 `buildRequestBody` 移除该字段 | 本文 §13.2.2 注 |
+| **OFD 页面渲染的保真度** | **上线前必验**：全部 OFD 都要转图，不再有 OCR 回退路径；需用真实扫描版和电子版样本验证页数、旋转、字体和小数点 | 本文 §5.2、设计方案 §11 |
 
 **实现时按「未审核 = 该内容不注入」处理**：`ReviewStatus != REVIEWED` 的常量条目不进提示词、
 不参与匹配（现有 `AllergenGroups` 等常量类已有该字段）。这不是临时妥协，是长期机制。
@@ -173,12 +172,11 @@ javax.*，绝不 jakarta.*                        Maven
 | `mybatis-plus-boot-starter` | 持久化 | 3.5.x 最后一个支持 Boot 2.7 的版本 |
 | `mysql-connector-java` | 驱动 | 8.0.x |
 | `org.apache.pdfbox:pdfbox` | PDF 解析 | **2.0.x**，不升 3.x |
-| `org.apache.poi:poi-ooxml` + `poi-scratchpad` | DOCX / DOC | |
 | `org.ofdrw:ofdrw-reader` | OFD | |
 | `com.github.promeg:tinypinyin` | 菜名拼音 | |
-| `com.networknt:json-schema-validator` | LLM 输出 Schema 校验 | Java 8 兼容版本 |
+| `com.networknt:json-schema-validator` | 模型输出 Schema 校验 | Java 8 兼容版本 |
 | `com.xuxueli:xxl-job-core` | 离线打标调度 | |
-| HTTP 客户端 | **LLM-A 直连模型 API**（§6.2.1）与 OCR 调用 | 优先用 `spring-boot-starter-web` 自带的 `RestTemplate`，**不新增第三方 HTTP 库**（`AGENTS.md` §2） |
+| HTTP 客户端 | **体检报告分析模型与菜品离线打标模型直连模型 API** | 优先用 `spring-boot-starter-web` 自带的 `RestTemplate`，**不新增第三方 HTTP 库**（`AGENTS.md` §2） |
 | `com.tngtech.archunit:archunit-junit4` | §11.1-R1 架构断言 | **test scope** |
 | `com.github.tomakehurst:wiremock-jre8` | R57~R65 的真实 HTTP 红线测试 | **test scope**，`jre8` 版本才兼容 Java 8 |
 
@@ -191,13 +189,12 @@ text blocks / switch 表达式 / `Optional.isEmpty` / `String.isBlank` / `Stream
 ## 2. 包结构与命名
 
 > **包名与类名按职责取，不用 `a` / `b` / `1234` 这类序号**（`AGENTS.md` §6）。
-> 文中「LLM-A」「LLM-B」「模块一~四」是架构叙述用语，与设计方案保持一致；
-> 落到代码里一律用下表的职责名，两者的对应关系是：
+> 设计方案中的字母代号在开发文档与代码中统一改用职责名称；模块一~四仍沿用产品编号：
 >
 > | 叙述用语 | 包 | 主要类前缀 |
 > |---|---|---|
-> | LLM-A | `llm.extraction` | `Extraction*` |
-> | LLM-B | `llm.dishtag` | `DishTag*` |
+> | 体检报告分析模型 | `llm.extraction` | `Extraction*` / `HealthReportAnalysisModel*` |
+> | 菜品离线打标模型 | `llm.dishtag` | `DishTag*` |
 > | 模块一 健康指标 | `assemble.indicator` | `Indicator*` |
 > | 模块二 健康问题 | `assemble.problem` | `Problem*` |
 > | 模块三 饮食建议 | `assemble.dietadvice` | `DietAdvice*` |
@@ -205,36 +202,41 @@ text blocks / switch 表达式 / `Optional.isEmpty` / `String.isBlank` / `Stream
 >
 > Prompt 与 Schema 的**文件名也按职责取**，与上表的包名对齐：
 >
-> | 资源 | 抽取 | 菜品打标 |
-> |---|---|---|
-> | 提示词 | `prompt/extraction.md` | `prompt/dish_tag.md` |
-> | 输出契约 | `schema/extraction_output.schema.json` | `schema/dish_tag_output.schema.json` |
-> | `promptVersion` 前缀 | `extraction-` | `dishtag-` |
+> | 资源 | 调用一 健康指标 | 调用二 健康问题 | 调用三 饮食建议与标签 | 离线菜品打标 |
+> |---|---|---|---|---|
+> | 提示词 | `prompt/indicators.md` | `prompt/health-problems.md` | `prompt/diet-tags.md` | `prompt/dish_tag.md` |
+> | 输出契约 | `schema/indicators.schema.json` | `schema/health_problems.schema.json` | `schema/diet_tags.schema.json` | `schema/dish_tag_output.schema.json` |
+> | `promptVersion` 前缀 | `indicators-` | `problems-` | `diet-tags-` | `dishtag-` |
+>
+> **体检报告分析模型固定调用三次**（设计方案 §4.1）。三份提示词与三份 Schema
+> 各自独立版本化，`prompt/versions.tsv` 里各占一行。
+> 旧的 `prompt/extraction.md` 与 `schema/extraction_output.schema.json` **整体废弃**。
+> 当前仓库的 `*-probe.md` / `*_probe.schema.json` 仅用于质量探测，不是上表生产文件；
+> 三对生产契约在实现主链路前必须先落地并通过契约测试。
 
 ```
 com.example.healthreport
 ├── api                     Controller + 请求/响应 DTO
 │   └── dto
 ├── task                    任务生命周期：创建、线程池、状态机、巡检
-├── parse                   文件解析 → Segment
-│   ├── pdf | ofd | word | ocr
-│   └── segment             Segment 模型、规范化、密度闸
+├── render                  文件 → 页面图（原 parse 包，职责已收窄）
+│   ├── pdf | ofd | word | image
+│   └── PageImageSequence   全局图序列 + page → (fileIndex, pageInFile) 映射表
 ├── llm                     模型链路
-│   ├── extraction          LLM-A（报告结构化抽取）：分批、编址、调用、Schema 校验、展开、来源校验
-│   ├── dishtag             LLM-B（菜品打标）：离线打标契约与校验
+│   ├── extraction          体检报告分析模型（三次串行调用）：请求组装、顺序编排、Schema 校验、结构自洽校验
+│   ├── dishtag             菜品离线打标模型：离线打标契约与校验
 │   └── schema              两条链路共用的输出契约：Schema 的唯一加载点与校验入口
 ├── assemble                四模块组装
 │   ├── indicator           模块一 健康指标
 │   ├── problem             模块二 健康问题
 │   ├── dietadvice          模块三 饮食建议
-│   ├── dishrecommend       模块四 菜品推荐
-│   └── sort                排序总则的唯一实现
+│   └── dishrecommend       模块四 菜品推荐
 ├── dish                    菜品查询、主料推导、标签读取与裁决
 ├── safety                  安全扫描、降级决策、词表（仅三处，见 §0.3）
 ├── constants               已存在，内容常量真源（不动结构）
 ├── persistence             Entity / Mapper / Service（`AGENTS.md` §4 命名）
 ├── cache                   Redis 键位与读写
-├── infra                   五个占位符（`AGENTS.md` §5）
+├── infra                   三个占位符（`AGENTS.md` §5）与已实现的模型客户端
 └── support                 IdCanonicalizer、计数器、错误码、共用工具
 ```
 
@@ -243,10 +245,10 @@ com.example.healthreport
 ```
 sql/schema.sql              建表语句，与 §3.1 一字不差（R54 锁）
 sql/alter/*.sql             上线后的结构变更，一次一个文件
-（无 Dify DSL 交付物）      LLM-A、LLM-B、OCR 三条链路全部直连，接入契约见 §6.2.1.1 / §13.2 / §5.6.7
-dify/README.md               记录 LLM-B 曾经的编排形态与改直连的理由；【不是交付物】
-prompt/*.md                 提示词真源（已存在）
-schema/*.json               LLM 输出契约（已存在）
+（无 Dify DSL 交付物）      体检报告分析三次调用与菜品离线打标全部直连，接入契约见 §6.4 / §13.2
+dify/README.md               记录菜品离线打标曾经的编排形态与改直连的理由；【不是交付物】
+prompt/*.md                 提示词真源（三份在线生产文件待创建，probe 不代替生产文件）
+schema/*.json               模型输出契约（三份在线生产 Schema 待创建）
 constants/*.md              内容常量说明（已存在）
 ```
 
@@ -281,8 +283,8 @@ CREATE TABLE ct_health_report_task (
   progress       TINYINT      NOT NULL DEFAULT 0 COMMENT '任务进度百分比，取值0至100',
   fail_code      VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '失败错误码，与 FailCode 枚举一一对应，成功或未失败时为NULL',
   reanalyzable   TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否允许重新解析：1允许0不允许，同时是文件解绑条件',
-  partial        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否为部分结果：1是0否，命中时模块三四按partial_reason降级',
-  partial_reason VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '降级原因：PAGE_TRUNCATED页数截断/BATCH_UNREADABLE批次不可读/ALLERGEN_SUSPECT_MISS疑似漏抽过敏原/SCHEMA_ITEM_DROPPED个别条目不合Schema已剔除/DIET_REQUIREMENT_DROPPED剔除的条目含饮食注意需抑制菜品推荐',
+  partial        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否发生预算内条目剔除：1是0否，具体影响由partial_reason说明',
+  partial_reason VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '降级原因：SCHEMA_ITEM_DROPPED普通条目被剔除/DIET_TAG_DROPPED饮食标签被剔除并抑制菜品推荐',
   heartbeat_at   DATETIME     NULL COMMENT '工作线程最近心跳时间，巡检据此判断进程存活',
   deadline_at    DATETIME     NULL COMMENT '任务执行硬截止时间，领取时置为当前时间加10分钟，此后不再顺延',
   expire_at      DATETIME     NOT NULL COMMENT '任务行过期时间，创建时为30分钟后，成功时顺延为2小时后以对齐结果TTL',
@@ -307,9 +309,9 @@ CREATE TABLE ct_health_report_file (
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始，即用户提交fileIds的顺序',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件状态：UPLOADED已上传，当前仅此一个取值',
   origin_name    VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '敏感元数据：用户上传的原始文件名，可能含姓名与体检属性如张三-2026体检报告.pdf。仅用于前端回显，禁止进日志与外部系统，随file行一起删除。是否改为安全生成的展示名待产品确认',
-  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD/DOC/DOCX，不信任扩展名',
+  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD，不信任扩展名；DOC/DOCX识别即拒不落行',
   size_bytes     BIGINT       NOT NULL COMMENT '文件大小，单位字节',
-  precheck_pages INT          NOT NULL COMMENT '创建任务容量预检页数：PDF与OFD为真实页数，图片为1，Word为原生segment数除以40向上取整的下界且不含OCR块，图片型Word可为0',
+  precheck_pages INT          NOT NULL COMMENT '创建任务容量预检页数：PDF与OFD为真实页数，图片恒为1，全部为精确值',
   content_hash   CHAR(64)     CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件内容SHA-256哈希，小写十六进制',
   cloud_file_key VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '对象存储文件键，用于定位原始文件，桶名由部署配置提供不入库',
   expire_at      DATETIME     NOT NULL COMMENT '原始文件过期删除时间，上传后30分钟',
@@ -332,8 +334,8 @@ CREATE TABLE ct_dish_tag (
   evidence_type       VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '证据类型：INGREDIENT食材表明确列出/DISH_NAME菜名明确说明/COOKING菜名直接表达且足以证明成分的工艺证据，仅REJECT时有值；通常做法推断不得产生REJECT',
   matched_ingredients VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '命中食材名称的JSON数组字符串，仅供离线契约校验与排障，不写Redis、不用于推荐理由',
   reason              VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '模型返回的判定理由，仅排障用，不展示给用户',
-  model_version       VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT 'LLM-B模型版本，冗余存储仅供排障，不参与任何键与查询条件',
-  prompt_version      VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT 'LLM-B提示词版本，冗余存储仅供排障',
+  model_version       VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '菜品离线打标模型版本，冗余存储仅供排障，不参与任何键与查询条件',
+  prompt_version      VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '菜品离线打标提示词版本，冗余存储仅供排障',
   tag_rule_version    VARCHAR(32)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '内容常量版本，冗余存储仅供排障',
   last_seen_date      DATE         NOT NULL COMMENT '最后一次被预热确认为当前有效的业务日，清理只看这一列',
   create_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间即打标时间，由数据库维护，代码永不赋值',
@@ -347,7 +349,7 @@ CREATE TABLE ct_dish_tag (
 ```
 
 **没有 outbox 表、没有队列表、没有 segment 表、没有 lease 表。**
-segment 与 bbox 只在内存（设计方案 §10「明确不做」），Worker lease 用
+页面图和原始模型响应只在 Worker 内存，Worker lease 用
 `heartbeat_at` + `deadline_at` 表达。
 
 ### 3.1.1 审计列与实体映射
@@ -421,7 +423,7 @@ support.IdCanonicalizer
 > 本版口径：承认它是【敏感元数据】，按四条约束
 >     ① 仅用于前端回显"你上传了哪些文件"，不参与任何业务判定
 >     ② 【禁止进入普通应用日志】—— 排障期仅可进入 §9.2 默认关闭的独立敏感 DEBUG logger
->     ③ 【禁止传给任何外部系统】—— 不进模型请求、不进 Dify 请求、不进 OCR 请求、不进对象存储元数据
+>     ③ 【禁止传给任何外部系统】—— 不进三次体检报告分析请求、不进菜品离线打标请求、不进对象存储元数据
 >     ④ 随 file 行一起删除（§4.5 清理矩阵），不单独延长留存
 >
 > 待产品确认（§0.4）：是否改成不存原始文件名、只存安全生成的展示名（「报告1.pdf」+ content_type）
@@ -447,7 +449,7 @@ support.IdCanonicalizer
 没有 q:analysis                     没有队列
 Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 → 任务判 FAILED
 
-【结果里不得包含】姓名、性别、完整 OCR 文本、全部 segment 的 rawText（§0.3-③）
+【结果里不得包含】姓名、性别、页面图、三次体检报告分析模型原始响应（§0.3-③）
 【结果里包含】四模块实际展示的原文片段
 ```
 
@@ -478,7 +480,7 @@ Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 �
 | 校验 | 规则 | 失败码 |
 |---|---|---|
 | 格式 | 逐格式判定，**不信任扩展名**（§5.1） | `UNSUPPORTED_FORMAT` |
-| 大小 | PDF/OFD/DOC/DOCX ≤ 20MB；**JPG/PNG ≤ min(10MB, `effectiveOcrImageBytes`)**（§5.6.2.1） | `FILE_TOO_LARGE` |
+| 大小 | PDF/OFD ≤ 20MB；JPG/PNG ≤ 10MB | `FILE_TOO_LARGE` |
 | 可读性 | 按 §5.1 逐格式判定 | `FILE_UNREADABLE` |
 
 落 `ct_health_report_file`：`status='UPLOADED'`、`task_id=NULL`、
@@ -531,55 +533,34 @@ Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 �
 
 #### 4.1.1 `precheck_pages` 在上传时算定
 
-它只服务于创建任务前的**容量下界预筛**，不承诺 Word 的最终等效页数。PDF / OFD / 图片是精确值；
-Word 的内嵌图片尚未 OCR，只能先数原生 segment，精确值在工作线程计算（§4.1.2）。
+它只服务于创建任务前的**容量预筛**，全部支持格式都是精确值
+（第一期不支持 Word，§5.4——无折算值、无 Worker 二次业务容量裁决）。
 
 ```java
-// parse.CapacityPrecheckService —— 上传时调用，不做 OCR、不保存 segment
-// Word 原生 segment > 1200 或 ≥300×300px 的内嵌图片 > 30 时直接抛 PAGE_LIMIT_EXCEEDED
+// render.CapacityPrecheckService —— 上传时调用，不保存报告原文
 int countPrecheckPages(byte[] content, ContentType type);
 ```
 
 | 格式 | `precheck_pages` | 同步拒绝条件 |
 |---|---|---|
-| PDF / OFD | 真实页数 | 与任务内其他文件累计后 > 60，由 analyze 拒绝 |
+| PDF / OFD | 真实页数 | 与任务内其他文件累计后 > 30，由 analyze 拒绝 |
 | JPG / PNG | 恒为 1 | 同上 |
-| DOC / DOCX | `ceil(nativeSegmentCount / 40)`，**不含 OCR 块** | `nativeSegmentCount > 1200` 或 `embeddedImageCount > 30`，上传直接拒绝 |
 
-```
-上传时只落 precheck_pages，不落 nativeSegmentCount、embeddedImageCount 或任何 segment 原文。
-工作线程仍从原文件重新解析；Word 的 OCR 块数只有那时才知道。
-```
+上传时只落 `precheck_pages`，不落任何报告原文。
 
-#### 4.1.2 Word 精确容量在 Worker 裁决
+Worker 从对象存储逐文件读回后必须重新执行运行时完整性复核：长度和 SHA-256 分别与
+`size_bytes`、`content_hash` 一致；重新识别的真实格式与 `content_type` 一致；重新执行
+格式安全检查（OFD 含 ZIP 炸弹扫描）与可读性/精确页数预检，结果与 `precheck_pages` 一致。
+任务快照还必须满足文件数、连续 `file_index`、总字节数和总页数上限。任一项漂移按
+`SERVER_ERROR` 失败且三次模型调用数为 0，不重新归因成用户输入错误。
 
-```java
-// parse.word.WordCapacityGuard —— Word 完成内嵌图片 OCR、全部 segment 生成后调用
-// 只做数量统计与阈值比较，不做版面或语义判断
-WordCapacityResult check(List<Segment> orderedSegmentList, int embeddedImageCount);
-```
+#### 4.1.2 【已随 Word 移除】Worker 二次业务容量裁决
 
-固定顺序：
-
-```
-① 按 Word 源码顺序生成原生 segment；图片 OCR 块插入图片所在位置
-② embeddedImageCount > 30 或 orderedSegmentList.size() > 1200
-     → FAILED / PAGE_LIMIT_EXCEEDED / reanalyzable=false，且不调用 LLM-A
-③ exactWordPages = ceil(orderedSegmentList.size() / 40)
-④ 与其他文件的精确页数累计：
-     exactTotalPages > 60
-       → FAILED / PAGE_LIMIT_EXCEEDED / reanalyzable=false，且不调用 LLM-A
-     31 <= exactTotalPages <= 60
-       → PageBudgetService 按 fileIndex 和文件内顺序保留前 30 等效页（§5.4）
-```
-
-单个 Word 超过 1200 segment 时直接失败，不把它截成 30 页；但**任务累计截断仍可能落在 Word 内部**。
-例如 PDF 20 页 + Word 800 segment（20 等效页）总计 40 页，应保留 PDF 20 页和 Word 前 400 个
-有序 segment。多个 Word 文件同理。
-
-这是设计方案允许的时机让步：Word 因 OCR 块导致的超限可以在任务创建后异步发现。
-容量超限是确定性输入问题，`reanalyzable=false`；OCR 服务调用失败则是
-`SERVER_ERROR / reanalyzable=true`，不得把两者混用。
+第一期不支持 Word（§5.4）后所有格式页数在上传时即精确，`WordCapacityGuard`、
+等效页折算与「渲染后再作业务裁决」整体不存在。`PAGE_LIMIT_EXCEEDED` 只在上传与
+analyze 创建时**同步**发生，不再是异步任务失败码。§4.1.1 的 Worker 复核只验证对象与
+任务快照未发生漂移，命中时是 `SERVER_ERROR`，不是重新引入本机制。恢复 Word 支持时按
+设计方案 §3.2.1 的恢复条件一并恢复本节机制。
 
 #### `POST /api/health-report/analyze` 创建任务
 
@@ -599,8 +580,8 @@ file.expireAt >  now
 可绑定        = task_id IS NULL 或（原 task 为 FAILED 且 reanalyzable = 1）
 ```
 
-**其余校验：** `fileIds` 数量 1~5、累计 ≤ 60MB、累计 `precheck_pages` ≤ 60（**不是 30**，
-且含 Word 时只是下界预筛，见 §4.1.2、§5.4）。
+**其余校验：** `fileIds` 数量 1~5、累计 ≤ 60MB、累计 `precheck_pages` ≤ 30
+（全部格式精确，§4.1.1，创建时同步裁决即为最终裁决）。
 **没有队列深度校验**——背压由线程池有界队列 + `AbortPolicy` 承担（§4.2）。
 
 `FILE_ALREADY_BOUND` **必须把已绑定的 taskId 一并返回**，兜住「任务创建成功但响应丢包」。
@@ -623,8 +604,8 @@ file.expireAt >  now
 
 ```
 出参   { "partial":bool, "partialReason":"..."|null,
-        "processedPages":30, "totalPages":45,
-        "suppressDietAdvice":bool, "suppressDishRecommend":bool,
+        "processedPages":12, "totalPages":12,
+        "suppressDishRecommend":bool,
         "modules": { ... 见 §7 ... } }
 ```
 
@@ -639,8 +620,10 @@ file.expireAt >  now
 }
 ```
 
-**模块被抑制或未产出时该字段为 `null`**，与同级的 `suppressDietAdvice` /
-`suppressDishRecommend` 布尔位对齐；前端判空只需判 `null`，不必再区分「空数组」和「不存在」。
+**模块被抑制或未产出时该字段为 `null`**，与同级的 `suppressDishRecommend`
+布尔位对齐；前端判空只需判 `null`，不必再区分「空数组」和「不存在」。
+（曾有 `suppressDietAdvice` 字段，2026-09-03 删除：全案没有任何规则会把它置 true——
+`DIET_TAG_DROPPED` 只抑制模块四，模块三照常展示其余已校验条目。）
 
 > **为什么不用长度恒为 1 的数组。** 四个组装器各产出恰好一个 `Result`，
 > 用数组包起来在契约上表达不出「只能有一个」——将来有人往里塞第二个元素不会有任何东西拦住，
@@ -663,7 +646,8 @@ file.expireAt >  now
 ④ status == SUCCEEDED  →  才读 Redis；读不到同样返回 RESULT_EXPIRED
 ```
 
-`processedPages` / `totalPages` 两个字段**必须下发**，前端据此解释 `PAGE_TRUNCATED`（§5.4）。
+`processedPages` / `totalPages` 两个字段**必须下发**，成功结果中两者必须相等；
+精确总页数超过 30 时任务在体检报告分析模型调用前失败，不存在 `PAGE_TRUNCATED` 结果（§5.5）。
 
 #### `DELETE /api/health-report/task/{taskId}` 删除
 
@@ -688,9 +672,9 @@ executor.submit(taskId);                                              // ⑤
                   FROM ct_health_report_file
                  WHERE file_id IN (?) AND user_id = ? AND company_id = ?
    逐条校验 status / expire_at / 可绑定；再算 SUM(precheck_pages) 与 SUM(size_bytes)
-       SUM(precheck_pages) > 60  →  PAGE_LIMIT_EXCEEDED，【直接返回，不建任务、不绑文件】
+       SUM(precheck_pages) > 30  →  PAGE_LIMIT_EXCEEDED，【直接返回，不建任务、不绑文件】
        SUM(size_bytes) > 60MB     →  FILE_TOO_LARGE，同上
-   —— 纯算术，不解析任何文件；含 Word 时这是下界预筛，最终容量由 Worker 裁决（§4.1.2）
+   —— 纯算术，不解析任何文件；全部格式的 `precheck_pages` 都是精确值（§4.1.1）
 ① 开启事务
 ② INSERT ct_health_report_task (status='QUEUED', expire_at=now+30min, ...)
 ③ 绑定文件（下面的两步，B1 的唯一执行点）
@@ -725,7 +709,7 @@ UPDATE ct_health_report_file
 -- 受影响行数必须 == 1，否则整个事务回滚，返回 FILE_ALREADY_BOUND
 ```
 
-**两个线程池，必须分开：**
+**只保留一个有界任务线程池：**
 
 ```java
 // task.ExecutorConfig  —— 这不是「中间件配置类」，是业务线程池，允许写
@@ -737,20 +721,17 @@ ThreadPoolExecutor analysisExecutor() {
         new ThreadPoolExecutor.AbortPolicy());             // 满了直接抛
 }
 
-@Bean("llmBatchExecutor")
-ThreadPoolExecutor llmBatchExecutor() { /* 大小 W × 4，供 §6.1 批次并发使用 */ }
 ```
 
 ```
 不得用无界队列        用户排到文件 expire_at（30min）都到了，排到也没文件可读
 不得用 CallerRunsPolicy 分析会跑在 Tomcat 请求线程上，分钟级占死，拖垮 Web 层
 不得静默丢弃          任务永远停在 QUEUED，只能等 5 分钟巡检兜底
-不得共用一个池        W 个任务各占一线程、又各自等待提交到同一池的 4 个批次
-                     → 4×W 个批次全排队 → 线程饥饿死锁
-                     → 心跳线程仍活着，心跳巡检【扫不出来】，只能等 deadline 兜底
+不得创建批次池        三阶段是同一任务内的固定顺序，直接在当前任务线程中顺序调用
+                     不提交子 Future，不在阶段间并发
 
-W = min( floor(C / (4 × 实例数)),                    ← 模型配额，C 待确认（§12）
-         floor((堆预算 - Web 层占用) / 单任务峰值) )   ← 内存预算，单任务峰值见 §6.2.5
+W = min( floor(C / 实例数),                          ← 单任务同时只占 1 个体检报告分析模型在途配额
+         floor((堆预算 - Web 层占用) / 单任务峰值) )   ← 内存预算，单任务峰值见 §11.5
 【两个上界哪个小取哪个】—— 只按配额算会在内存上翻车（百 MB/任务 量级）
 【实例数是必须项】本机线程池下每个实例独立跑满自己的 W，漏掉它会成倍超用配额
 QUEUE_CAPACITY 需实测校准（设计方案 §11-14）
@@ -795,7 +776,7 @@ stage 只有三个取值，【不是六个】—— PARSING 与 EXTRACTING 合�
 SUCCEEDED 时 progress = 100，stage 不再有意义
 ```
 
-**心跳：** 每 30s 更新 `heartbeat_at`，**由独立调度线程执行**——批次并行等待期间主流程
+**心跳：** 每 30s 更新 `heartbeat_at`，**由独立调度线程执行**——转图和三次串行模型调用期间主流程
 是阻塞的，心跳挂在主流程里会被巡检误杀。**心跳只更新 `heartbeat_at`，绝不顺延 `deadline_at`。**
 
 **巡检（`TaskSweepJob`，每 5 分钟，xxl-job）三条并列：**
@@ -869,7 +850,7 @@ expire_at 顺延         否则第 30 分钟任务行被删，归属校验失去
 ④ 工作线程每次 CAS、每次写结果都带 deleted_at IS NULL；写回被④拦下
 ```
 
-**正确性靠写回条件保证，不靠「能不能及时停下来」**——与 §6.1「任一批失败不取消其余批次」同源。
+**正确性靠写回条件保证，不靠「能不能及时停下来」**——与单任务同步执行、终态 CAS 的原则同源。
 
 **清理任务（`CleanupJob`，每 5 分钟）必须按状态逐类判定，不能笼统「终态即删」：**
 
@@ -947,9 +928,12 @@ expire_at 顺延         否则第 30 分钟任务行被删，归属校验失去
 
 ---
 
-## 5. 解析与 Segment
+## 5. 文件转图
 
-### 5.1 格式判定与路由
+> 对应设计方案 §3。**本节的全部职责是「把各种格式变成 JPEG 页面图」，不做任何判断。**
+> 旧的 Segment 切分、文本规范化、密度闸、OCR 调用**整体删除**，相关类一并移除。
+
+### 5.1 格式判定与可读性
 
 **逐格式判定，不信任扩展名，也不能只看 magic number：**
 
@@ -957,2191 +941,360 @@ expire_at 顺延         否则第 30 分钟任务行被删，归属校验失去
 |---|---|---|
 | PDF | `%PDF-` 头 | PDFBox 能打开、页数 ≥ 1 |
 | JPG/PNG | magic number + **实际解码** | 解码成功、宽高 ≥ 100px、总像素 ≤ 8000 万 |
-| DOCX | ZIP 容器 + 内含 `word/document.xml` | POI 能打开，且**正文非空或含 ≥1 张合规内嵌图片** |
+| DOCX | ZIP 容器 + 内含 `word/document.xml` | 不适用——**识别即拒**（§5.4） |
 | OFD | ZIP 容器 + 内含 `OFD.xml` | ofdrw 能打开、页数 ≥ 1 |
-| DOC | OLE2 头 `D0CF11E0` + WordDocument 流 | POI 能打开，且**正文非空或含 ≥1 张合规内嵌图片** |
+| DOC | OLE2 头 `D0CF11E0` | 不适用——**识别即拒**（§5.4） |
 
-`.zip` 不是支持格式，直接拒。但 DOCX 与 OFD 自身就是 ZIP（magic 都是 `PK\x03\x04`），
-必须解开查内部结构才能区分。
+`.zip` 不是支持格式，直接拒。但 DOCX 与 OFD 自身就是 ZIP，magic number 相同，
+必须解开查内部结构才能区分——**DOC/DOCX 不支持但识别逻辑必须保留**：
+不区分的话 DOCX 会被当成损坏 OFD 报「文件无法读取」，正确文案是「暂不支持该文件格式」。
+识别只读 ZIP 条目名与目标条目，不做全量内容解压。
 
-**PDF 是否有文本层：** 抽取字符数/页数 ≥ 50 且非空白字符占比 ≥ 30%，任一不满足走 OCR。
-**第二道 PDF→OCR 触发条件见 §5.3**，它必须解析之后才判得了。
+**PDF 不再判断「有没有文本层」。** 一律转图，字形密度闸随之删除。
 
 **解压炸弹防御（DOCX / OFD）：** 流式计数，**不信 `ZipEntry.getSize()`**；
-累计解压字节 > 上限或压缩比 > 阈值立即中断。
+条目数 ≤ 1000、单条目 ≤ 50MB、总解压 ≤ 200MB、压缩比 ≤ 100:1，任一超限立即中断。
 
-### 5.2 Segment：回切原文的唯一凭据
+`FormatDetector` / `ReadabilityChecker` / `ZipBombGuard` / `ImageContentInspector` **全部保留**，
+职责不变。
 
-```java
-// parse.segment.Segment  —— 不可变
-String  segmentId;      // f{fileIndex}-p{page}-s{seq}，例 f0-p2-s17
-String  rawText;        // 解析器抽出的原始字符，一个字都不动 —— 展示与原文核对用
-String  normalizedText; // NFKC → 部首映射 → 全角转半角 —— 送模型、匹配、比对用
-TextSource textSource;  // NATIVE | OCR，决定 §6.4 的校验档位
-BBox    bbox;           // 全来源保留，随批次输入给 LLM-A；Word 无坐标时 null
-```
-
-**切分粒度：**
-
-| 来源 | 一个 segment 是 | 解析器**不做**的事 |
-|---|---|---|
-| PDF 原生文本层 | 一次 `Tj` / `TJ` 显示操作 | 不按字体/基线/字距/坐标二次合并；不识别表格、不聚类行列、不判断单元格 |
-| OFD | ofdrw 的一个原子文本对象 | 同上 |
-| OCR | 一个识别块 | 不合并相邻块 |
-| DOCX / DOC | 一个段落；表格按 POI 的**显式** `<w:tc>` 切 | 不合并跨行/跨列单元格，不重排行列 |
-
-**实现路径：覆写 `PDFStreamEngine` 的 `showTextString` / `showTextStrings`**，
-一次显示操作产出一个 segment。
-
-> **绝不使用 `PDFTextStripper`。** 它内部按行聚类，正是 `AGENTS.md` §3 点名的
-> 「按 Y 坐标聚类成逻辑行」——用它等于把版面判断偷偷做回 Java。
-> 该库能否稳定拿到绘制单元需实机验证（设计方案 §11-19）；拿不到只剩「全部 PDF 走 OCR」一条路。
+### 5.2 类清单
 
 ```
-seq 在文件内单调递增，一经分配不再变化
-segmentId 是【进程内的稳定主键】，不落库（§3.1 无 segment 表）
-它服务于跨批去重、跨文件不混淆、回切定位；模型侧看不到它（§5.5）
+render
+├── FileToImageService          入口：List<FileRef> → PageImageSequence
+├── PageImageSequence           全局图序列 + page → (fileIndex, pageInFile) 映射表（不可变）
+├── PageImage                   一页：JPEG 字节 + 宽高 + 全局 page
+├── pdf/PdfPageRenderer         已存在，不改：300dpi、长边 ≤3600、Rotate 归一化
+├── ofd/OfdPageRenderer         ofdrw 逐页转图
+├── image/UploadedImageAdapter  解码 → EXIF Orientation 归一化 → 重编码
+└── ExtractionImageCompressor   已存在，不改：长边 2000/q0.85，超 1MiB 降 1600/0.80
 ```
 
-**规范化（`normalizedText`）：**
+**删除的类**（连同其测试）：
 
 ```
-NFKC → RadicalNormalizeMap（U+2E80–U+2EFF，约 30 条手工映射）→ 全角转半角
+parse/segment/**              Segment、GlyphDensityGate、BBox、TextSource
+                              【TextNormalizer 及其依赖不在此列，见下方移包指令】
+parse/pdf/PdfSegmentParser    仅保留 RENDER_DPI / MAX_RENDER_LONG_EDGE 常量，移入 PdfPageRenderer
+parse/ofd/OfdSegmentParser
+parse/word/WordSegmentParser
+parse/ocr/**                  OcrBlock、OcrBboxNormalizer、OcrContentSplitter、OcrPageSegmentFactory
+parse/Ocr*                    OcrProperties、OcrCapacityCalculator、OcrImageEncoder、OcrRequestEncoding
+infra OCR 客户端族             PaddleOcrVlClient、PaddleOcrClient、OcrConnectionProperties、
+                              OcrStartupValidator、OcrCallException —— OCR 整体退出在线链路
+PdfTextLayerChecker
 ```
 
-> NFKC 只解决一半：康熙部首区（U+2F00–U+2FD5）有兼容分解会被自动还原，
-> **CJK 部首补充区（U+2E80–U+2EFF）没有兼容分解，NFKC 对它无效**，必须手工映射。
-> 未收录的字符**保留原样，不猜测替换**（§0.3-③）：替错一个字会让 normalizedText 变成看似正常实则错字的文本。
-
-### 5.3 绘制单元密度闸
-
-有些 PDF 生成器逐字发 `Tj`，此时绘制单元就是单个字形。**不退化为字形，整文件改走 OCR：**
-
-```java
-// parse.segment.GlyphDensityGate
-if (segmentCount / effectivePageCount > MAX_SEGMENTS_PER_PAGE) {   // 暂定 400
-    // 判定为「逐字形绘制」→ 该文件整体改走 OCR 路径
-    // textSource 记为 OCR，包含性校验走放宽档（§6.4）
-}
-```
-
-**OCR 路径同样受 400 块/页约束，超限【整任务 FAILED / UNREADABLE】**，不做局部截断：
-局部截断要新定义 `partial_reason` 枚举、`processedPages` 算法、模块开关，而定义完风险仍在
-——被丢掉的那页恰好是过敏筛查页时，§6.5-A 的关键词扫描也扫不到它（整页没进来）。
-
-阈值 400 需用真实样本校准（设计方案 §11-7b）。
-
-### 5.4 容量限制与页数截断
-
-**三档，不是两档**（`totalPages` = 单任务累计等效页数）：
-
-本节全部发生在 `PARSING` 阶段：所有 Word 完成 OCR 并算出精确容量后，先做上限裁决，
-再做前 30 页保留，最后才能进入 `EXTRACTING` 调用 LLM-A。
-
-| `totalPages` | 处理 | 结果 |
-|---|---|---|
-| ≤ 30 | 全部处理 | 四个模块正常输出 |
-| **31 ~ 60** | **只处理前 30 页** | `partial=true`、`partial_reason=PAGE_TRUNCATED`，**模块三四不输出** |
-| > 60 | 无 Word 时创建任务前拒绝；含 Word 且仅 OCR 后确认超限时，Worker 失败 | `failCode = PAGE_LIMIT_EXCEEDED` |
-
-```java
-// parse.PageBudgetService —— 31~60 档的唯一执行点
-// 输入：解析后的精确 FileCapacity 列表；Word 必须已经完成 OCR 与 §4.1.2 的独立上限检查
-// 按 fileIndex 升序、文件内按页序累计，累计到第 30 等效页为止；其后内容不进送给 LLM-A 的保留序列
-// 【不是按文件整份丢弃】—— 第 3 个文件的前半截该处理就处理
-int processedPages;   // 实际进入解析的等效页数，≤ 30
-int totalPages;       // 精确累计等效页数；含 Word 时可能在 Worker 才确认 > 60
-```
+**随 OCR 删除必须同步改造的三处（不是删文件就完事）：**
 
 ```
-单个 Word：exactSegmentCount > 1200 或 embeddedImageCount > 30
-    → FAILED / PAGE_LIMIT_EXCEEDED / reanalyzable=false，不截断、不调用 LLM-A
-
-任务累计：Word 仍参与 31~60 档。
-    Word 每 40 个有序 segment 为一个逻辑页；截断点落在 Word 内时，只保留对应的前 N 个 segment。
-    例：PDF 20 页 + Word 800 segment = 40 页 → 保留 PDF 20 页 + Word 前 400 segment。
-
-精确 totalPages > 60：
-    不含 Word却在 Worker 命中 → 上游预检违约，FAILED / SERVER_ERROR
-    含 Word且由 OCR 块推高后命中 → FAILED / PAGE_LIMIT_EXCEEDED / reanalyzable=false
-    两种都不调用 LLM-A
+① task/FileUploadService 的图片上传上限
+   原取 min(产品上限 10MB, OcrProperties.getEffectiveOcrImageBytes())，OCR 删除后
+   后一半失去来源。【已落地口径（2026-09-03）】：上传上限只剩产品 10MB——
+   上传图会被重压缩到单页 ≤1MiB 再进请求体，上传字节数与模型请求体积已经解耦，
+   反推公式不成立（按公式算会把大部分正常照片拒掉）。模型请求体的约束由两处承担：
+   压缩器单页 1MiB 上限 + 客户端 max-request-body-bytes（启动自检要求 ≥30页满载下限，R66k）。
+   OcrCapacityCalculator 随之整体删除，无需改名保留
+② RenderedPageImageProcessor / PageImageArtifacts 是「一份渲染图双消费者」入口
+   （OCR 编码档 + LLM 压缩档）。新链路只剩压缩档一个消费者，简化为单产物；
+   【「渲染位图用完立即释放」的约束在这两个类里，简化时必须原样保留】
+③ ImageEncodingSupport 是 package-private，被 OcrImageEncoder 与
+   ExtractionImageCompressor 共用。它的 resizeRgb / encodeJpeg 是转图核心，【必须留】，
+   随 parse → render 移包时一起搬，防止跨包引用编译失败
 ```
 
-两个字段**必须落进结果并下发前端**（§4.1 result 接口）。
-
-> 截断后关模块三四的理由：总检结论与过敏筛查几乎总在报告末尾（设计方案 §3.3.2）。
+**必须移包、不得删除的三个类**（实测有 5 处消费者，其中 4 处在新链路里仍需要）：
 
 ```
-Word 不按页计算：ceil(segment 数 / 40) 记为等效页（设计方案 §3.3.1，系数待校准 §11-8）
-Word 内嵌图片：≥300×300px 提取走 OCR，【产出的识别块也是 segment】，计入上面的分母
-              <300×300px 视为装饰图，忽略
+parse/segment/TextNormalizer            →  support/text/TextNormalizer
+parse/segment/TextNormalizationResult   →  support/text/TextNormalizationResult
+parse/segment/RadicalNormalizeMap       →  support/text/RadicalNormalizeMap
 ```
 
-### 5.5 批次编址：模型侧只见块号
-
-**模型看不到也用不着 `segmentId`。** 每页一个页眉，每块一个批内块号 `blockRef`（0 起连续）：
-
-```
-每行格式：[块号] (textSource, bbox=x,y,w,h) 文本
-
-=== 第 2 页 ===
-[15] (NATIVE, bbox=72,110,180,22)  血脂检查
-[16] (NATIVE, bbox=72,168,120,20)  甘油三酯
-[17] (NATIVE, bbox=200,168,40,20)  2.8
-=== 第 3 页 ===
-[18] (NATIVE, bbox=72,110,180,22)  肝功能
-```
-
-```java
-// llm.a.BatchAddressing
-List<Segment> renderOrder;                    // 按 seq 升序，【渲染顺序是契约的一部分】
-String render(List<Segment> segments);        // 生成上面的文本
-String expand(int blockRef);                  // blockRef → segmentId，查数组
-```
-
-```
-页眉必须给【报告上的真实页码】，不是「本批第几页」
-    —— sectionRelation 的 CONTINUATION 判断依赖模型知道自己在第几页（§6.2）
-bbox 必须逐块给，不能只给页面图
-    —— 解析器不聚类行列，模型判断「这五块是同一行」只看渲染顺序判不出来：
-       双栏页上左右两栏的块会交替出现
-映射表由 Java 在发请求时构造并持有，收到响应立刻展开（§6.3）
-展开之后 blockRef 不再出现在任何下游逻辑里
-```
-
-**（2026-09-02）「每批输入预算 ≤ 60k token（硬约束）」已删除**，见设计方案 §4.1.5。
-实测 8 页带图 **89k~101k token**，超了 1.7 倍而链路一路跑通——那个数既不准也从未被执行。
-原估算 ≈49k/批 偏低约 2 倍，主因是没把每块的 `bbox=` 前缀算进去（每页文本实测 ≈14,577 token）。
-
-解析阶段的 **400 块/页** 上限继续有效，它防的是 segment 数失控，与 token 预算无关。
-
----
-
-### 5.6 图像渲染与压缩（发 LLM-A 之前的唯一入口）
-
-**只有一个类产出发给 LLM-A 的图**：`parse.ExtractionImageCompressor`。
-其余任何地方都不得自己渲染或编码 JPEG——否则参数会分叉，而分叉后没人发现。
-
-#### 5.6.1 两档压缩，档位固定不可调
-
-```
-档 1（默认）   长边 2000px，JPEG quality 0.85
-   压缩后 ≤ maxImageBytes(1MB) → 用它
-档 2（回退）   长边 1600px，JPEG quality 0.80
-   压缩后 ≤ 1MB → 用它
-仍 > 1MB      → 抛 ImageTooLargeException，【调用前失败】，不进批次
-```
-
-```java
-// parse.ExtractionImageCompressor
-CompressedPageImage compressForExtraction(BufferedImage source);   // 不落盘、不入 S3
-
-/** 压缩结果。<b>必须返回实际宽高</b>——bbox 换算要用它（§5.6.6）。 */
-class CompressedPageImage {
-    byte[] jpegBytes;
-    int    width;        // 压缩后实际像素宽（可能是 2000 档、1600 档，或小图保持原尺寸）
-    int    height;       // 同上
-}
-```
-
-> **只返回 `byte[]` 是不够的**：调用方无从知道最终用了哪一档、小图有没有被放大、
-> 旋转归一化后的实际宽高是多少——而这三样都直接决定 `bbox` 的换算系数。
-
-**为什么只有两档、且到此为止**：再往下压就要牺牲小字可读性。
-**全案宁可失败也不发一张糊图**——压糊了模型会读错，而那是**静默错误**：
-页面正常显示、数值是错的。
-
-**但失败时用 `IMAGE_TOO_LARGE`，不是 `UNREADABLE`**（§5.6.5）：
-压不下去与看不清是两回事，给用户的提示也不同。
-
-#### 5.6.2 压缩发生在 OCR **之后**，两者用不同的图
-
-**那一次渲染按 OCR 的规格来，不是按 LLM-A 的规格来：**
-
-```
-渲染分辨率 = OCR 档（300 DPI，A4 约 2480×3508；长边上限 3600px）
-   —— 【不能按 LLM-A 的 2000px 渲染】：OCR 是识别精度的源头，
-      2000px 长边对 A4 只有约 170 DPI，小字号会掉字，而掉的字后面全链路都补不回来
-   —— LLM-A 那 2000/1600px 是从这张图【降下来】的，不是重新渲染
-```
-
-```
-渲染一次 BufferedImage（PDFBox / ofdrw，OCR 档分辨率）
-   ├─→ ① OcrImageEncoder 编码 → OCR（§5.6.2.1），【不压质量】
-   └─→ ② ExtractionImageCompressor 降采样 + 压缩 → BatchPage.jpegBytes
-   ③ 立即释放 BufferedImage
-```
-
-> **内存要按 OCR 档重算**：2480×3508×3B ≈ **26MB/页**（不是 2000×2800 的 16MB）；
-> 长边 3600px 时约 **39MB/页**。**必须逐页处理、用完即释放**，
-> 一个批次 8 页若同时持有 BufferedImage 就是 200~300MB——`W` 的内存上界（§4.2）要把它算进去。
-
-**顺序不能颠倒，也不能只渲染压缩图给 OCR 用。** ①② 共用同一次渲染，渲染只做一次；
-但 **OCR 拿高清编码、LLM-A 拿压缩图**。
-
-#### 5.6.2.1 `OcrImageEncoder`：给 OCR 的编码，参数独立于 LLM-A
-
-`recognize(byte[])` 要字节，而 PDF/OFD 渲染出来的是 `BufferedImage`——中间这一步必须有明确规格：
-
-```java
-// parse.OcrImageEncoder —— 与 ExtractionImageCompressor 【完全独立】的两套参数
-byte[] encodeForOcr(BufferedImage source);
-```
-
-```
-格式    PNG 无损优先 —— OCR 的输入不做有损压缩，JPEG 在小字周围的振铃会直接吃掉笔画
-        PNG 超过 effectiveOcrImageBytes → 回退 JPEG quality 0.95（仍远高于 LLM-A 的 0.85）
-        再超 → FAILED / IMAGE_TOO_LARGE，与 §5.6.5 同一条
-尺寸    不缩放，就用渲染出来的那张
-释放    编码完立刻释放 BufferedImage 与编码器（ImageWriter / ImageOutputStream，finally）
-```
-
-##### 三个上限是三件事，不能合成一个
-
-**上一版把「OCR 单图上限」和「OCR 请求体上限」当成同一个数，那是错的**：
-OCR 若用 JSON + Base64，8MB 原图会变成约 10.7MB 的 Base64，再加 JSON 骨架还要更大
-——**「请求体最大 8MB」不等于「能发 8MB 原图」**。multipart 也有边界与请求头开销，只是小得多。
-
-```
-PRODUCT_IMAGE_UPLOAD_MAX_BYTES = 10MB        产品规定的图片上传上限，【不随 OCR 变】
-ocr.maxEncodedImageBytes                     OCR 声明的单张原图字节上限
-ocr.maxRequestBodyBytes                      OCR 完整 HTTP 请求体上限
-```
-
-**先由后两者推出「有效 OCR 图片上限」，编码方式决定怎么推：**
-
-```
-JSON + Base64   effectiveOcrImageBytes = min( ocr.maxEncodedImageBytes,
-                                              (ocr.maxRequestBodyBytes - JSON骨架预留) × 3 / 4 )
-multipart       effectiveOcrImageBytes = min( ocr.maxEncodedImageBytes,
-                                              ocr.maxRequestBodyBytes - multipart开销预留 )
-```
-
-**再取产品上限与它的较小者，作为实际上传上限：**
-
-```
-实际上传上限 = min( PRODUCT_IMAGE_UPLOAD_MAX_BYTES, effectiveOcrImageBytes )
-
-【方向只能往下，不能往上】
-    OCR 允许 20MB  → 上传上限仍是 10MB（产品说了算，不因 OCR 宽松就放宽）
-    OCR 只允许 6MB → 上传上限降到 6MB，【这是产品可见的降级，必须报给产品】
-```
-
-**三条送图进 OCR 的路，全部用同一个 `effectiveOcrImageBytes`：**
-
-| 入口 | 字节从哪来 | 检查点 |
-|---|---|---|
-| 上传的 JPG / PNG | 原始上传字节，直传（§5.6.3-④） | **上传接口**按上面的「实际上传上限」拒 |
-| Word 内嵌图片 | 从 docx 抽出的原始字节，直传 | **解析时**逐张比 `effectiveOcrImageBytes` |
-| PDF / OFD 渲染图 | `OcrImageEncoder` 产出 | 编码时比 `effectiveOcrImageBytes`（上面那段） |
-
-```
-上传路径按【实际上传上限】拒，其余两条按【effectiveOcrImageBytes】拒
-    —— 前者更严（还叠了产品上限），所以直传路径天然合法，永远不需要为迁就 OCR 而重编码
-    —— 而重编码正是最想避免的（要整幅解码，§5.6.3）
-
-Word 内嵌图片超限 → FAILED / IMAGE_TOO_LARGE
-    【不静默跳过那张图】—— 跳过等于悄悄丢掉报告的一部分内容（§6.2 零 segment 同源）
-```
-
-> **`effectiveOcrImageBytes` 由启动时算出并打日志**，不写死常量——
-> 它依赖 §0.4 的两个接入答案，写死就等于把外部约束硬编码进代码。
-
-##### 入口提前拒 + 客户端按真实请求体兜底，两层都要有
-
-`effectiveOcrImageBytes` 是**按协议开销估出来的**，而 JSON 骨架大小、multipart 边界长度
-都可能与真实协议对不上。**估算只能提前拒绝，不能保证发出去的请求一定合规。**
-
-```java
-// 启动自检（与 §6.2.1.1 的 baseUrl/model/apiKey 自检一起做）
-if (ocr.maxEncodedImageBytes <= 0 || ocr.maxRequestBodyBytes <= 0) {
-    throw new IllegalStateException("OCR 容量参数未配置");      // 启动失败，不要跑到第一次调用
-}
-if (ocr.maxRequestBodyBytes <= PROTOCOL_FIXED_OVERHEAD_BYTES) {
-    throw new IllegalStateException("OCR 请求体上限小于协议固定开销，配置有误");
-}
-// effectiveOcrImageBytes 算出后打 INFO 日志，值 <= 0 同样启动失败
-
-// PaddleOcrClient：请求【组装完成之后、发送之前】再兜一次
-byte[] requestBody = buildOcrRequest(imageBytes);
-if (requestBody.length > ocr.getMaxRequestBodyBytes()) {
-    // 说明估算的协议开销偏小 —— 【不发请求】，映射为 IMAGE_TOO_LARGE
-    throw new ImageTooLargeException(requestBody.length, ocr.getMaxRequestBodyBytes());
-}
-```
-
-```
-【全部容量计算用 long】
-    maxRequestBodyBytes × 3 / 4、字节数累加、Base64 膨胀 —— int 在 2GB 处溢出成负数，
-    而负数会让 "> 上限" 的判断恒为假，超限图反而畅通无阻。这类溢出不报错，只会静默放行
-
-两层的分工：
-    入口（effectiveOcrImageBytes）  提前拒，让用户在上传时就知道，而不是任务跑一半失败
-    客户端（真实请求体）             兜底，防估算偏差把不合规的请求发出去
-    —— 只有前者会漏，只有后者用户体验差，两层都要有
-```
-
-> **绝对不能复用 LLM-A 的压缩图给 OCR。** 那是 0.85 / 0.80 质量、还可能降到 1600px 的图，
-> 拿它识别等于把 §5.6.1「宁可失败也不发糊图」的理由反过来用在 OCR 上——
-> 而 OCR 掉的字**后面所有环节都补不回来**（segment 没了、来源校验没了、模型也看不到）。
->
-> **上传的 JPG/PNG 不走本编码器**：它们本来就是编码字节，直接交给 OCR（§5.6.3-④），
-> 不解码、不重编码。
-
-**上传的 JPG / PNG 同样要过压缩器。** §5.1 允许 8000 万像素的图上传，
-原图 base64 之后单张就可能几十 MB——**不压缩必然撞 `maxRequestBodyBytes`**。
-
-**Word 的图片不进这条链路**：内嵌图片只做 OCR，产出识别块作为 segment；
-图片本身不发 LLM-A（§6.2.1、设计方案 §3.3.1）。
-
-#### 5.6.3 大图不得先整幅解码
-
-§5.1 的可读性校验要求"实际解码后判断总像素"，而 §5.6.2 又把整幅解成 `BufferedImage`
-——**一张 8000 万像素的图 RGB 约 240MB、ARGB 约 320MB，还没进压缩器就可能拖垮共享堆**（§4.2）。
-
-```
-① 先用 ImageIO.getImageReaders + reader.getWidth/getHeight 读【尺寸】，不整幅解码
-② 总像素 > 上限 → 立即拒绝（§5.1 的 FILE_TOO_LARGE），此时堆里只有几 KB 的文件头
-③ 发 LLM-A 的图用【降采样解码】：ImageReadParam#setSourceSubsampling
-   直接解成接近目标尺寸的位图，【不先生成 8000 万像素的 BufferedImage 再缩】
-④ OCR 接口【锁定为吃编码字节】，不是条件句：
-       List<OcrBlock> recognize(byte[] encodedImageBytes);
-   上传的 JPG/PNG 与 Word 内嵌图片【直接把原始编码字节交给 OCR】，本地不解码
-   只有"发 LLM-A 的图"这条路径才降采样解码
-```
-
-**②③ 缺一不可**：只做 ② 挡得住超限图，挡不住"刚好在上限内的 7000 万像素图"；
-只做 ③ 则超限图仍会被读到尺寸之后继续走流程。
-
-> **④ 不能留成"若支持"。** 写成条件句的话，OCR 服务不支持时就退回本地整幅解码，
-> 8000 万像素照样变成 240~320MB 位图——**那正是 ①②③ 想避免的**。
->
-> **若 `PaddleOcrClient` 确实做不到吃编码字节**，正确的应对是
-> **调低 §5.1 的像素上限**（按本地解码能承受的堆算），而不是留一条会打爆堆的分支。
-> 列入 §0.4 的接入前确认。
-
-#### 5.6.4 压缩实现的确定性细节
-
-这些都是确定性图像处理，不属于 `AGENTS.md` §3 禁止的"复杂语义判断"，但**不写死就会各写各的**：
-
-```
-不放大        源图长边 ≤ 目标长边时【保持原尺寸】，只重新编码；放大既费体积又不增信息
-透明背景      PNG 带 alpha → 转 JPEG 前【铺白底】；不铺会变黑或编码失败
-色彩空间      统一转 TYPE_INT_RGB；不要把 TYPE_BYTE_GRAY / 带 ICC 的图直接交给 JPEG Writer
-缩放算法      固定用 Graphics2D + RenderingHints.VALUE_INTERPOLATION_BILINEAR
-              —— 换算法会改变输出字节，进而改变"是否超 1MB"的判定，档位就不可复现了
-方向归一化    在【渲染阶段】处理：PDF 按页面 /Rotate，上传图按 EXIF Orientation
-              压缩器拿到的永远是"正着的"图（§5.6.6 的 bbox 换算依赖这一点）
-资源释放      ImageWriter / ImageOutputStream / Graphics2D 都要 dispose/close，
-              放在 finally；JPEG Writer 不释放会攒住 native 内存
-```
-
-#### 5.6.5 渲染失败与压缩失败的归属
-
-```
-渲染失败（损坏页、加密页、字体缺失）  → 该页无图
-    该页 imageRequired = true 时       → 整任务 FAILED / UNREADABLE
-    —— 不是 SERVER_ERROR：我们确实没能把这一页变成可读的东西，
-       与 §6.2 的零 segment 同源，用户换一份清晰文件才有意义
-
-压缩两档都超限                         → FAILED / IMAGE_TOO_LARGE  【不是 UNREADABLE】
-```
-
-> **压缩超限和"读不清"是两回事，不能共用一个错误码。**
-> 一张高噪声拍照图可能非常清晰，只是 JPEG 压缩率低——系统真正的问题是
-> **"无法满足模型的请求大小限制"**，不是"这张图看不清"。
-> 归到 `UNREADABLE` 会给用户一句「文件无法读取，请检查文件是否完整」，
-> 而他的文件完全没问题，**照着提示做也解决不了**。
->
-> `IMAGE_TOO_LARGE` 的 `reanalyzable = 0`：同一份文件重试结果一样，
-> 用户需要换一张分辨率更低或噪点更少的图。
-
-**不要让它走到 §6.2.1.1 的 `assertPageListValid`**——那里抛的是
-`IllegalStateException`（编程错误语义），而渲染失败是**数据问题**，
-应该在解析阶段就判掉并给出正确的 `failCode`。
-
-#### 5.6.6 `bbox` 与渲染尺度必须同源
-
-`bbox` 的基准是「同一批下发的那张页面渲染图」（§5.5），而解析器给的坐标是
-**PDF 用户空间的点**，渲染图是**像素**——中间必须换算，且换算系数必须来自
-**同一次渲染的实际尺寸**：
-
-**下游只认一种坐标契约，各解析器自己转到这个契约上：**
-
-```
-Segment.bbox 的定义 = 【原始渲染图上的像素坐标，原点左上、Y 向下】
-    —— 不是 PDF 点、不是 OFD 页面单位、不是任何"原生"坐标系
-```
-
-**转换发生在各自的解析器里，下游一律不做来源判断：**
-
-| 来源 | 原生坐标 | 解析器负责做什么 |
-|---|---|---|
-| PDF 原生文本 | PDF 点，原点**左下**，Y 向上 | 乘渲染 DPI 缩放 + **Y 轴翻转** |
-| OFD | OFD 页面单位（毫米），原点见规范 | 换算到渲染图像素 + 按需翻转 |
-| OCR | **已经是图像像素、原点左上** | **原样透传，不做任何翻转** |
-| 上传图片（走 OCR） | OCR 返回的图像像素 | **取决于 OCR 有没有应用 EXIF，见 §5.6.6.1** |
-| Word | 无版面坐标 | `bbox = null` |
-
-> **上一版把「Y 轴翻转」写在下游是错的**：那对 PDF 是对的，对 OCR 就是**把坐标上下颠倒**
-> ——而 OCR 路径恰恰是扫描件、拍照件的主流形态。写成"下游统一翻转"会让最常见的那类输入全错。
->
-> **每种来源只有它自己的解析器知道原生坐标系长什么样**，转换必须留在那里。
-> 下游拿到的永远是同一种东西，这也是 §5.5 把 `bbox` 渲染进提示词时不需要解释坐标系的前提。
-
-**下游唯一要做的换算：原始渲染图 → 压缩图。**
-
-> **（2026-09-02）这条换算此前一直没接。** `BBox.scale()` 写好了却只有测试在调，
-> `BatchAddressing` 直接输出原 bbox——PDF 原生文本层路径上，模型拿到的坐标
-> 与它看到的压缩图**整体错位**。现已在 `FileParseService.parsePdf` 的页循环里接入
-> （`scaleToExtractionImage`），系数取 `CompressedPageImage` 的实际宽高。
-> OCR 路径 bbox 恒为 null、OFD 不发页面图，两者都不需要换算。
-
-```java
-// 系数【必须来自 CompressedPageImage 的实际宽高】，不是配置里的 2000
-double scaleX = (double) compressed.getWidth()  / renderedWidthPx;
-double scaleY = (double) compressed.getHeight() / renderedHeightPx;
-x_px = bbox.getX() * scaleX;   y_px = bbox.getY() * scaleY;
-w_px = bbox.getWidth() * scaleX;  h_px = bbox.getHeight() * scaleY;
-// 【没有 Y 轴翻转】—— 两边都是左上原点，翻了就错
-```
-
-**两个坑各错一次都会让坐标全错，而且都不报错：**
-
-```
-① 用「2000 / 页面长边」硬算 —— 档 2 回退到 1600px 时系数就变了，坐标整体偏 25%
-② 在下游翻 Y 轴           —— PDF 对了，OCR 全反
-【旋转必须先归一化】：页面 /Rotate 与图片 EXIF 方向都在渲染阶段处理掉，
-                     解析器换算时面对的永远是"正着的"页面（§5.6.5）
-```
-
-由 R66c 与 R66f 锁住。
-
-##### 5.6.6.1 上传图片的 EXIF 方向（当前协议下不产生任何计算）
-
-> **已由接入截图结论：本节三问在当前 OCR 协议下全部落空，但本节不删。**
-> PaddleOCR-VL 走的是 OpenAI 兼容的 `/chat/completions`，响应里只有一个
-> `choices[0].message.content` 字符串，**没有任何坐标字段、也没有图像宽高字段**（§5.6.7）。
-> 没有坐标就没有坐标系，「要不要做 EXIF 变换」这个问题当前无从谈起：
-> `OcrPageSegmentFactory` 产出的每个 OCR segment 的 `bbox` 恒为 `null`。
->
-> **保留本节与 `OcrBboxNormalizer` 的理由**：一旦换成回传版面坐标的 OCR 接口（PaddleOCR
-> 的版面分析接口本身是有坐标的，只是这个网关没暴露），下面三问会原样回来。
-> 删掉分析再重新推导一遍，比留着它贵得多。
->
-> **对应断言**：`PaddleOcrVlClientTest#everyBlockShouldHaveNullBboxBecauseProtocolCarriesNoCoordinates`
-> ——把「无坐标」钉成契约，避免下游有人按「OCR 有 bbox」写代码。
-
-上传的 JPG/PNG 走两条不同的路，**两条路对 EXIF 的处理必须一致，否则坐标必然错位**：
-
-```
-OCR  路径：原始编码字节直接给 OCR（§5.6.3-④）—— EXIF 还在字节里
-LLM-A 路径：本地解码时按 EXIF 归一化（§5.6.4）—— 图已经"转正"
-```
-
-**`Orientation = 6`（顺时针 90°）时宽高会互换**，两边差的不是几个像素，是整个坐标系。
-
-**接入前必须从 OCR 服务方拿到三个答案**（列入 §0.4）：
-
-| 要问的 | 拿到之后怎么做 |
+| 存活的消费者 | 用途 |
 |---|---|
-| OCR **是否读取并应用 EXIF Orientation** | 应用了 → 它的坐标与我们归一化后的图同系，**原样透传** |
-| OCR 返回的坐标基于**哪张图的宽高**（旋转前还是旋转后） | 没应用 → 后端按 EXIF 值做一次**确定性坐标变换**，转到归一化后的坐标系 |
-| OCR 响应**是否回传它所用图像的宽高** | 回传了才能校验我们的假设；不回传就只能盲信，需在评测集里抽查 |
-
-```
-若 OCR 既不应用 EXIF、也不回传图像宽高
-    → 只剩一条路：后端在发给 OCR 之前【先按 EXIF 转正并重新编码】
-    → 代价是这类图必须本地解码，与 §5.6.3-④「不解码」冲突
-    → 那就必须同步【调低 §5.1 的像素上限】，与「OCR 吃不了编码字节」是同一种应对
-```
-
-**坐标变换本身是确定性的**（8 个 Orientation 值各对应一个固定的旋转/镜像矩阵），
-不属于 `AGENTS.md` §3 禁止的复杂判断；**危险的是不知道该不该做这次变换**。
-
-#### 5.6.7 OCR 调用契约：PaddleOCR-VL 直连（RestTemplate）
-
-**协议与 LLM-A 完全同构**：同一个网关、同一套 OpenAI 兼容 `/chat/completions`、
-同样的 `Authorization: Bearer`，只是模型标识与 `base-url` 各走各的配置。
-因此 §6.2.1.1 的四条策略（超时、零重试、脱敏、容量上限）在 OCR 侧原样适用，
-`StatusOnlyErrorHandler`、`BoundedResponseExtractor`、`CappedByteArrayOutputStream`
-三个类直接复用——**它们的职责与是哪个模型无关**。
-
-##### 连接参数
-
-| 项 | 值 | 说明 |
-|---|---|---|
-| Endpoint | `{ocr.base-url}` + `{ocr.chat-completions-path}` | 路径默认 `/v1/chat/completions` |
-| 测试环境 `base-url` | `http://higress-http.region-4-c86-test.test-kzx1.cncb/public` | 网关自身的 Base URL 已含 `/public/v1`，**拆分点在 `/public` 之后**——把 `/v1` 留给路径配置，才能与 LLM-A 用同一个 `chatCompletionsPath` 默认值 |
-| 鉴权 | `Authorization: Bearer ${OCR_API_KEY}` | 只由环境变量注入，代码库不保存真值 |
-| 模型 | `ocr.model`，测试环境为 `PaddleOCR-VL-0.9B` | 模型广场展示名是 `PaddleOCR-VL-09B-K100`，**请求里要用的是 `PaddleOCR-VL-0.9B`**，两者不同 |
-| 机房 / 能力 | 深圳南湾机房 / 视觉理解 | |
-
-##### 请求
-
-```json
-{
-  "model": "PaddleOCR-VL-0.9B",
-  "temperature": 0,
-  "messages": [
-    {
-      "role": "user",
-      "content": [
-        { "type": "image_url",
-          "image_url": { "url": "data:image/png;base64,<页面图的编码字节>" } },
-        { "type": "text", "text": "<PaddleOcrVlClient.TRANSCRIBE_INSTRUCTION>" }
-      ]
-    }
-  ]
-}
-```
-
-**三条不能改的地方：**
-
-```
-① 图片用 data URI 内联，【绝不用 http 外链】
-   平台示例写的是 "url": "http://28.105.108.85:80/image/nan.png"，
-   照抄等于把报告页图发布到一个能按 URL 取回的位置 —— 这正是 §6.2.1 拒绝 Dify 的理由
-   （Dify 文件上传没有删除接口），换个存储不会让这条理由消失
-② temperature = 0
-   同一张图必须得到同一份文本。识别结果有采样波动时，
-   §6.4 的来源包含性校验会随机地过或不过，排障时无法复现
-③ 媒体类型按文件头判定，只认 PNG 与 JPEG，认不出直接抛
-   猜一个类型会让服务端拿到声明与内容不符的图，失败形态取决于服务端实现
-```
-
-**只有一条 `user` 消息、没有 system 消息**：这不是省略，是 OCR 不需要提示词工程——
-指令写成常量 `PaddleOcrVlClient.TRANSCRIBE_INSTRUCTION`，**正文以代码为准，本文不复述**
-——复述必然过期。当前它要求：逐行输出全部文字、不得省略页眉页脚与个人信息、
-不要输出 Markdown 或 `<fcel>` 表格标记。
-
-> **（2026-09-02）原先只写「输出图片的文字」。** 实测同一张图三次调用返回三种格式
-> （纯文本 / `<fcel>` 表格标记 / Markdown 表格），且出现过页头信息整段漏识别。
-> 指令收紧是「尽量」的那一半；不依赖模型配合的那一半在
-> `OcrContentSplitter` 的格式归一化里（设计方案 §3.2.1）。
-**它不进 `prompt/versions.tsv` 版本台账**：台账管的是会实质影响输出语义、
-改一次就要重跑全量的提示词；这一句改了等于换 OCR 接口，会被本节的契约测试直接拦下。
-
-##### 响应
-
-```json
-{
-  "id": "chatcmpl-2ff4e9b0-e543-92d6-97dd-cca4fd37db50",
-  "object": "chat.completion",
-  "created": 1787708861,
-  "model": "PaddleOCR-VL-0.9B",
-  "choices": [
-    { "index": 0,
-      "message": { "role": "assistant", "content": "<整页文本>", "tool_calls": [] },
-      "finish_reason": "stop" }
-  ],
-  "usage": { "prompt_tokens": 2593, "total_tokens": 3531, "completion_tokens": 938 }
-}
-```
-
-| 取哪个字段 | 用途 |
-|---|---|
-| `choices[0].message.content` | **唯一有用的字段**，整页文本 |
-| 其余全部字段 | 不读、不落库、不进日志 |
-
-**`content` 不是文本就整批失败**，不做兜底解析：`extractContent` 判 `isTextual()`，
-不满足抛 `OcrCallException(SERVER_ERROR, 200)`。
-
-##### 从整页文本到识别块：按行切，不合并
-
-协议只有一个字符串，而 §5.2 要求「一个识别块 = 一个 segment，不合并相邻块」。
-本接入下**一行就是一个识别块**：
-
-```
-OcrContentSplitter.split(content)
-    ① 统一 \r\n 与 \r 为 \n
-    ② 按 \n 切，逐行 trim
-    ③ 丢弃 trim 后为空的行
-    ④ 每块 bbox 恒为 null（§5.6.6.1）
-```
-
-这是可穷举输入的确定性字符串处理，按 `AGENTS.md` §3 属于 Java 的职责，
-**不交给模型、也不按坐标重排**（本来也没有坐标可排）。
-
-**R43（某页识别块 > 400 → 整任务 `FAILED/UNREADABLE`）在本接入下按行数判**，
-判定位置不变，仍在解析编排层，不在客户端里。
-
-##### 容量：入口提前拒 + 客户端兜底，两层都在
-
-§5.6.2.1 定的两层在代码里的落点：
-
-| 层 | 类 | 判什么 |
-|---|---|---|
-| 入口 | 上传接口 / Word 解析 / `OcrImageEncoder` | 比 `OcrProperties.effectiveOcrImageBytes` |
-| 客户端① | `PaddleOcrVlClient.recognize` 开头 | 再比一次 `effectiveOcrImageBytes`，超限**不组装请求** |
-| 客户端② | `CappedByteArrayOutputStream` | 组装过程中超 `maxRequestBodyBytes` **立即抛**，不会先生成完再判 |
-| 客户端③ | 组装完成后 | 再比一次真实请求体长度——估算的协议开销可能偏小 |
-
-三处都抛 `parse.ImageTooLargeException`（`FailCode.IMAGE_TOO_LARGE`）。
-**客户端①看起来与入口重复，但它拦的是「入口漏了」**：Word 内嵌图片、
-渲染图、直传图三条路各有各的入口检查，任一条漏写都会在这里被挡住。
-
-##### 内存：OCR 的 base64 峰值比 LLM-A 大一个量级
-
-```
-LLM-A：压缩到 2000px / 0.85 质量，约 800KB → base64 String 约 2.13MB（§6.2.5）
-OCR  ：300DPI PNG 无损，最大到 effectiveOcrImageBytes（可能接近 8MB）
-        → base64 String 约 21MB，瞬时峰值
-```
-
-**OCR 是逐张调用、不成批**，所以峰值是「单张」而不是「8 张」；
-但 `W` 个任务并发时这个数要乘 `W`，与 Web 层共用同一个堆（§4.2）。
-**这是接入 OCR 之后 §4.2 内存预算必须重算的唯一新增项。**
-
-##### 配置键
-
-```
-连接三项（在 application.properties，环境变量注入）
-    ocr.base-url                    ⛔ 无默认值
-    ocr.model                       ⛔ 无默认值
-    ocr.api-key                     ⛔ 无默认值，绝不进代码库与日志
-    ocr.chat-completions-path        默认 /v1/chat/completions
-    ocr.max-response-body-bytes      默认 4MB，有界读取
-    ocr.connect-timeout-millis       默认 10s
-    ocr.read-timeout-millis          默认 120s，必须 < §4.3 的 deadline_at
-
-契约六项（【不在 application.properties】，是 §0.4 的接入答复）
-    ocr.max-encoded-image-bytes     ⛔ 仍未拿到真值
-    ocr.max-request-body-bytes      ⛔ 仍未拿到真值
-    ocr.request-encoding             = JSON_BASE64（已确认）
-    ocr.accepts-encoded-bytes        = true（已确认：data URI 承载的就是编码字节，本地不解码）
-    ocr.applies-exif-orientation     当前协议下不参与任何计算（§5.6.6.1）
-    ocr.returns-image-dimensions     = false（响应无该字段）
-```
-
-**两个绑定类，同一个 `ocr.*` 前缀**：`parse.OcrProperties` 管容量与接口契约，
-`infra.OcrConnectionProperties` 管地址与超时。分开不是洁癖——
-**前者的启动自检必须与部署环境无关**，混在一起就没法在不给 base-url 的单测里验容量公式。
-
-##### 启动自检的分工（不写重复分支）
-
-```
-parse.OcrProperties#afterPropertiesSet   容器刷新阶段：六项契约齐全、accepts-encoded-bytes、
-                                         EXIF 与宽高的互斥约束、effectiveOcrImageBytes 计算
-infra.OcrStartupValidator                ApplicationRunner：base-url/model/api-key、超时为正、
-                                         request-encoding 必须是已实现的 JSON_BASE64、
-                                         请求体与响应体上限不超过 int 上限
-```
-
-后者**刻意不重复前者的容量判断**——容器刷新在 `ApplicationRunner` 之前，
-重复写出来的分支永远执行不到，那是比没有断言更糟的一种断言。
-
-**`request-encoding` 配成 `MULTIPART` 会启动失败**，不会静默按 JSON 发出去：
-公式支持两种编码，但客户端只实现了一种，两者的差异必须显式。
-
-**上限的 int 检查有实际后果**：有界缓冲按 `int` 分配，
-配一个大于 2GB 的值会被 `Math.min` 静默截断成 2GB，从此容量上限就不是配的那个数了。
-
-
-### 5.7 阶段编排：从上传字节到四个模块
-
-零件齐了不等于链路通了。**三个阶段各有一个编排类**，`AnalysisTaskWorker`
-只负责阶段顺序、状态机推进与失败收敛，一条业务规则都不实现。
-
-```
-AnalysisTaskWorker.run
-  └─ PARSING（在任何模型调用之前全部完成）
-       TaskParseService.parseFiles(taskId)
-         ├─ CtHealthReportFileService.findByTaskId  → 按 fileIndex 升序
-         ├─ S3FileStorage.read(cloudFileKey)        → 原始字节
-         └─ FileParseService.parse(...)             → ParsedFile
-       ParseOrchestrator.prepare(fileList, accumulator) → ParsePlan
-  └─ EXTRACTING
-       ExtractionStageService.extract(parsePlan, accumulator)
-         ├─ BatchPlanner.plan                 → 批次不跨文件，≤8 页/批、≤8 批
-         ├─ ExtractionBatchExecutor.execute   → 并发 4，零重试
-         └─ ExtractionValidationPipeline.validateAndMerge
-                                              → Schema、来源、同一性、多批与多文件合并
-  └─ ASSEMBLING
-       AnalysisAssembleService.assemble(output, fileCount, companyId, bizDate, accumulator)
-         ├─ IndicatorAssembler / ProblemAssembler
-         ├─ DietAdviceInputFactory → DietAdviceAssembler
-         └─ DishRecommendSetService + DishRecommendInputFactory → DishRecommendAssembler
-       AnalysisResult.create(...)  ← 降级裁剪在这里统一执行，编排类不重复
-```
-
-**`FileParseService` 是 `PaddleOcrClient` 在 PDF 与图片路径上的唯一调用方**；
-`ExtractionStageService` 是 `ExtractionModelClient` 的唯一调用方。
-`AnalysisTaskWorker` 领取任务后从任务实体读取 `companyId`，并通过注入的 `Clock` 只取一次
-`bizDate`，原样传给组装链路；下游不得再次取当前企业或当前日期。
-
-##### 两条容易写错的接缝
-
-```
-① 交给校验层的 segment 必须与分批用的【同源】
-   两边都读 parsePlan.getReadableFileList() 的页列表。
-   若这里换成「解析出来的全部 segment」，被页数预算截断掉的也会进来，
-   来源校验就会放过【实际上没有发给模型】的引用 —— 而它恰恰是防幻觉的那道闸
-   对应用例 ExtractionStageServiceTest#segmentsGivenToValidationShouldComeFromThePlanOnly
-
-② 模块四被抑制时【不读 Redis 菜品标签集合】
-   读取结果也会被 AnalysisResult.create 丢掉；在线链路任何情况下都不得调用 DishQueryService。
-   对应用例 AnalysisAssembleServiceTest#suppressedDishRecommendShouldNotReadDishTagSets
-```
-
-**降级裁剪只有一处**：`AnalysisResult.create` 按 `DegradeAccumulator` 调用
-`withoutDietAdviceAndDishRecommend` / `withoutDishRecommend`。
-两个编排类都产出完整四模块，**不各自判一遍**——判两遍就迟早会判得不一样。
-
-**顺序不是随意的**：`fileIndex` 升序是因为 `segmentId` 的 `f{fileIndex}` 与批次编址都依赖它，
-数据库返回顺序不作数；而解析、OCR、页数裁决全部发生在 `enterExtracting` 之前，
-所以任何解析期失败都不会先花掉一次模型调用。
-
-##### 四条路由
-
-| 格式 | 走法 | 页面图 |
-|---|---|---|
-| PDF | 文本层阈值 + 密度闸都通过 → 原生 segment；任一不过 → **整文件走 OCR** | 逐页渲染，两个消费者共用同一次渲染 |
-| JPG / PNG | **原始编码字节直传 OCR**，本地不解码（§5.6.3-④） | 降采样解码后压缩，只给 LLM-A |
-| DOC / DOCX | 按源码顺序产块，内嵌图片走 OCR | **无**，Word 不发页面图 |
-| OFD | 只走原生文本对象 | **无**（见下） |
-
-**无论 PDF 走原生还是走 OCR，都要逐页渲染**——原生路径也需要页面图发给 LLM-A（§6.2.1），
-所以「有文本层就不用渲染」是错的，省不掉这一步。
-
-##### ⚠ OFD 的两个缺口
-
-```
-① 没有 OFD 页面渲染器
-   → 扫描版 OFD 拿不到识别块，以【零 segment】落到 ParseOrchestrator 的 UNREADABLE
-   → 这是显式失败，不是静默降级；补渲染器之前【不要给 OFD 加 OCR 分支】
-     加了就得先本地整幅解码，那正是 §5.6.3 拒绝的
-② 原生 OFD 也拿不到页面图（同一个原因）
-   → OFD 页的 imageRequired = false、jpegBytes = null
-   → LLM-A 只看得到文本，看不到版面
-```
-
-两条都已列入 §0.4。
-
-##### ⛔ 按页分组不得静默丢段（2026-08-27 补）
-
-`FileParseService.pagesFromSegments` 的页数**取自解析器，不取 `precheckPages`**：
-
-```
-按 precheckPages 建页时
-  实际页数更多 → 超出那些页的 segment【直接消失】，无日志、无异常、无降级标记
-              → 体检报告少了一页内容，没人知道
-  而且 ParsedFile 构造器里 pageList.size() == precheckPages 会【恒为真】
-              → 一个永远不会失败的断言，比没有断言更糟
-```
-
-改成按解析器页数建页之后，那句构造器断言对 PDF 和 OFD 两条路都真正生效。
-本方法自己再加一条：**每个 segment 都必须落进某一页**，页码越界说明解析器的页数与
-segment 编址自相矛盾，**炸而不是丢**。对应用例
-`segmentBeyondParsedPageCountMustFailInsteadOfBeingDropped`。
-
-##### 每页识别块上限在驱动里判
-
-R43（OCR 某页识别块 > 400 → **整任务 `FAILED/UNREADABLE`**）由 `FileParseService.recognizePage`
-在拿到分段结果后立即判，**不做局部截断**。判定放在驱动而不是客户端，
-是因为「一页」是解析层的概念，客户端只认识「一张图」。
-
-##### 失败码怎么收敛
-
-```
-PdfPageRenderer 渲染失败        → HealthReportException(UNREADABLE)
-OcrImageEncoder 超限            → ImageTooLargeException(IMAGE_TOO_LARGE)
-OCR 调用失败 / 超时 / 5xx       → OcrCallException（非 HealthReportException）
-                                  → Worker 兜底映射为 SERVER_ERROR、reanalyzable=true
-库里 contentType 对不上枚举      → UNSUPPORTED_FORMAT
-```
-
-**OCR 调用失败必须落到 `SERVER_ERROR` 而不是 `UNREADABLE`**：前者用户重试有意义，
-后者告诉用户文件有问题——而文件没问题，是我们的下游挂了。
-`OcrCallException` 刻意不继承 `HealthReportException`，靠 Worker 的运行时异常分支兜底，
-就是为了不让人顺手给它塞一个确定性失败码。
-
-##### ⛔ 第三方解析库对损坏输入抛的是 unchecked 异常（2026-08-27 补）
-
-PDFBox 解析损坏 xref、POI 读坏 OLE2、ofdrw 读坏 ZIP，抛的**都不是 `IOException`**。
-只 `catch (IOException)` 接不住它们，它们会一路逃到 Worker 的通用运行时分支：
-
-```
-用户文件损坏 → 逃逸 → SERVER_ERROR / 500 / reanalyzable=true
-             → 前端告诉用户「服务端出错，可以重试」
-             → 而重试必然再失败，因为坏的是他的文件
-正确答案      → UNREADABLE / 400
-```
-
-`FileParseService.asUnreadable` 统一做这个映射，**但只包住第三方解析入口那一行**：
-
-```
-PDDocument.load / pdfTextLayerChecker+pdfSegmentParser / ofdSegmentParser.parse
-/ imageContentInspector.decodeSubsampled / wordSegmentParser.parse
-```
-
-**包裹范围不能扩大到后续组装逻辑**——否则我们自己的 NPE 也会被记成「用户文件损坏」，
-把 bug 伪装成用户问题。这是本映射的代价，用范围换。
-
-**两类异常必须原样上抛：**
-
-| 异常 | 为什么不能被吞 |
-|---|---|
-| `HealthReportException` | 自带确定性失败码（Word 超限的 `PAGE_LIMIT_EXCEEDED`、编码超限的 `IMAGE_TOO_LARGE`） |
-| `OcrCallException` | **是我们下游挂了**，不是用户文件坏了。吞成 `UNREADABLE` 会误导用户去换文件，还把 `reanalyzable` 一起丢掉（R43b5） |
-
-> `wordSegmentParser.parse` 内部会调 OCR，是上表第二行**唯一**会真实触发的路径。
-> 对应用例 `FileParseServiceTest#ocrFailureInsideWordMustStayServerErrorNotUnreadable`
-> ——必须走 Word 才测得到，图片路径的 `recognizePage` 在包裹范围之外，用它测等于没测。
-
-**`PDDocument.close()` 要用 `closeQuietly`**：裸放在 `finally` 里时，关闭失败会
-**覆盖正在抛出的真实异常**，把「文件损坏」变成一个毫不相关的关闭错误。
-
-##### 内存
-
-**文件字节用完即弃**：`TaskParseService` 每个文件解析完就不再持有它的原始字节，
-不缓存、不落盘、不进日志——一份 20MB 的原文件乘上并发任务数就是堆（§4.2）。
-渲染位图由 `RenderedPageImageProcessor` 在 `finally` 里释放，图片路径的解码位图由驱动自己释放。
-
-##### 还差什么
-
-```
-三个占位符（§10.1）  S3FileStorage / CurrentUserProvider / DishQueryService
-OFD 渲染器           见上
-```
-
-链路结构已完整——**生产代码里不再有零调用方的业务类**。
-剩下的四个占位都是显式抛 `UnsupportedOperationException`，不返回假数据，
-跑到那里会当场失败，不会悄悄给出错结果。
-
-
-## 6. LLM-A 链路
-
-### 6.1 分批与并发
-
-```
-一个批次的全部页必须来自【同一个文件】，批次绝不跨文件
-每任务调用次数 = Σ ceil(各文件【截断后保留的】等效页数 / 8)，上限 8 批
-单任务内批次并发度 4，跑在 llmBatchExecutor 上（不是任务池，§4.2）
-任一批调用失败（超时 / 429 / 5xx / 连接中断）→ 整任务立即 FAILED / SERVER_ERROR
-```
-
-```
-不做批次级重试        服务端出错直接返回错误，由用户决定要不要重新解析
-任一批失败不取消其余批次   让它们跑完再丢弃；取消传播要引入 Future.cancel + 中断处理
-                      + 半途响应清理，换来的只是几秒模型调用成本
-内存：渲染完立即编码 JPEG 并释放 BufferedImage
-      BufferedImage 2000×2800×3B ≈ 16MB/页，32 页 ≈ 512MB/任务 → OOM
-      编码后 ≈ 300~800KB/页，32 页 ≈ 20MB/任务，差 25 倍
-      【分析与 Web 层共用一个堆】，一次 OOM 连 Tomcat 一起带走（§4.2）
-```
-
-**`页/批`、`8 批上限`、`W`（§4.2，受模型配额与内存预算双重约束）是一组参数，不得单独调**：
-降页数换 token 会撞 8 批上限（30 页最坏分布下 4 页/批需要 11 批）。
-
-### 6.2 调用与批次裁决
-
-```java
-// llm.a.ExtractionModelClient  →  委托 infra.ExtractionModelClient（有完整实现，§6.2.1.1）—— 直连，不经过 Dify
-ExtractionBatchOutput call(ExtractionBatchInput input);
-```
-
-**`ExtractionBatchInput` 字段**（LLM-A 直连，**不存在 DSL 变量映射问题**，见 §6.2.1）：
-
-```java
-/** LLM-A 单批输入。【按页组织】，文本与图像同属一个 BatchPage，对应关系是结构性的。 */
-class ExtractionBatchInput {
-    String  systemPrompt;      // prompt/extraction.md 正文，Java 读文件后传入（§6.2.2）
-    String  promptVersion;     // PromptVersions.EXTRACTION，随请求下发供排障对齐（§9.4.1）
-    int     fileIndex;         // 本批所属文件下标，模型原样回填
-    int     batchIndex;        // 本批序号，模型原样回填
-    int     batchCount;        // 本任务总批数，模型原样回填
-    List<BatchPage> pageList;  // 【按真实页码升序】，见下
-}
-
-/** 批内一页。文本与图像放在同一个对象里，组装时不需要任何配对逻辑。 */
-class BatchPage {
-    int     page;              // 【报告上的真实页码】，不是本批第几页（§5.5）
-    String  renderedText;      // 该页的页眉 + 该页全部块：=== 第 N 页 === \n [块号] (…) 正文
-    byte[]  jpegBytes;         // 该页压缩后的渲染图（档位与实际尺寸见 §5.6）；
-                               // 【绝不持有 BufferedImage】（§6.1）
-                               // 【可为 null】—— 仅当 imageRequired = false
-    boolean imageRequired;     // 【本页是否必须有渲染图】，由解析层按来源置位：
-                               //   PDF / OFD / 图片 → true
-                               //   Word 的全部逻辑页 → false（见下）
-}
-```
-
-> **不要改回「一个整批 `renderedBlocks` + 一个 `pageImageList`」的形状**：那样实现者必须
-> 重新解析页眉字符串才知道哪段文本属于哪页。现在页码、文本、图像绑在同一个对象上，
-> 组装只是遍历，**不需要任何配对断言**。
+| `dish/TagHashCalculator` | 离线打标的 `tagHash` 计算，与本次改动无关 |
+| `safety/HighRiskAdviceGate` | 扫 `quote` 前归一化 |
+| `llm/extraction/StructuralValidator`（新增） | `name` 逐段校验的 `containsNormalized` |
+| `assemble/dietadvice` 的食材差集（§7.4） | 宽松匹配前统一全角半角 |
+| 多文件同一性校验（设计方案 §4.5） | 姓名规范化后比较 |
+
+> **新链路里它主要挡的是全角与合字，不是零宽字符。** 这一点相对旧链路变了，
+> 类注释里那段「零宽空格让来源校验匹配不到」的论证**只对旧链路成立**——
+> 那些字符来自 PDF 文本层与 OCR 输出，而这两条路都没了；模型看的是渲染图，
+> **零宽字符画不出来，它读不到自己看不见的东西**。
 >
-> **`imageRequired` 是「缺图」能被拦住的前提。** 只靠 `jpegBytes == null` 分不清
-> 「Word 纯文本页合法无图」和「PDF 页渲染图意外丢了」——前者放行、后者必须拦。
-> 让客户端去猜文件格式就越界了；**由解析层置位、客户端只做
-> `imageRequired && jpegBytes == null` 一个布尔判断**，仍是确定性逻辑。
+> 现在真正会撞上的是模型照抄报告排版带来的差异：
 >
-> **Word 的全部逻辑页一律 `imageRequired = false`，`jpegBytes` 恒为 `null`。**
-> 设计方案 §3.3.1 规定：内嵌图片提取出来**走 OCR，产出的识别块作为 segment 进正文**
-> ——**图片本身不发给 LLM-A**。而且一个 Word 逻辑页可能含多张内嵌图，
-> `BatchPage` 只有一个 `jpegBytes`，结构上也表达不了。**不要给 Word 造图片页。**
-
-```
-不传的东西，逐条都有理由：
-    taskId / userId    模型不需要，且日志白名单禁止它与报告内容同现（§9.2）
-    segmentId          模型侧只用块号，segmentId 是进程内主键（§5.5）
-    rawText            模型只看 normalizedText（§5.2）
-    bbox 单独字段      已内联在 renderedBlocks 的每一行里，不再重复传
-```
-
-**`DishTagInput` 字段：**
-
-```java
-class DishTagInput {
-    String  systemPrompt;      // prompt/dish_tag.md 正文，同上，仅方案 a 时存在
-    String  promptVersion;     // PromptVersions.DISH_TAG
-    String  enumKey;           // 本批打标维度，模型必须原样回填（Schema 已约束）
-    String  enumDisplayName;   // 该枚举的展示名，来自 constants
-    // ── 内容常量注入，【只取 reviewStatus == REVIEWED 的条目】（§0.4）──
-    // 四个列表【各自独立】，与提示词的四个占位符一一对应；不用的维度传空列表，不复用字段
-    List<String> avoidFoodList;         // 两类维度都用：过敏=需避免的食材；饮食注意=需避免食材
-    List<String> hiddenFoodList;        // 【仅过敏维度】易忽略的含该成分食物；饮食注意传空列表
-    List<String> avoidDishPatternList;  // 【仅饮食注意】需避免的菜式；过敏维度传空列表
-    List<String> cookingTipList;        // 【仅饮食注意】烹饪方式建议；过敏维度传空列表
-
-    List<DishForTagging> dishList;      // ≤ 40 道，仅指LLM-B单次调用批量，与Redis固定33个集合无关
-}
-
-class DishForTagging {
-    long   dishId;                     // 模型必须在三个输出列表之一里原样回填
-    String dishName;
-    List<IngredientItem> ingredientList;
-}
-
-class IngredientItem {
-    String  name;        // 食材名，规范化前的原始值（模型侧看原文）
-    Double  weightG;     // 克，四舍五入到 1 位小数；【未知给 null，不给 0】（§9.5.1）
-}
-```
-
-```
-食材列表【不含调味料】—— 食堂数据本就不记录（§7.5.1）。
-这一点必须由提示词讲清「列表里没有 ≠ 这道菜没放」，而不是靠 Java 补数据。
-```
-
-#### 6.2.0 批次裁决与零 segment
-
-**`batchStatus` 三态，不是两态：**
-
-| 值 | 含义 |
-|---|---|
-| `OK` | 正常识别 |
-| `NO_REPORT_FEATURE` | 读得清，但这几页看不出体检报告特征（封面、须知、广告页） |
-| `UNREADABLE` | **读不清**，可能有内容但看不出来 |
-
-**文件级与任务级裁决：**
-
-```
-某文件全部批次 NO_REPORT_FEATURE  → 该文件不是体检报告
-全部文件都不是体检报告            → 整任务 FAILED / NOT_HEALTH_REPORT
-全部批次都 UNREADABLE             → 整任务 FAILED / UNREADABLE
-任一批 UNREADABLE（非全部）        → 该批内容丢弃，其余批照常
-                                    partial=true, partial_reason=BATCH_UNREADABLE
-```
-
-**降级矩阵：**
-
-| partial_reason | 模块一 | 模块二 | 模块三 | 模块四 |
-|---|---|---|---|---|
-| `PAGE_TRUNCATED` | ✅ | ✅ | ❌ | ❌ |
-| `BATCH_UNREADABLE` | ✅ | ✅ | ❌ | ❌ |
-| `ALLERGEN_SUSPECT_MISS` | ✅ | ✅ | ✅ | ❌ |
-
-##### 零 segment 的裁决必须在分批【之前】做
-
-```java
-// parse.ParseOrchestrator —— 全部文件解析完成后立刻判
-// 放这里而不是 llm.a.BatchPlanner：它判的是解析结果，不是分批逻辑；
-// 对应的 R43b10 / R43b11 也在批次 4（解析）验收，类归属与批次必须一致
-
-if (allSegmentList.isEmpty()) {
-    // 整任务 FAILED / UNREADABLE，【LLM-A 调用次数为 0】
-    // 不是 NOT_HEALTH_REPORT —— 我们不知道它是不是体检报告，只知道读不出字
-}
-for (FileParseResult r : fileResultList) {
-    if (r.getSegmentList().isEmpty()) {
-        // 【部分文件零 segment】：不静默忽略
-        degradeAccumulator.setBatchUnreadable(true);   // → partial=true，模块三四不输出
-        // 该文件不贡献任何 segment，其余文件照常进入分批
-    }
-}
-```
-
-**为什么不能等批次裁决**：上面的裁决全部建立在「有批次」之上，零 segment 时批次数是 0，
-「全部批次 `UNREADABLE`」在空集上不成立，任务会带着四个空模块走到 `SUCCEEDED`。
-
-**部分文件零 segment 必须降级**，理由同批次不可读：读不出的那份**恰好可能含过敏原和医嘱**。
-**复用 `BATCH_UNREADABLE`，不新增 `partial_reason` 枚举**——三者后果相同（关模块三四）。
-
-**触发场景不是边角**：正文为空但有内嵌图片的 Word（§5.1 允许它通过可读性校验）、
-纯图片上传、扫描版 PDF/OFD——只要 OCR 调用**成功**却一个文字块都没识别出来。
-OCR **调用失败**是另一回事，走 `SERVER_ERROR`。
-
-结果接口下发 `partial` / `partialReason` / `suppressDietAdvice` / `suppressDishRecommend`
-/ `processedPages` / `totalPages`，**四个开关字段全部取自 `DegradeAccumulator`**（§6.2.3）。
-
-#### 6.2.1 为什么三条链路全部直连，不走 Dify
-
-**分界不是「A 特殊」，是按数据敏感度分：**
-
-| | 请求里有什么 | 接入方式 |
-|---|---|---|
-| **LLM-A** | 报告页面图、OCR 全文、姓名、健康结论 | **直连模型 API** |
-| **LLM-B** | 菜名、食材名、重量、枚举展示名 | **直连**（§13.2），2026-08-27 由 Dify 改为直连 |
-
-**LLM-B 的请求里一条健康数据都没有**，是食堂公开数据。它曾经走 Dify，
-2026-08-27 改直连——理由不是隐私，是提示词与全部校验都已在 Java 侧，
-Dify 工作流退化成纯转发（§13.2.0）。
-
-**LLM-A 走 Dify 是个死结**：Dify 的文件上传**没有删除接口**（已确认），
-每一页报告渲染图上传后**永久留在它的存储里**，与 §4.5「原文件在任务成功后立即删除」
-无法调和。直连时图像内联在请求体里，**不上传 Dify、不写本地临时文件**。
-
-> **措辞收窄：不是「不在任何中间系统落地」。** 模型网关、反向代理、APM、
-> 以及模型服务端本身都可能留存请求体，heap dump 也会把它写进磁盘
-> ——这六项由 §0.4.1 逐条核查。直连消掉的是「Dify 存储且删不掉」这一处，不是整条链路。
-
-**因此全案不存在这些**：Dify 文件上传与删除、`user` 标识、DSL 交付物、R55/R56、
-提示词双真源取舍、Dify 侧隐藏重试。**但 R55a / R55b 对两个模型都适用**
-——版本号与正文摘要与走不走 Dify 无关，排障时要能分辨结果出自哪版提示词。
-
-##### 图片内联：页码与图片是结构性对应，不靠顺序约定
-
-直连时按「文本 → 该页的图 → 下一页文本 → 下一页的图」交替组装消息，
-**每页的图紧跟在它自己的页眉之后**：
-
-```
-[text]  === 第 2 页 ===
-        [15] (NATIVE, bbox=…) 血脂检查
-        [16] (NATIVE, bbox=…) 甘油三酯
-        …
-[image] <第 2 页的 JPEG，base64 内联>
-[text]  === 第 3 页 ===
-        …
-[image] <第 3 页的 JPEG>
-```
-
-> 文本与图像同属一个 `BatchPage`，从构造那刻起就绑在一起，**不存在「配错页」这种错误**。
-> **仍要断言的只剩列表本身是否合法：**
->
-> ```java
-> // llm.a.BatchMessageAssembler 组装前校验，任一不满足直接抛，【不发出请求】
-> if (pageList.isEmpty()) { throw new IllegalStateException("批次无页面"); }
-> int previous = Integer.MIN_VALUE;
-> for (BatchPage p : pageList) {
->     if (p.getPage() <= previous) {            // 严格递增 ⇒ 同时排除乱序与重复
->         throw new IllegalStateException("页码未严格递增：" + p.getPage());
->     }
->     previous = p.getPage();
-> }
-> // 【没有「文本页数 == 图片数」这条】—— jpegBytes 允许为 null（Word 纯文本逻辑页）
+> ```
+> 「0.56～1.70」   ～ 是 U+FF5E 全角波浪号，常量表里写的是半角 ~
+> 「㎎」「㎏」「℃」  合字，NFKC 拆成 mg / kg / ℃
+> 「１.８４」       全角数字
+> 「虾（蟹）类」    全角括号
+> 「虾 蟹类」       中间是全角空格 U+3000
 > ```
 >
-> 对应用例 R60、R61。
-
-#### 6.2.1.1 `ExtractionModelClient` 实现（RestTemplate）
-
-> **协议：OpenAI 兼容的 `/chat/completions`**，多模态用 `content` 数组。
-> **换服务商时**：请求体与响应解析在 `buildRequestBody` / `extractContent` 两个方法里；
-> **但鉴权头、endpoint 路径、配置项也可能一起变**（Anthropic 用 `x-api-key` + `anthropic-version`，
-> 不是 `Authorization: Bearer`）。**不要以为只动两个方法就够**——
-> 不变的是超时、零重试、脱敏、容量上限这四条策略。
+> **不可见字符的删除仍然保留**，但来源换了：不再是 PDF/OCR，而是
+> **人手写的 Java 常量表**（从网页或 Word 粘贴时带进的 NBSP）与
+> **Excel 导入的菜品食材数据**。成本为零，覆盖面仍在，只是不该再当作主要论据。
 >
-> **术语**：本实现是**增量序列化到有界内存缓冲**，**不是 HTTP 流式发送**。
-> 请求体带 `Content-Length` 一次性发出（§6.2.5）。
+> **迁移时同步更新 `TextNormalizer` 的类注释**，否则后人会照着一段已经不成立的理由维护它。
+
+随之删除的是 `ReferenceRangeParser`（参考范围比较改由模型做）与
+`SourceEvidenceValidator`（来源引用校验整体删除）。
+
+### 5.3 `PageImageSequence` 是这条链路的关键数据结构
 
 ```java
-package com.example.healthreport.infra;
+// 不可变；构造时同时建立映射表，之后只读
+public final class PageImageSequence {
+    private final List<PageImage> pageList;      // 全局顺序，page = 下标 + 1
+    private final int[] fileIndexByPage;         // page → fileIndex
+    private final int[] pageInFileByPage;        // page → 文件内页码
 
-/**
- * LLM-A 直连模型客户端。
- * <p>只做一件事：把一批页面（文本 + 图像）发给模型，取回原始 JSON 字符串。
- * <b>不解析业务语义、不校验 Schema、不重试</b>——校验在 {@code ExtractionValidationPipeline}（§6.3）。</p>
- *
- * <p><b>安全边界</b>：请求体含报告图像与 OCR 文本，响应体含健康结论。
- * 本类<b>绝不把请求体或响应体写进日志</b>，向上只抛不含正文的 {@link LlmCallException}。</p>
- */
-@Slf4j
-@Component
-public class OpenAiCompatibleExtractionModelClient implements ExtractionModelClient {
-
-    private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
-    private final ExtractionProperties properties;
-
-    public OpenAiCompatibleExtractionModelClient(ObjectMapper objectMapper, ExtractionProperties properties) {
-        this.objectMapper = objectMapper;
-        this.properties = properties;
-        this.restTemplate = buildRestTemplate(properties);
-    }
-
-    /**
-     * 构造专用 RestTemplate；不复用全局 Bean，避免别处挂上打印 body 的拦截器。
-     * <ul>
-     *   <li>请求体保持缓冲（默认值，显式写出防误改）：带 {@code Content-Length}，不依赖 chunked</li>
-     *   <li>不注册任何 {@code ClientHttpRequestInterceptor}：拦截器会读 body，常被用来打日志（§9.2）</li>
-     *   <li><b>替换错误处理器</b>：默认的 {@code DefaultResponseErrorHandler} 会把 4xx/5xx 的
-     *       <b>完整 body 读进内存</b>再抛异常，绕过响应上限；换成只看状态码的实现</li>
-     * </ul>
-     */
-    private RestTemplate buildRestTemplate(ExtractionProperties p) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(p.getConnectTimeoutMillis());
-        factory.setReadTimeout(p.getReadTimeoutMillis());
-        factory.setBufferRequestBody(true);
-        RestTemplate template = new RestTemplate(factory);
-        template.setInterceptors(new ArrayList<ClientHttpRequestInterceptor>(0));
-        template.setErrorHandler(new StatusOnlyErrorHandler());
-        return template;
-    }
-
-    @Override
-    public String call(ExtractionBatchInput input) {
-        assertPageListValid(input);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(properties.getApiKey());
-
-        long startMillis = System.currentTimeMillis();
-        byte[] bodyBytes;
-        try {
-            bodyBytes = buildRequestBody(input);
-        } catch (RequestTooLargeException e) {
-            // 超限说明分批策略或密度闸没兜住（§5.3、§6.1）。异常里只有数字，可安全记录
-            log.error("LLM-A 请求体超限，fileIndex={}，batchIndex={}",
-                    input.getFileIndex(), input.getBatchIndex(), e);
-            throw new LlmCallException(FailCode.SERVER_ERROR, 0, 0L);
-        } catch (IOException e) {
-            // 【请求】序列化失败：异常来自我们自己的数据，不含模型响应，可安全记录
-            log.error("LLM-A 请求体序列化失败，fileIndex={}，batchIndex={}",
-                    input.getFileIndex(), input.getBatchIndex(), e);
-            throw new LlmCallException(FailCode.SERVER_ERROR, 0, 0L);
-        }
-
-        String rawResponse;
-        try {
-            rawResponse = restTemplate.execute(
-                    properties.getBaseUrl() + properties.getChatCompletionsPath(),
-                    HttpMethod.POST,
-                    bodyWriter(bodyBytes, headers),
-                    new BoundedResponseExtractor(properties.getMaxResponseBodyBytes()));
-
-            log.info("LLM-A 调用完成，fileIndex={}，batchIndex={}，请求体={}字节，耗时={}ms",
-                    input.getFileIndex(), input.getBatchIndex(),
-                    bodyBytes.length, System.currentTimeMillis() - startMillis);
-
-        } catch (LlmCallException e) {
-            throw e;                                   // StatusOnlyErrorHandler 已经脱敏过
-        } catch (ResponseTooLargeException e) {
-            log.error("LLM-A 响应体超限，fileIndex={}，batchIndex={}",
-                    input.getFileIndex(), input.getBatchIndex(), e);
-            throw new LlmCallException(FailCode.SERVER_ERROR, 200,
-                    System.currentTimeMillis() - startMillis);
-        } catch (ResourceAccessException e) {
-            // 连接/读超时、连接中断。异常消息含 URL 不含正文，可安全记录
-            log.warn("LLM-A 调用网络异常，fileIndex={}，batchIndex={}，耗时={}ms",
-                    input.getFileIndex(), input.getBatchIndex(),
-                    System.currentTimeMillis() - startMillis, e);
-            throw new LlmCallException(FailCode.SERVER_ERROR, 0,
-                    System.currentTimeMillis() - startMillis);
-        }
-        // 【没有 catch 之后的重试】—— 全案零重试（§6.1）。这里加一行 retry 就破了整条口径
-
-        return extractContent(rawResponse, input);
-    }
-
-    /** 写请求头与请求体。显式设 {@code Content-Length}，与 §6.2.5 的非流式口径一致。 */
-    private RequestCallback bodyWriter(final byte[] body, final HttpHeaders headers) {
-        return new RequestCallback() {
-            @Override
-            public void doWithRequest(ClientHttpRequest request) throws IOException {
-                request.getHeaders().putAll(headers);
-                request.getHeaders().setContentLength(body.length);
-                StreamUtils.copy(body, request.getBody());
-            }
-        };
-    }
-
-    /**
-     * 发送前校验页列表。全部是确定性判断。
-     * <p>{@code imageRequired} 由解析层按来源置位（§6.2.1），客户端只做
-     * {@code required && jpegBytes == null} 这一个布尔判断，不需要知道文件格式。</p>
-     */
-    private void assertPageListValid(ExtractionBatchInput input) {
-        List<BatchPage> pageList = input.getPageList();
-        if (pageList == null || pageList.isEmpty()) {
-            throw new IllegalStateException("批次无页面");
-        }
-        int previous = Integer.MIN_VALUE;
-        for (BatchPage page : pageList) {
-            if (page.getPage() <= previous) {          // 严格递增 ⇒ 同时排除乱序与重复
-                throw new IllegalStateException("页码未严格递增：" + page.getPage());
-            }
-            if (page.isImageRequired() && page.getJpegBytes() == null) {
-                throw new IllegalStateException("应有渲染图但缺失，page=" + page.getPage());
-            }
-            previous = page.getPage();
-        }
-    }
-
-    /**
-     * 组装请求体。<b>协议相关，换服务商时改本方法。</b>
-     * <p>缓冲区按 {@link #estimateBodyBytes} 分配；估算不足时<b>至多扩容到 {@code maxBytes} 封顶</b>；
-     * 写入超过上限立即抛，不会先生成完整个巨大请求体（§6.2.5）。</p>
-     * <p>消息结构：system 一条 + user 一条。user 的 content 数组
-     * <b>第一项是批次信息</b>，其后按页交替「该页文本 → 该页图像」。</p>
-     */
-    private byte[] buildRequestBody(ExtractionBatchInput input) throws IOException {
-        // 【必须在任何 base64 之前判】—— 一张 1MB 的图 base64 后是 1.4MB String（2.8MB 堆），
-        // 等写进流里再触发上限，几十 MB 临时对象已经分配掉了
-        long estimated = estimateBodyBytes(input);          // 【未截断】，否则下面这个 if 永远不成立
-        if (estimated > properties.getMaxRequestBodyBytes()) {
-            throw new RequestTooLargeException(estimated, properties.getMaxRequestBodyBytes());
-        }
-        // 比较通过后才夹到上限，用作初始容量
-        int capacity = (int) Math.min(estimated, properties.getMaxRequestBodyBytes());
-        CappedByteArrayOutputStream out = new CappedByteArrayOutputStream(
-                capacity, properties.getMaxRequestBodyBytes());
-        JsonGenerator gen = objectMapper.getFactory().createGenerator(out);
-        gen.writeStartObject();
-        gen.writeStringField("model", properties.getModel());
-        gen.writeNumberField("temperature", 0);              // 抽取任务，不要随机性
-        gen.writeBooleanField("stream", false);              // 客户端读取单个 JSON 信封，不接受 SSE
-        gen.writeArrayFieldStart("messages");
-
-        gen.writeStartObject();
-        gen.writeStringField("role", "system");
-        gen.writeStringField("content", input.getSystemPrompt());
-        gen.writeEndObject();
-
-        gen.writeStartObject();
-        gen.writeStringField("role", "user");
-        gen.writeArrayFieldStart("content");
-
-        // 【批次信息必须真的发出去】—— 模型要原样回填这三个值（提示词铁律 8）。
-        // 不发就等于让它照抄提示词里的占位符，Java 侧的串号校验会全批作废
-        gen.writeStartObject();
-        gen.writeStringField("type", "text");
-        gen.writeStringField("text",
-                "【批次信息】fileIndex=" + input.getFileIndex()
-                        + "  batchIndex=" + input.getBatchIndex()
-                        + "  batchCount=" + input.getBatchCount()
-                        + "  promptVersion=" + input.getPromptVersion()
-                        + "\n（本批全部页面来自同一个文件；前三个值请原样回填进输出）");
-        gen.writeEndObject();
-
-        for (BatchPage page : input.getPageList()) {
-            gen.writeStartObject();
-            gen.writeStringField("type", "text");
-            gen.writeStringField("text", page.getRenderedText());
-            gen.writeEndObject();
-            if (page.getJpegBytes() != null) {
-                gen.writeStartObject();
-                gen.writeStringField("type", "image_url");
-                gen.writeObjectFieldStart("image_url");
-                // 每张图的 base64 String 是【瞬时的】：一次一张、约 2MB，写完即可回收
-                gen.writeStringField("url", "data:image/jpeg;base64,"
-                        + Base64.getEncoder().encodeToString(page.getJpegBytes()));
-                gen.writeEndObject();
-                gen.writeEndObject();
-            }
-        }
-        gen.writeEndArray();
-        gen.writeEndObject();
-
-        gen.writeEndArray();
-        // 结构化输出：服务端支持就绑，不支持删掉这三行也能跑（Java 侧还会校验，§6.3-①）
-        gen.writeObjectFieldStart("response_format");
-        gen.writeStringField("type", "json_object");
-        gen.writeEndObject();
-        gen.writeEndObject();
-        gen.flush();
-        gen.close();
-        return out.toByteArray();
-    }
-
-    /**
-     * 估算请求体字节数，用于一次性分配缓冲区、避免扩容翻倍。
-     * <p>宁可估大：估小会触发扩容（翻倍后可能超过上限），估大只是多占一点。</p>
-     */
-    private long estimateBodyBytes(ExtractionBatchInput input) {
-        long total = 4096;                                     // JSON 骨架与批次信息
-        total += input.getSystemPrompt().length() * 3L;        // UTF-8 最坏 3 字节/字符
-        for (BatchPage page : input.getPageList()) {
-            total += page.getRenderedText().length() * 3L;
-            if (page.getJpegBytes() != null) {
-                total += (page.getJpegBytes().length + 2) / 3 * 4 + 64;   // base64 + 前缀
-            }
-        }
-        // 【JSON 转义的理论上界是 6 倍】（控制字符写成 \uXXXX），按 6 倍估会让缓冲区大得离谱。
-        // 折中按 1.2 倍；估小了也不会失控——CappedByteArrayOutputStream 至多扩到 maxBytes 封顶
-        total = total * 120 / 100;
-        return total;      // 【不在这里夹上限】——夹了的话调用方的超限判断就永远为假
-    }
-
-    /**
-     * 从 content / reasoning_content 中选择唯一合法 JSON 对象。<b>协议相关，换服务商时改本方法。</b>
-     * <p>当前网关把 LLM-A 结构化结果放进 reasoning_content，标准 OpenAI 兼容实现通常放在
-     * content。不能按字段名盲选：只有一个通道是合法 JSON 对象时采用它；两边都合法但内容不同
-     * 时整批拒绝，避免把思考内容或过期结果静默送入医疗数据链路。</p>
-     * <p><b>解析异常必须在这里就地脱敏</b>：Jackson 的异常消息会带上出错位置附近的原文片段，
-     * 而那是模型响应——含健康结论。直接把它抛出去或记进日志就等于泄露（§9.2）。</p>
-     */
-    private String extractContent(String responseBody, ExtractionBatchInput input) {
-        try {
-            JsonNode root = objectMapper.readTree(responseBody);
-            JsonNode message = root.path("choices").path(0).path("message");
-            JsonNode content = message.path("content");
-            JsonNode reasoningContent = message.path("reasoning_content");
-            JsonNode contentObject = parseJsonObjectOrNull(content);
-            JsonNode reasoningContentObject = parseJsonObjectOrNull(reasoningContent);
-            if (contentObject != null && reasoningContentObject != null) {
-                if (!contentObject.equals(reasoningContentObject)) {
-                    log.error("LLM-A 响应结构不符合预期，fileIndex={}，batchIndex={}，响应长度={}",
-                            input.getFileIndex(), input.getBatchIndex(), responseBody.length());
-                    throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
-                }
-                return content.asText();
-            }
-            if (contentObject != null) {
-                return content.asText();
-            }
-            if (reasoningContentObject != null) {
-                return reasoningContent.asText();
-            }
-            log.error("LLM-A 响应结构不符合预期，fileIndex={}，batchIndex={}，响应长度={}",
-                    input.getFileIndex(), input.getBatchIndex(), responseBody.length());
-            throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
-        } catch (IOException e) {
-            // 【绝不把 e 传给 log】—— Jackson 异常消息含响应片段
-            log.error("LLM-A 响应 JSON 解析失败，fileIndex={}，batchIndex={}，响应长度={}，异常类型={}",
-                    input.getFileIndex(), input.getBatchIndex(),
-                    responseBody.length(), e.getClass().getName());
-            throw new LlmCallException(FailCode.SERVER_ERROR, 200, 0L);
-        }
-    }
-
-    private JsonNode parseJsonObjectOrNull(JsonNode candidate) {
-        if (!candidate.isTextual() || candidate.asText().trim().isEmpty()) {
-            return null;
-        }
-        try {
-            JsonNode parsed = objectMapper.readTree(candidate.asText());
-            return parsed != null && parsed.isObject() ? parsed : null;
-        } catch (IOException | RuntimeException e) {
-            return null;    // 这里只用于选择另一通道；不得记录可能含健康数据的异常
-        }
-    }
+    public int size();
+    public byte[] jpegBytesAt(int page);         // page 从 1 起
+    public FileLocation locate(int page);        // 越界抛 IllegalArgumentException
 }
 ```
 
-**配套的五个类：**
+**`locate` 是查数组，不是推断**（设计方案 §0-2）。模型只报全局 `page`，
+「它属于哪个文件的第几页」由这张表回答。越界的 `page` 由调用方按「引用了不存在的页」丢弃条目。
+
+### 5.4 Word：第一期不支持（2026-09-03 裁决）
+
+DOC / DOCX 上传即返回 `UNSUPPORTED_FORMAT`，不落 file 行、不存对象（设计方案 §3.2.1、§12-16）。
+裁决理由：纯 Java 开源路线（docx4j+FOP / XDocReport）对重表格医疗文档保真度不合格，
+会造成表格串行的静默错读；LibreOffice / 商业库需新增部署依赖或采购，
+在 Word 上传占比（设计方案 §11-9）未证实前不值得付出。
+
+**不写 `WordPageRenderer`，也不留抛 `UnsupportedOperationException` 的占位**
+——格式在上传口就被拒了，渲染层根本收不到 Word。POI 依赖随之从 pom 移除（§1）。
+
+**随本裁决移除的机制清单**（恢复 Word 支持时按设计方案 §3.2.1 一并恢复）：
+
+```
+等效页折算 ceil(字符数/1800)+内嵌图片数     WordCapacityGuard 与 Worker 二次容量裁决
+「正文非空或 ≥1 张合规内嵌图片」可读性判据    R43b2~R43b7 全部 Word 容量测试
+PAGE_LIMIT_EXCEEDED 的异步失败路径          POI（poi-ooxml / poi-scratchpad）依赖
+```
+
+### 5.5 容量限制
+
+```
+任务总页数上限       30 页（含全部文件），创建任务时同步拒绝（§4.1.1）
+超限                 PAGE_LIMIT_EXCEEDED，不建任务、不绑文件；不截断、不输出部分结果
+```
+
+`CapacityPrecheckService` 保留（只处理 PDF / OFD / 图片；上传预检与对象存储读回复核共用）；
+`WordCapacityGuard` 与 `PageBudgetService` 删除——前者随 Word 移除（§5.4），后者因不再截断页面。
+
+
+## 6. 体检报告分析模型链路（三次串行调用）
+
+> 对应设计方案 §4。调用顺序固定为「健康指标 → 健康问题 → 饮食建议与标签」，
+> 每次都发送同一份完整 `PageImageSequence`。
+
+### 6.1 类清单
+
+```
+llm/extraction
+├── ExtractionOrchestrator       在当前任务线程中顺序执行三次调用并 fail-fast
+├── ExtractionCall               枚举 INDICATORS / PROBLEMS / DIET_TAGS
+│                                每个枚举值携带 Prompt 路径、Schema 路径和 promptVersion
+├── ExtractionPromptProvider     启动时加载三份生产 Prompt，发现缺失或加载 probe 立即启动失败
+├── ExtractionRequestFactory     组装 system Prompt、最小阶段文本和全部 JPEG 页
+├── ExtractionSchemaValidator    按 ExtractionCall 选择三份生产 Schema
+├── StructuralValidator          页码、联动字段、枚举与方向校验
+├── IndicatorsResult             调用一校验后结果
+├── ProblemsResult               调用二校验后结果
+├── DietTagsResult               调用三结果：顶层 recommend/reject 标签数组
+└── ExtractionOutcome            三份已校验结果，供唯一汇总入口消费
+
+infra
+├── HealthReportAnalysisModelClient
+├── OpenAiCompatibleHealthReportAnalysisModelClient
+├── HealthReportAnalysisModelProperties
+└── HealthReportAnalysisCallException
+```
+
+删除 `BatchPage`、`ExtractionBatchInput`、批次规划、`blockRef` 展开、
+`SourceEvidenceValidator`、旧模型批次执行器以及任何 `Future<CallResult>` 式的阶段并发编排。
+
+### 6.2 顺序编排
 
 ```java
-/**
- * 只看状态码的错误处理器。
- * <p><b>为什么必须替换默认实现</b>：{@code DefaultResponseErrorHandler} 在抛
- * {@code RestClientResponseException} 之前会把 4xx/5xx 的<b>完整 body 读进内存</b>并塞进异常，
- * 于是超大错误响应绕过了 {@link BoundedResponseExtractor} 的上限，异常对象本身也带上了正文。</p>
- * <p>本实现<b>不调用 {@code response.getBody()}</b>，只取状态码。</p>
- */
-public class StatusOnlyErrorHandler implements ResponseErrorHandler {
-    @Override
-    public boolean hasError(ClientHttpResponse response) throws IOException {
-        int series = response.getRawStatusCode() / 100;
-        return series == 4 || series == 5;
-    }
-    @Override
-    public void handleError(ClientHttpResponse response) throws IOException {
-        int status = response.getRawStatusCode();      // 【只读状态码，不碰 body】
-        throw new LlmCallException(FailCode.SERVER_ERROR, status, 0L);
-    }
-}
+public ExtractionOutcome extract(List<FileRef> fileList) {
+    PageImageSequence images = fileToImageService.render(fileList);
 
-/**
- * 容量封顶的字节输出流。<b>不继承 {@code ByteArrayOutputStream}</b>——它的扩容按翻倍走且
- * 私有不可控：12MB 写到 13MB 会扩成 24MB、25MB 会扩成 48MB，即使上限只有 32MB。
- * <p>本实现自管数组：扩容目标 {@code min(max(需要, 当前×2), maxBytes)}，
- * <b>底层数组永不超过 {@code maxBytes}</b>；写不下时抛，不静默扩。</p>
- */
-public class CappedByteArrayOutputStream extends OutputStream {
-    private byte[] buf;
-    private int count;
-    private final int maxBytes;
+    IndicatorsResult indicators = executeAndValidate(ExtractionCall.INDICATORS,
+            images, ExtractionStageContext.empty());
+    identityGuard.check(indicators.getPatientList(), images);
 
-    public CappedByteArrayOutputStream(int initialCapacity, int maxBytes) {
-        this.maxBytes = maxBytes;
-        this.buf = new byte[Math.max(1, Math.min(initialCapacity, maxBytes))];
-    }
-    @Override
-    public void write(int b) {
-        ensureCapacity((long) count + 1);
-        buf[count++] = (byte) b;
-    }
-    @Override
-    public void write(byte[] b, int off, int len) {
-        ensureCapacity((long) count + len);
-        System.arraycopy(b, off, buf, count, len);
-        count += len;
-    }
-    private void ensureCapacity(long required) {
-        if (required > maxBytes) {
-            throw new RequestTooLargeException(required, maxBytes);
-        }
-        if (required <= buf.length) {
-            return;
-        }
-        // 【封顶扩容】翻倍但不超 maxBytes，所以底层数组最大就是 maxBytes
-        int newCapacity = (int) Math.min(Math.max(required, (long) buf.length * 2), maxBytes);
-        buf = Arrays.copyOf(buf, newCapacity);
-    }
-    public int size() { return count; }
-    public byte[] toByteArray() { return Arrays.copyOf(buf, count); }
-}
+    ProblemsResult problems = executeAndValidate(ExtractionCall.PROBLEMS,
+            images, ExtractionStageContext.empty());
 
-/** 响应有界读取：超过上限即中断，避免服务端异常时返回巨大 body 打爆内存（§6.2.4-6）。 */
-public class BoundedResponseExtractor implements ResponseExtractor<String> {
-    private final int maxBytes;
-    public BoundedResponseExtractor(int maxBytes) { this.maxBytes = maxBytes; }
-    @Override
-    public String extractData(ClientHttpResponse response) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 16);
-        byte[] chunk = new byte[8192];
-        InputStream in = response.getBody();
-        int read;
-        while ((read = in.read(chunk)) != -1) {
-            if ((long) out.size() + read > maxBytes) {
-                throw new ResponseTooLargeException(maxBytes);
-            }
-            out.write(chunk, 0, read);
-        }
-        return new String(out.toByteArray(), StandardCharsets.UTF_8);
-    }
-}
+    DietTagsResult dietTags = executeAndValidate(
+            ExtractionCall.DIET_TAGS,
+            images, ExtractionStageContext.empty());
 
-/** 请求体超限。<b>消息里只有字节数</b>，无任何正文，可安全记录。 */
-@Getter
-public class RequestTooLargeException extends RuntimeException {
-    private final long attemptedBytes;
-    private final int maxBytes;
-    public RequestTooLargeException(long attemptedBytes, int maxBytes) {
-        super("LLM-A 请求体超限：" + attemptedBytes + " > " + maxBytes);
-        this.attemptedBytes = attemptedBytes;
-        this.maxBytes = maxBytes;
-    }
-}
-
-/** 响应体超限。<b>消息里只有上限值</b>，无任何正文，可安全记录。 */
-@Getter
-public class ResponseTooLargeException extends RuntimeException {
-    private final int maxBytes;
-    public ResponseTooLargeException(int maxBytes) {
-        super("LLM-A 响应体超过上限 " + maxBytes + " 字节");
-        this.maxBytes = maxBytes;
-    }
+    return new ExtractionOutcome(indicators, problems, dietTags);
 }
 ```
 
-```
-两个容量异常都继承 RuntimeException，且【都在 call() 里被捕获并转成 LlmCallException】，
-不会作为未处理异常逃逸；对上层而言 LLM-A 的失败只有一种类型（§6.1 的整任务 FAILED）。
-```
+上述伪代码是顺序契约：不使用子线程，不先发后校验。调用一失败时调用二、三的次数均为 0；
+调用二失败时调用三次数为 0。任意阶段失败均抛给 Worker 的统一失败映射点，
+不创建可下发的部分 `AnalysisResult`。
 
-**`ExtractionProperties` 与 `LlmCallException`：**
-
-```java
-/**
- * 直连接入参数。<b>必须显式注册</b>——只写 {@code @ConfigurationProperties} 不会成为 Bean，
- * 构造器注入会失败。本类加 {@code @Component}，
- * 或在配置类上加 {@code @EnableConfigurationProperties(ExtractionProperties.class)}，二选一。
- */
-@Data
-@Component
-@ConfigurationProperties(prefix = "llm.a")
-public class ExtractionProperties {
-    private String baseUrl;                      // ⛔ 无默认值，启动自检失败
-    private String chatCompletionsPath = "/v1/chat/completions";
-    private String model;                        // ⛔ 无默认值；同时是 §9.4.1 的 llm.model-version-extraction
-    private String apiKey;                       // ⛔ 无默认值；环境变量注入，绝不进代码库
-    private int connectTimeoutMillis = 10_000;
-    private int readTimeoutMillis = 180_000;     // 必须 < §4.3 的 deadline_at(10min)，留出组装余量
-    private int maxRequestBodyBytes = 32 << 20;  // 【保守兜底值】真实上限见 §6.2.4-5，确认后改小
-    private int maxResponseBodyBytes = 4 << 20;
-}
-
-/** LLM-A 调用异常。<b>刻意不持有任何请求体或响应体</b>，因此可以安全地进日志。 */
-@Getter
-public class LlmCallException extends RuntimeException {
-    private final FailCode failCode;
-    private final int httpStatus;      // 网络异常时为 0
-    private final long elapsedMillis;
-    public LlmCallException(FailCode failCode, int httpStatus, long elapsedMillis) {
-        super("LLM-A 调用失败，httpStatus=" + httpStatus);   // 消息里只有状态码
-        this.failCode = failCode;
-        this.httpStatus = httpStatus;
-        this.elapsedMillis = elapsedMillis;
-    }
-}
-```
-
-**启动自检**（`ApplicationRunner`，与 §6.2.2 的提示词自检一起做）：
+**三次请求的图必须完全一致：**
 
 ```
-baseUrl / model / apiKey 任一为空 → 直接启动失败，不要等到第一次调用
+images.size() 相等
+每个 page 的 jpegBytes 引用同一 `PageImageSequence` 元素
+消息中的页码文本与紧随图像一一对应
+不为任何一次调用重新渲染、重新压缩或重排
 ```
 
-**`application.yml` 里只有这一段，不写任何中间件配置（`AGENTS.md` §5）：**
+### 6.3 三次请求的文本输入
 
-```yaml
-llm:
-  a:
-    base-url: ${EXTRACTION_BASE_URL}
-    model: ${EXTRACTION_MODEL}
-    api-key: ${EXTRACTION_API_KEY}        # 环境变量注入，不落配置文件
-```
-
-
-#### 6.2.4 直连接入参数：12 项
-
-**协议已选定为 OpenAI 兼容，代码据此写完（§6.2.1.1），可用 WireMock 完成本地 HTTP 测试。**
-
-> **第 1、7 项已由接入截图确认，不再是待确认项**：模型走的是与 OCR 同一个网关
-> （`higress-http.…/public/v1/chat/completions`），OpenAI 兼容、`Authorization: Bearer`、
-> 多模态用 `content` 数组、`image_url.url` 承载图片。**因此 `buildRequestBody` /
-> `extractContent` 不需要改**，鉴权头与 endpoint 路径也与代码里写的一致。
-> 第 2、3 项仍是 ⛔：截图给的是测试环境地址与 `${API_KEY}` 占位，生产值另取。
->
-> **图片内联格式有一处必须与平台示例背离**：示例用 `http://…/nan.png` 外链，
-> 我们用 `data:image/jpeg;base64,…` 内联，理由见 §5.6.7——外链等于把报告图发布出去。
-> **网关是否接受 data URI 需要联调确认**，已列入 §0.4。
-
-```
-⛔ 三项（base-url / model / apiKey）  无默认值，启动自检失败 → 只阻塞【端到端联调与上线】
-其余各项                              有保守默认值，代码能跑 → 确认后按实际值改，改完才能上线
-第 1 项若结论不是 OpenAI 兼容          主要改 buildRequestBody / extractContent，
-                                      鉴权头与 endpoint 也可能一起变
-```
-
-| # | 待确认 | 影响什么 |
+| 调用 | 文本输入 | 禁止字段 |
 |---|---|---|
-| 1 | ~~**模型服务商与 API 协议**~~ **已确认：OpenAI 兼容自研网关**（§5.6.7 同一个网关） | 代码按 OpenAI 兼容写，与实际一致，无需改动。保留本行是为了记住**换服务商时要一起看鉴权头与 endpoint**，不是只改两个方法 |
-| 2 | ⛔ **base-url、endpoint 路径、模型标识** | 无此不能发请求；模型标识同时是 `llm.model-version-extraction` 的取值（§9.4.1） |
-| 3 | ⛔ **API Key 从哪读**（环境变量 / 配置中心 / KMS） | 代码按 `${EXTRACTION_API_KEY}` 环境变量注入。**绝不能进代码库与日志** |
-| 4 | **connect / read timeout** | read timeout 必须 < §4.3 的 `deadline_at`（10 分钟），否则任务先被判超时而请求还挂着 |
-| 5 | **最大请求体上限** | 直接决定 8 页/批是否可行（§6.2.5）。代码给了 32MB 保守兜底值，**写入过程中就会超限即抛**（`CappedByteArrayOutputStream`），不会先生成完再判；拿到真实上限后必须改小 |
-| 5a | 是否接受 `Transfer-Encoding: chunked` | **已不阻塞**：本方案决定请求体**保持缓冲**、带 `Content-Length` 发送（§6.2.5），不依赖 chunked。本项保留仅供将来若要改流式时参考 |
-| 6 | **最大响应体上限** | 一份 30 页报告的抽取结果约上百 KB；代码给了 4MB 兜底并**有界读取**（`BoundedResponseExtractor`），防止服务端异常时返回巨大 body |
-| 7 | **图片内联格式** | 已确认字段是 `content[].image_url.url`，代码按 `data:image/jpeg;base64,…` 写。**平台示例用的是 http 外链**——我们不采用（§5.6.7），但由此产生一个新的联调确认项：网关是否接受 data URI |
-| 8 | **单次请求是否支持 8 张图 + 文本图片交替** | 不支持就要降到更小的批，而这会连锁改 §6.1 的 8 批上限与 `W`（§4.2） |
-| 9 | **是否支持 `response_format`** | 代码写了 `json_object`。不支持就删那三行，仍能跑（Java 侧还会校验，§6.3-①），但 Schema 校验失败会明显变多 |
-| 10 | **是否强制 HTTPS / TLS 版本与证书校验要求** | 报告图像出网，这条不能靠默认值 |
-| 11 | **429 / 5xx / 超时的响应体形状** | 决定怎么在**不泄露正文**的前提下映射成内部错误码（见下） |
+| `INDICATORS` | 页数与通用任务说明 | 所有用户/任务/文件标识 |
+| `PROBLEMS` | 页数与通用任务说明 | 阶段 1 结果、姓名、性别、overview、原始响应 |
+| `DIET_TAGS` | 页数与通用任务说明 | 阶段 1/2 结果、companyId、菜品 ID、菜名、菜品标签、价格、图片 URL |
 
-**第 11 项有一条硬要求，写进实现要点：**
+第三次只返回顶层 `recommend/reject` 数组，每条建议包含原文引用、页码、`dimension`、`enumKey`；所在数组就是方向。
+菜品列表不属于该 Schema；Java 必须在三次体检报告分析调用全部完成后再用标签查 Redis 生成模块四。
 
-```java
-// 原始 HTTP 异常【可能持有模型响应正文】，而正文里有报告内容
-// AGENTS.md §6 要求「异常对象作为最后一个参数」，但【不能直接记录 RestClientResponseException】
-catch (RestClientResponseException e) {
-    // 只取状态码与耗时，【丢弃 getResponseBodyAsString()】
-    throw new LlmCallException(mapErrorCode(e.getRawStatusCode()), e.getRawStatusCode());
-    // LlmCallException 不持有任何响应正文；日志记它是安全的
-}
-```
+### 6.4 客户端与响应裁决
 
-#### 6.2.5 直连之后的内存预算必须重算
-
-**原估算「编码后 20MB/任务」只算了 JPEG 字节，直连后它严重低估。** 逐项加上：
+`OpenAiCompatibleHealthReportAnalysisModelClient` 保留有界请求/响应、零重试、脱敏日志、
+`finish_reason` 判死、content / reasoning_content 双通道裁决和 SSE 支持。流式与非流式共用
+同一个 `extractContent` 和校验流水线。请求体固定
+`chat_template_kwargs.enable_thinking=false`。
 
 ```
-一张 800KB 的 JPEG
-  → base64 编码            ≈ 1.07 MB（膨胀 4/3）
-  → Java 8 String 持有     ≈ 2.13 MB（char[] 每字符 2 字节）  ← 最大的一项
-8 张 / 批                  ≈ 17 MB  仅 base64 字符串
-  + 组装后的 JSON 请求体（又一份 String）        ≈ +17 MB
-  + 序列化成 UTF-8 字节                          ≈ +9 MB
-  + RestTemplate 默认【缓冲整个请求体】           ≈ +9 MB
-单批峰值                                        ≈ 50 MB
-× 单任务 4 批并发                                ≈ 200 MB / 任务
-× W 个任务并发                                   ← 与 Web 层【共用同一个堆】（§4.2）
+llm.extraction.base-url            ⛔ 无默认值
+llm.extraction.chat-completions-path  默认 /v1/chat/completions
+llm.extraction.model               ⛔ 无默认值
+llm.extraction.api-key             ⛔ 无默认值；只允许从部署密钥注入
+llm.extraction.stream-enabled       默认 true
+llm.extraction.enable-thinking      默认 false
+llm.extraction.read-timeout-millis  按三阶段中实测最大单次耗时定档
+llm.extraction.max-request-body-bytes
+llm.extraction.max-response-body-bytes
 ```
 
-**两条硬要求（原第 ② 条「关闭缓冲」已按决策去掉，见下）：**
+三次请求都不含 `taskId/userId/companyId/origin_name`。普通日志不得记录请求体、响应体、
+页面图、报告引用、饮食建议或模型异常中可能携带的响应摘要。
 
-```
-① 【禁止把整个请求体拼成 String】
-   用 Jackson 的 JsonGenerator【增量序列化到有界字节缓冲】
-   —— 注意这【不是 HTTP 流式发送】：请求体仍带 Content-Length 一次性发出
-   —— 砍掉上面 50MB 里的 26MB（整请求体 String + 它的 UTF-8 字节）
-   【逐张图的 base64 String 仍会产生，但它是瞬时的、峰值只有单张约 2MB】
-② JPEG 字节用完即释放，不在 ExtractionBatchInput 里长期持有
-```
+### 6.5 校验与结果原子性
 
-##### 请求体**保持缓冲**，不走流式（2026-08-25 决策）
+每次固定执行：`HTTP/finish_reason → 内容提取 → JSON 解析 → Schema 校验 → 结构校验`。
+可定位条目的问题可剔除，但同一阶段共用 20% 修复预算（至少允许 1 条）；
+超预算、顶层错误或非 `OK` 状态即阶段失败。
+阶段 1/2 剔条目与阶段 3 剔标签同时发生时，`partial_reason` 取 `DIET_TAG_DROPPED`
+（设计方案 §4.4：单值列，取携带模块四抑制后果的那个）。
 
-```
-RestTemplate 保持 bufferRequestBody = true（默认值，代码里显式写出防误改）
-⇒ 带 Content-Length 发送，不依赖服务端与中间网关对 chunked 的支持
-⇒ 代价：内存里同时存在两份请求体
-```
-
-**峰值逐项重算（上一版漏了三项，这里全部列出）：**
-
-| 项 | 大小 | 何时释放 |
-|---|---|---|
-| 8 张原始 JPEG `byte[]`（`BatchPage` 持有） | 6.4 MB | 请求发完 |
-| `CappedByteArrayOutputStream` 内部缓冲（按估算分配；估小则**至多扩到 `maxBytes` 封顶**） | ≈ 9.5 MB，最坏 32 MB | 请求发完 |
-| `toByteArray()` 的拷贝（**一定发生**） | ≈ 9 MB | 交给 RestTemplate 后 |
-| 逐张 base64 的瞬时 `String`（一次一张） | 2.1 MB | 下一张覆盖 |
-| RestTemplate 缓冲的那一份 | 9 MB | 请求发完 |
-| **单批峰值** | **约 39 MB** | |
-| **× 单任务 4 批并发** | **约 156 MB / 任务** | |
-
-```
-【修正三处早先的错误结论】
-① 「toByteArrayWithoutCopy 常见情形不产生拷贝」是错的 —— 已删除该方法
-② 「继承 ByteArrayOutputStream 就能卡住容量」是错的
-   它的扩容翻倍且私有不可控 —— 改成自管数组的 CappedByteArrayOutputStream，扩容封顶
-③ 「39MB 是峰值上界」是错的
-   估算按 JSON 转义 1.2 倍算，理论上界是 6 倍；估小时缓冲会扩到 maxBytes(32MB)，
-   单批最坏约 62MB。【下表是典型值不是上界，W 必须按实测定，不能按这张表定】
-```
-
-对比「拼 String」的原始形态（50MB/批、200MB/任务）仍然好，
-但**远不是早先写的 80MB/任务**。**上面每一项都是估算，`W` 定稿前必须实测**（§11.4）。
-
-##### `W` 必须同时受两个上界约束
-
-```
-W = min( floor(C / (4 × 实例数)),                    ← 模型配额（§4.2）
-         floor((堆预算 - Web 层占用) / 单任务峰值) )   ← 内存预算，本节
-```
-
-**上一版只写了模型配额那一条**，等于默认内存永远够——按 150MB/任务算，
-一个 2GB 堆在扣掉 Web 层之后只放得下个位数的并发任务。
-**两个上界哪个小取哪个**，实测数据进 §11.4。
-
-**换来的：**
-
-```
-不依赖网关对 chunked 的支持        —— §6.2.4-5a 从"必须确认否则跑不了"降级为"了解即可"
-发送前就知道确切大小              —— 可以先判再发（代码里已加），而不是等服务端回 413
-排障简单                          —— 抓包能看到完整请求，流式下只能看到分块
-```
-
-**`W` 与「4 批并发」必须按 §6.2.5 实测的单任务峰值重算**（当前估算约 156MB/任务），
-不能沿用最初的 20MB/任务，也不要沿用中途写过的 80MB/任务。
-实测进 §11.4，与 §11-20 的 token 实测一起做。
-
-#### 6.2.2 提示词文件怎么进 JAR
-
-`prompt/extraction.md` 是 LLM-A 提示词的**唯一真源**（直连之后不再有 DSL 那一份），
-Java 调用时读它并作为 system 消息传入。
-
-**但 `prompt/` 在仓库根目录，不在 `src/main/resources` 下，默认不会进 JAR**，
-生产环境运行时读不到文件。两条路二选一并记在这里：
-
-```
-a1  Maven 构建时把 prompt/*.md 复制进 target/classes
-    （maven-resources-plugin 的 copy-resources，绑定 process-resources 阶段）
-    运行时走 ClassPathResource
-a2  把 prompt/*.md 移进 src/main/resources/prompt/，仓库根目录不再放
-    —— 更简单，但改变仓库现有布局，需确认没有别的流程依赖根目录路径
-
-【无论哪条都要有启动自检】：应用启动时读一次提示词，读不到【直接启动失败】
-    —— 否则问题会推迟到第一次真实调用才暴露，而那时用户已经在等结果了
-```
-
-LLM-B 若在 §13.2.2 选方案 b（DSL 内嵌提示词），它那一份不受本节约束；
-选方案 a 则与 LLM-A 共用同一套加载机制。
-
-#### 6.2.3 多个降级原因同时命中（必须按此实现）
-
-三个原因**可以同时发生**（超 30 页被截断 + 某批读不清 + 疑似漏抽过敏原），
-而 `partial_reason` 只有一列。**抑制标志绝不能从当前 `partial_reason` 反推。**
-
-`PartialReason` 是枚举，**核心逻辑不得出现魔法字符串**（`AGENTS.md` §6）：
-
-```java
-// support.PartialReason —— 每个常量带中文注释（AGENTS.md §6「注释」）
-public enum PartialReason {
-    /** 报告超过 30 等效页，只处理了前 30 页（§5.4） */
-    PAGE_TRUNCATED,
-    /** 某一批次读不清被整批丢弃（§6.2） */
-    BATCH_UNREADABLE,
-    /** 疑似漏抽过敏原，模块四不输出（§6.5） */
-    ALLERGEN_SUSPECT_MISS
-}
-```
-
-```java
-// task.DegradeAccumulator —— 任务级单例，全程累积，只增不减
-class DegradeAccumulator {
-    boolean pageTruncated;
-    boolean batchUnreadable;
-    boolean allergenSuspectMiss;
-
-    // ★ 抑制标志按 OR 累积，与 partial_reason 取哪一个【完全无关】
-    boolean suppressDietAdvice()    { return pageTruncated || batchUnreadable; }
-    boolean suppressDishRecommend() { return pageTruncated || batchUnreadable || allergenSuspectMiss; }
-    boolean partial()               { return pageTruncated || batchUnreadable || allergenSuspectMiss; }
-
-    // 落库的单值，按【严重度】取，不按命中顺序；返回枚举，不返回字符串
-    PartialReason primaryReason() {
-        if (pageTruncated)        { return PartialReason.PAGE_TRUNCATED; }
-        if (batchUnreadable)      { return PartialReason.BATCH_UNREADABLE; }
-        if (allergenSuspectMiss)  { return PartialReason.ALLERGEN_SUSPECT_MISS; }
-        return null;
-    }
-}
-```
-
-**严重度顺序就是「抑制范围从大到小」**：前两个关掉模块三和四，第三个只关模块四。
-取范围最大的那个落库，用户看到的降级说明才不会小于实际发生的降级。
-
-> **不这样做会怎样**：`PAGE_TRUNCATED` 先命中、`ALLERGEN_SUSPECT_MISS` 后命中并覆盖了它，
-> 如果 `suppressDietAdvice` 从 `partial_reason` 推导，就会得出「过敏原因不关模块三」
-> → **模块三被重新输出**，而实际上报告后 15 页根本没读。
-> 这是一条静默错误：页面看起来正常，内容却基于残缺信息。
-
-**本版不把 `partial_reason` 改成多值**（一列 JSON 或多行表），因为它只用于展示与排障，
-真正驱动行为的是上面三个布尔。**如果将来前端要逐条列出降级原因，再改成多值。**
-
-结果接口下发 `partial` / `partialReason` / `suppressDietAdvice` / `suppressDishRecommend`
-/ `processedPages` / `totalPages`，**四个开关字段全部取自 `DegradeAccumulator`**。
-
-### 6.3 Java 校验层：执行顺序不可调换
-
-```java
-// llm.a.ExtractionValidationPipeline —— 严格按 ① → ①a → ①b → ② → ②a → ②b → ③ → ④ 执行
-```
-
-#### ① Schema 校验
-
-`schema/extraction_output.schema.json`。**违规能定位到单个条目 → 剔除该条目并标记部分结果；
-定位不到 → 直接 `FAILED / SERVER_ERROR`。一律不重试。**
-Schema 校验频繁失败时改提示词或换模型，不是加重试。
-
-> **「Schema 通过」不等于「报告已完整识别」**——`"allergens": []` 结构上完全合法。
-
-**（2026-09-02）剔除机制**，依据与完整论证见设计方案 §4.4-①：
-
-```
-可剔除    indicators  textualFindings  summaryConclusions  nutritionSupplements
-          dietRequirements —— 剔了必须连带抑制模块四（DIET_REQUIREMENT_DROPPED）：
-                             每条饮食注意在模块四生成一个 REJECT 方向集合
-不可剔除  allergens（一级红线，静默少一条会把格式错误伪装成 ALLERGEN_SUSPECT_MISS 漏抽降级）
-          sections（被其他条目按 sectionIndex 引用）
-          顶层字段（定位不到「某一条」）
-
-剔除后【重新校验一次】，仍不合法则整批作废——不做猜测式修复
-剔除量上限 20%，且至少允许 1 条（否则两三条的小批次剔一条就作废）
-翻转 PartialReason.SCHEMA_ITEM_DROPPED（抑制范围为空）+ 记带关键字与 JSON 路径的 WARN
-```
-
-落地在 `ExtractionSchemaValidator`，返回 `SchemaValidationOutcome`（输出 + 剔除统计）。
-**依据是实测**：单条目不合 Schema 约 1.2%，整批作废下 200 条的任务成功率只有 8%。
-
-#### ①a `blockRef` 展开
-
-Schema 通过后的**第一件事**，早于所有业务校验：
-
-```
-blockRefs / sectionBlockRef / nameBlockRefs / genderBlockRefs
-    → 查本批映射表逐个展开为 segmentId
-    → 越界、重复、映射不到 → 该引用视为「不存在的 segmentId」，按 ④ 处理
-    → 展开后 blockRef 不再出现在下游
-```
-
-映射表是 Java 自己发请求时构造的，展开是查数组，**不含任何判断**。
-下游全部按 `segmentId` 工作——去重、跨批合并、分组都需要跨批唯一，`blockRef` 只在批内有意义。
-
-#### ①b 引用完整性校验
-
-Schema 只能约束「是个 0~199 的整数」，约束不了「这个下标真的存在」：
-
-```
-sections 自洽
-    sections[i].sectionIndex 必须唯一且 == i（数组下标）
-    → 不满足：FAILED / SERVER_ERROR（模型契约违约）
-
-条目引用有效
-    每个条目的 sectionIndex 必须 ∈ {sections[].sectionIndex}
-    → 不满足：该条目【整条丢弃】
-      属 allergens 时按 ④ 触发 ALLERGEN_SUSPECT_MISS
-
-sourceOrder / orderInSection
-    只做非负与上限的范围检查，【不要求连续】——模型漏号不影响排序结果
-```
-
-没有这一层，`sectionIndex=7` 而本批只有 3 个章节的条目会一路走到分组逻辑，
-在 §7.1 变成指向空气的 `groupKey`，**排查时看起来像分组代码的 bug**。
-
-### 6.3.1 准入三分法（决定条目进哪个数组）
-
-模型侧的抽取规则，Java 侧据此知道该读哪个数组，**不得自行搬运条目**：
-
-```
-有检查结果 + 有结论              →  indicators      conclusionBasis = REPORT_TEXT
-                                                    例：甘油三酯 2.8 mmol/L 0.56~1.70 ↑偏高
-有检查结果 + 无结论 + 数值可比    →  indicators      conclusionBasis = REFERENCE_RANGE_IN_RANGE
-                                                    例：白细胞 6.2 ×10⁹/L 4.0~10.0（提示列留空）
-有检查结果 + 无结论 + 定性可比    →  indicators      conclusionBasis = REFERENCE_VALUE_MATCH
-                                                    例：亚硝酸盐 阴性 / 参考值 阴性
-有检查结果 + 无结论 + 无法明确比较 →  【全部丢弃】
-无检查结果 + 有结论              →  textualFindings 例：肝胆B超：提示脂肪肝
-```
-
-**参考范围准入**（2026-08-27 增补，设计方案 §4.3.1）：
-
-```
-模型负责：结果/单位/参考范围是否同属一个指标、多套人群范围选哪套、单位是否对齐、
-         把区间拆成 lowerBound / upperBound 与开闭标志
-Java 负责：只对拆好的十进制数做 BigDecimal.compareTo，见 IndicatorRangeComparison
-
-Java 侧的核验（ExtractionValidationPipeline.referenceRangeAdmits）：
-     整组区间必须与 refRange 原文解析出的某个区间完全一致（ReferenceRangeParser）
-         下界、上界、两侧开闭一起比；数值用 compareTo，4.0 与 4.00 判等、40 与 4.0 不判等
-         ← 防三种绕过：省略一侧边界、拿子串当边界（4.0 在 14.0~20.0 里）、篡改开闭符号
-         ← 原文写法认不出（非 a-b / a~b / a至b / <、≤、<=、>、≥、>= 这几种）时一律不展示
-     measuredValue 必须与 value 数值相等       ← 用 compareTo，允许 6.2 与 6.20 的标度差异
-     上下界自相矛盾、都不设限、非十进制         ← 一律丢弃
-     结果不在范围内                            ← 丢弃，【不得改判为 HIGH/LOW】
-
-定性型（REFERENCE_VALUE_MATCH）：
-模型负责：结果归一化成 ComparableQualitativeValue 四态枚举；
-         参考值【展开成允许取值的集合】（「阴性或弱」→ [NEGATIVE, WEAK_POSITIVE]）
-Java 负责：只做集合包含，见 ExtractionValidationPipeline.referenceValueAdmits
-     【绝不做字面子串匹配】「阳性」是「弱阳性」的子串，字面包含会把异常判成正常
-     【NOT_DETECTED 与 NEGATIVE 不是同义词】——要认等价，模型在归一化时就要统一
-     枚举外的取值、两侧不等、valueMatch 为 null → 该指标不展示
-     ⚠️ 归一化枚举【无法回溯原文】，这条路径对模型归一化是信任关系而非校验关系
-        （数值型的上下界可以逐字核验，两者信任边界不同）
-```
-
-**`status = NORMAL` 的语义边界**：走这两条路径时，`NORMAL` 只表示
-「符合本报告给出的参考值」，**不表示未发现疾病、更不表示身体正常**。
-接口字段说明与页面文案必须同口径（需求 §5-3）。
-
-```
-【结论为「正常」的项同样要抽】—— 模块一展示全部有结论的指标，不是只展示异常的
-     textualFindings 里同样有正常项：「肝胆B超：未见明显异常」「心电图：窦性心律，正常心电图」
-     它们靠 status 区分，status = NORMAL 时 includeInHealthProblems 必须为 false
-
-Java 侧的后果：模块一的「总指标数」仍可能少于报告的「总项目数」
-     参考范围准入补回了「有数值无结论但有参考值」的那批（实测样本 A 从 31 项涨到 56 项）
-     剩下的缺口是「无结论且无可用参考值」的项，这是设计选择不是 bug（§7.2）
-     【Java 不得为了对齐数字而把它们补回来，也不得放宽参考范围准入的四条硬规则】
-```
-
-### 6.4 来源校验：凡声明「来自报告原文」的字符串都要能回切
-
-**契约不允许模型返回不受来源约束的展示文案。** 校验档位按该 segment 的 `textSource`：
-
-| `textSource` | 校验方式 |
+| 调用 | 结构校验 |
 |---|---|
-| `NATIVE` | **严格子串**：规范化(字段值) 必须是合并 `normalizedText` 的子串 |
-| `OCR` | **放宽**：去全部空白后子串匹配；仍不中则归一化后编辑距离 ≤ 1 |
+| 全部 | 每个 `page` 在 `[1, images.size()]`；所有 object 禁止未知字段 |
+| 一 | `conclusionGenerated=true` 时 `status=NORMAL` 且 `refRange` 非空；章节唯一 |
+| 二 | `INDICATOR` 引用与调用一异常指标的匹配**只决定 `indicatorId` 跳转按钮，匹配不到不丢弃条目**（设计方案 §6.2）；`name` 的原文片段能在 `rawText` 中找到。该匹配发生在调用后，不把阶段 1 输出发给阶段 2 |
+| 三 | `enumKey` 属于 `dimension`；方向符合固定表；不从指标/问题输入推导；不得出现任何菜品字段 |
 
-> OCR 放宽是必须的：OCR 把 `2.8` 认成 `2.6` 时，模型看图正确读出 `2.8`，
-> 严格匹配会把**正确的抽取结果**杀掉，而拍照上传是主流形态。
+任意调用失败都让整任务 `FAILED`，不写部分 `result:{taskId}`。
+`NO_REPORT_FEATURE` 映射 `NOT_HEALTH_REPORT`，`UNREADABLE` 映射 `UNREADABLE`，服务端异常映射
+`SERVER_ERROR/reanalyzable=true`。全链路零重试。
 
-**逐字段处理表（实现时照此写 `switch`）：**
+### 6.6 Prompt、Schema 与版本
 
-| 字段 | 校验对象 | 不过时 |
-|---|---|---|
-| `indicators`：`name` `value` `unit` `refRange` `conclusionText` | 该条目 `segmentIds` 合并文本 | 该指标**整条丢弃** |
-| `indicators.problemName`（非 null 时） | 同上 | 降为 `null`，走 §7.3 拼接分支，**不丢条目** |
-| `textualFindings`：`title` `conclusionText` | 该条目 `segmentIds` | 该条**整条丢弃** |
-| `allergens`：`rawName` `rawResult` | 该条目 `segmentIds` | 该条丢弃，**且触发 `ALLERGEN_SUSPECT_MISS`** |
-| `sections.sectionName`（`CURRENT`） | 该章节 `sectionSegmentId` | 该组 `displayName` 降为「未标注章节」，**不丢内容** |
-| `sections.sectionName`（`UNSECTIONED`） | **该组覆盖的全部 segment 合并文本** | 同上，降为「未归入章节的内容」 |
-| `reportOverview` 两个数字 | `reportOverview.segmentIds` 合并文本，**两个十进制数字都要在** | 整个 `reportOverview` 降为 `null`，回退 §7.2 的 Java 计数 |
-| `patient.name` / `gender`（非 null 时） | 各自证据数组展开后的文本 | 对应字段降为 `null`，**不得参与 §6.6 的冲突判断** |
+`PromptVersions` 新增三个独立常量：
 
-```
-展示原文类长文本一律不用模型返回值：健康问题 rawText、饮食建议来源原文
-    → Java 按 segmentId 取整段 rawText，模型只负责指路
-segmentId 不存在 → 该条整条丢弃
-不给指标做字符区间切分：规范化会改变字符数（NFKC 把 ㎎ 拆成 mg），
-    字段级 offset 需维护 raw↔normalized 逐字符映射表，成本远高于收益
+```java
+/** 健康指标生产提示词版本，必须与文件头及摘要历史一致。 */
+public static final String INDICATORS = "indicators-1.1.0";
+/** 健康问题生产提示词版本，必须与文件头及摘要历史一致。 */
+public static final String PROBLEMS = "problems-1.0.0";
+/** 饮食建议与标签提示词版本，必须与文件头及摘要历史一致。 */
+public static final String DIET_TAGS = "diet-tags-1.1.0";
 ```
 
-### 6.5 安全扫描与降级（生产链路仅有的词表用法之二）
+三对生产 Prompt/Schema 是开发前置，各自登记 `prompt/versions.tsv`。
+生产加载器必须显式拒绝文件名含 `probe` 的资源。
+旧 `PromptVersions.EXTRACTION`、`prompt/extraction.md`、`schema/extraction_output.schema.json` 整体退出主链路。
 
-#### A. 高风险内容交叉扫描
+`indicators.schema.json` 以 probe 为基线并新增顶层必填 `patients`：元素只含
+`page / name / gender`，其中 `page` 有效且 `name`、`gender` 不得同时为空。
+`diet_tags.schema.json` 的 `ALLERGEN` 正式枚举列 13 个食入性组、
+`DUST_MITE / POLLEN / ANIMAL_DANDER / MOLD / COCKROACH` 五个非食入性组与 `OTHER`。
+五个非食入性组保留在模块三展示，但 `DishRecommendationSetService` 必须拒绝用它们拼 Redis Key。
 
-对全部 segment 的 `normalizedText` 扫描：
-
-```
-过敏原章节名（过敏原、变应原、IgE、致敏原）命中而 allergens 为空
-阳性标记（阳性、(+)、＋）出现在过敏章节 segment 内而 allergens 为空
-    → partial=true, partial_reason=ALLERGEN_SUSPECT_MISS
-    → 模块一二三照常，模块四整体不输出
-```
-
-**没有饮食医嘱词扫描，没有 `dietSuspectMissCount`**——它只记计数不影响输出，
-属 §0.3-② 禁止的那一类。饮食建议抽得全不全去跑评测集。
-
-#### B. 过敏覆盖集合规则（模型输出的内部一致性）
-
-```
-S = allergenSectionSegmentIds     过敏章节全部段（含没抽出条目的数据行）
-D = allergenDataSegmentIds        其中确认读到检测数据行的段
-A = allergens 各条目 segmentIds 的并集
-
-结构断言（不满足 → FAILED / SERVER_ERROR，模型契约违约）
-    D ⊆ S        A ⊆ S
-
-覆盖判定
-    S 非空 且 D 为空   → 有章节、一行数据都没读出来   → ALLERGEN_SUSPECT_MISS
-    D \ A 非空         → 有数据行没有对应条目 = 漏抽  → ALLERGEN_SUSPECT_MISS
-    D 非空 且 D ⊆ A 且 A 全 NEGATIVE → 「读全了全是阴性」，正常
-    S 为空             → 报告没有过敏章节，以 A 的扫描为准
-```
-
-> **B 不是独立防线**：`S`/`D`/`A` 全来自同一次模型输出，模型同时漏掉数据行和条目时
-> `D \ A` 仍为空。它只拦「自相矛盾」，拦不住「一致地漏」。
-
-#### C. 阳性行覆盖扫描（候选段的发现依据独立于模型）
-
-```
-候选阳性段 = { seg | seg.normalizedText 同时命中
-                    ① ADMITTED_RESULT_MARKS（阳性/弱阳性/可疑/临界/(+)/＋/± …）
-                    ② 任一已知过敏原名称（AllergenGroups 全部 displayName + matchWord） }
-
-每个候选段必须 ∈ A
-    命中而不在 A → ALLERGEN_SUSPECT_MISS
-```
-
-**分两步，只有第一步独立**：候选段从原文独立找出（模型漏多少都不影响候选集大小），
-第二步当然要用模型输出，否则无从谈「漏没漏」。
-
-> **⚠️ 已知盲区，实现时不得试图弥补：** 名称与结果被拆进不同 segment 时命中不了。
-> OCR 路径识别块≈一整行（能命中）；PDF 原生绘制单元≈一个单元格（`[牛奶]` `[阳性(+)]`
-> 两块，**命中不了**）。要配对只有 bbox 判同基线 / seq 取相邻 / 表格还原三条路，
-> **全是版面推断，全部禁止**（§0.3-①、`AGENTS.md` §3）。
-> 本层定位是「同块场景的有限兜底」，文档与代码注释都**不得**称其为完整覆盖。
-
-#### D. 过敏原准入过滤
-
-```
-仅以下两类进入过敏提醒区与菜品拦截链路：
-    resultStatus == POSITIVE
-    resultStatus == BORDERLINE      // 作为产品安全信号从严准入，但不等同临床确诊
-
-以下都不进入，但计数口径不同：
-    resultStatus == NEGATIVE        // 【不计数】筛查表里的绝大多数，计了没信息量
-    resultStatus == UNKNOWN         // 这一行没读明白，
-                                    //  而它不触发任何降级，计数是唯一能看见它的地方
-```
-
-**`isFoodBorne` 由 `enumKey` 查表得到，不由模型也不由词表决定：**
-
-```
-正式枚举（13 食入 + 5 非食物）→ 查 AllergenGroups 常量表，【模型返回值直接丢弃】
-enumKey == OTHER              → 采信模型，Java 不校验、不改写、不告警
-```
-
-#### E. 回切失败的连带处理
-
-```
-被丢弃的条目属于 allergens 时 → partial=true, partial_reason=ALLERGEN_SUSPECT_MISS
-```
-
-过敏原条目回切失败**不能简单丢弃后继续推荐**——丢掉的可能正是那条要命的。
-
-#### F. 健康问题准入
-
-只有 `includeInHealthProblems = true` 的条目进入模块二。
-**判定权完全在 LLM-A，Java 既不覆写也不扫词表告警。**
-
-### 6.6 多批与多文件合并
-
-```
-跨批排序          一律按 §7.1 排序总则，不按批次号，不按批次完成顺序
-跨批去重          只在批次输入确有重叠时执行，判据是【同 segmentId 且同 itemIndex】
-                  保留 page 较小的一条；【非重叠页面之间一律不去重】
-姓名合并          取所有通过 §6.4 来源校验后的非空值；全空视为该文件未识别出姓名
-```
-
-> 去重不能用 `sectionName + name + value + unit` 四元组——那会误删
-> 「左眼视力 5.0 / 右眼视力 5.0」「静息心率 72 / 运动后心率 72」这类真实结果。
-
-**多文件同一性校验（弱校验，发现冲突则拒绝）：**
-
-```
-取所有通过来源校验的 patient.name / gender 非空值比对
-姓名：规范化（去空格）后完全相等即通过
-> **【繁简转换不做】**（2026-08-26 产品确认）实现只做 NFKC + 去空白。
-> 代价是**繁简同名会被判成不同人**（「张伟」vs「張偉」→ `IDENTITY_MISMATCH`，整任务失败）。
-> 方向仍是 fail-safe——只会拒绝，不会把两个人的报告合并——所以接受这个限制。
-> 补齐需要引入 OpenCC 类生产依赖或一份需医务审核的姓氏映射表，暂不投入。
-> **不得用拼音或不完整映射顶替**：那会制造新的误合并，方向就反了。
-任一不一致 → FAILED / IDENTITY_MISMATCH，不自动合并、不做确认弹窗
-```
-
-放行的情况（产品已确认）：全部识别不出姓名、只有一份识别出、姓名同性别缺一份、同名不同人。
-
-**多文件分组：`groupKey` 用结构化 ID，跨文件绝不合并**（详见 §7.1）。
-
----
 
 ## 7. 四模块组装
 
-### 7.1 排序总则（唯一实现，其余各处只调用）
+### 7.1 顺序：数组顺序即展示顺序
 
-```java
-// assemble.sort.DisplayOrder —— 全案排序只有这一个实现，禁止在模块里另写比较器
-```
-
-```
-分组顺序   fileIndex → groupOrder
-组内顺序   groupOrder → page → orderInSection    （indicators / textualFindings）
-条目顺序   groupOrder → page → sourceOrder       （summaryConclusions / allergens /
-                                                   nutritionSupplements / dietRequirements）
-groupOrder = 该组第一次出现时的 (group.page, batchIndex, sectionIndex)
-```
-
-**三条硬约束：**
+**旧的「排序总则」整体删除。** 契约里已经没有任何序号字段（设计方案 §4.2），
+顺序由模型给出的数组顺序承载：
 
 ```
-① 顺序字段一律由 LLM-A 给，Java 只比较和排序
-② 批内序号（sectionIndex / orderInSection / sourceOrder）跨批会撞号，
-   每条排序键都必须先用 page 收敛；sourceOrder 作用域是「章节内、批内」，
-   跨章节也会撞，所以前面必须先有 groupOrder
-③ 任何排序键都不得使用 segmentId 里的 seq —— 那是解析器产出顺序，不是阅读顺序
+模块一   sections 数组顺序 → 组内 indicators 数组顺序
+模块二   problems 数组顺序（模型已按需求 §6-4 排好，Java 只校验分组边界）
+模块三   recommend / reject 各自的数组顺序
+模块四   拼音首字母（需求 §8-4/§8-5），与上面三条无关
 ```
 
-**`page` 契约里没有，Java 从 `segmentId` 算：**
+**多文件时先按 `page` 收敛，再按数组顺序。** `page` 是全局图序号，天然递增且跨文件唯一，
+它同时承担了旧链路里 `fileIndex` + `groupOrder` + `page` 三个键的作用。
 
-```java
-item.page  = min{ page(segmentId) | segmentId ∈ 该条目展开后的 segmentIds }
-group.page = min{ item.page       | item ∈ 该组全部条目 }
-```
-
-取 `min` 的理由：跨页续表的指标「属于」它开始的那一页，取 `max` 会让它排到后面、
-和同页条目分开。这是从字符串取数字再比大小，**不是版面推断**——
-页码是报告的客观属性，`seq` 是解析器的实现细节。
-
-**分组键：**
-
-```
-groupKey    = fileIndex + "-" + 有效 sectionSegmentId      跨文件绝不合并
-displayName = 单文件：sectionName
-              多文件：「报告{fileIndex+1}-」+ sectionName
-```
-
-| `sectionRelation` | 有效 `sectionSegmentId` | `displayName` |
-|---|---|---|
-| `CURRENT` | 模型给的那个 | `sectionName` |
-| `CONTINUATION` | **继承**同文件内前一批末章节的 | 被继承章节的 `sectionName` |
-| `UNSECTIONED` | `"U-" + 组内最小 segmentId` | `sectionName`，须过 §6.4 来源校验，不过则「未归入章节的内容」 |
-| `UNKNOWN` | `"X-" + 组内最小 segmentId` | 固定文案「未标注章节」 |
-
-```
-Java 只在 CONTINUATION 一种取值下继承，且只做继承、不做识别
-文件的第一批就报 CONTINUATION 时没有可继承对象 → 按 UNKNOWN 处理
-                                                【不向前跨文件继承】
-跨批的同一章节【不会两批返回同一个 ID】——批次不重叠，后一批看不到前一批的标题块
-后两态用最小 segmentId 只是【唯一键】不是顺序键，展示顺序仍由 groupOrder 决定
-```
+`assemble/sort` 包连同 `GroupOrderCalculator`、`SectionGroupKey` 一并删除。
 
 ### 7.2 模块一：健康指标
 
-| 卡片字段 | 来源 |
-|---|---|
-| 指标名称 | `indicators[].name`，报告原文不改写 |
-| 检测值 + 单位 | `value` + `unit` |
-| 参考正常范围 | `refRange`；报告没写时展示「报告未提供」，**禁止填充通用参考值** |
-| 展示结论 | `conclusionText`：`REPORT_TEXT` 直接引用报告原文；`REFERENCE_RANGE_IN_RANGE` 固定为「在参考范围内」；`REFERENCE_VALUE_MATCH` 固定为「符合报告参考值」 |
-| 结论生成标志 | `conclusionGenerated`：报告原文为 `false`；两种参考值准入固定文案为 `true`，前端必须做视觉区分 |
-| 状态标签 | 见下 |
-
-**状态四态**：`NORMAL`(绿) / `HIGH`(红↑) / `LOW`(蓝↓) / `ABNORMAL`(橙)。
-第四态用于承载「阳性(+)」「可疑」「临界」，**需产品确认**（设计方案 §12-1）。
+数据来自 `IndicatorsResult`。**Java 只做取值、拼接与计数。**
 
 ```
-status 由 LLM-A 给，Java 在线【不做任何校验】：
-    模型给的 status  →  直接采用
-    模型漏给 status  →  按 Schema 必填拦下，剔除该条指标（§4.4-①）
-
-展示规则：颜色跟判定，文字按 conclusionBasis 分流
-    标签颜色 = status 对应色
-    REPORT_TEXT              → conclusionText 报告原文（如「阳性(+)」），conclusionGenerated=false
-    REFERENCE_RANGE_IN_RANGE → 「在参考范围内」，conclusionGenerated=true
-    REFERENCE_VALUE_MATCH    → 「符合报告参考值」，conclusionGenerated=true
-    后两条只陈述与本报告参考值的关系，【不写「正常」「未见异常」】
+分组      直接用 sections，一个 section 一个卡片区
+分组名    单文件 = section；多文件 = 「报告{fileIndex+1}-」+ section
+          fileIndex 由 PageImageSequence.locate(section.page) 得到
+展示结论  conclusionGenerated = false → status 的标准文案
+          conclusionGenerated = true  → 「在参考范围内」；定性项为「符合报告参考值」
+          并把 conclusionGenerated 原样下发，前端据此做视觉区分（需求 §5-3 第 80 行）
+状态标签  status 原样下发
+总览条    overview 两个数字直接采信；正常项数 = total - abnormal；占比四舍五入到整数
 ```
 
-**分组**：按 `groupKey` 分组（**不用 `sectionName` 做键**——多文件时两份报告都有「血脂检查」），
-全部平铺展示不折叠。
+**`overview` 不与抽取结果交叉核对**（设计方案 §5.4）：报告口径把身高体重血压也算了进去，
+拿它去卡抽取条数只会得到假警报。差额只进埋点。
 
-**总览条：**
-
-```
-总指标数 = 本模块展示的条数
-正常项数 = status == NORMAL 的条数
-异常项数 = HIGH + LOW + ABNORMAL 的条数
-异常占比 = 异常项数 / 总指标数，四舍五入到整数百分比
-
-reportOverview 非空（且过了 §6.4 数字校验）→ 展示报告的数字并标注「（报告原文）」
-                                            两者不一致不纠错、不告警，以报告为准
-reportOverview 为空 → 用上面的公式算
-```
-
-**不加任何差值说明文案**——总指标数可能少于报告实际项目数（只列数值不给结论的项不展示，
-在生化全套、血常规里常占 30~40%），产品已确认不处理该不一致。
-
-**空态**：展示「本次报告未提取到带明确结论的指标项」，**保留总览条位置展示 0，不隐藏模块**。
-
-**底部声明**：`以上指标数据均来自体检报告原文，仅供参考，如有疑问请咨询医生。`
+`IndicatorCardFactory` 保留；`ReferenceRangeParser` / `ConclusionBasisResolver` **删除**
+——参考范围比较现在由模型完成，Java 不再解析 `4.0~10.0` 这类原文。
 
 ### 7.3 模块二：健康问题
 
-| 来源类型 | 数据来源 | 准入条件 | 带 `indicatorId` |
-|---|---|---|---|
-| `INDICATOR_NUMERIC` | `indicators` | `includeInHealthProblems = true` | **是** |
-| `INDICATOR_TEXTUAL` | `textualFindings` | `includeInHealthProblems = true` | 否 |
-| `SUMMARY` | `summaryConclusions` | `includeInHealthProblems = true` 且 `categories` 含 `HEALTH_PROBLEM` 或 `DIET_ADVICE` | 否 |
+数据来自 `ProblemsResult`。**`problems` 数组即最终展示列表**，Java 只做三件事：
 
 ```
-三类准入统一用 LLM-A 的 includeInHealthProblems
-【不得】由 status != NORMAL 派生 —— 准入是语义判断，不是 status 的机械函数
-INDICATOR_TEXTUAL 不带 indicatorId：「脂肪肝」这类无数值结论根本不会生成指标卡片，
-                                   没有可跳转目标；前端据此只对 INDICATOR_NUMERIC 显示跳转按钮
+① 拼来源标注
+   INDICATOR → section + "–" + indicatorName          「血脂检查–甘油三酯」
+   SUMMARY   → section + "第" + itemNo + "条"          「总检结论第3条」
+               itemNo 为 null 时退化为 section
+   多文件加「报告N-」前缀
+
+② 关联跳转
+   indicatorName 在模块一的指标里查表匹配 → 命中则下发 indicatorId，未命中则不显示按钮
+   【查表匹配，不做模糊匹配】：名称对不上就是对不上，宁可不显示按钮，
+   也不能跳到一张不是它的卡片
+
+③ 分组边界校验
+   全部 INDICATOR 必须排在全部 SUMMARY 之前，不满足时稳定重排（§6.4）
 ```
 
-**条目字段：**
+`displayName` 直接用 `name`，**Java 不拼「归一化结论词」**——不把 `status = HIGH`
+翻译成「偏高」再拼进问题名，那是拿模型的语义分类生成一句报告里没有的医疗表述。
 
-| 字段 | 生成方式 |
-|---|---|
-| `displayName` | `INDICATOR_NUMERIC`：`problemName` 非 null 用它；为 null 时 Java 拼 `name + " " + conclusionText`——**两段都是报告原文，只做字符串连接**<br>`INDICATOR_TEXTUAL`：用 `title`<br>`SUMMARY`：用回切后的原文 |
-| `displayNameGenerated` | 布尔。`true` = 走了拼接分支（`problemName == null`） |
-| `sourceLabel` | 单文件「血脂检查–甘油三酯」「总检结论第3条」；多文件加「报告2-」前缀。**章节名取 §7.1 的 `displayName`，不写死「总检结论」** |
-| `rawText` | 按 `segmentId` 取整段原文；`segmentId` 不存在则该条丢弃 |
-| `indicatorId` | 仅 `INDICATOR_NUMERIC` 下发 |
-
-> **Java 不拼「归一化结论词」。** 报告写「↑」就拼成「甘油三酯 ↑」，
-> **不得**翻译成「甘油三酯偏高」——那是系统造出报告里没有的表述。
-
-**排序**（调 §7.1）：
-
-```
-INDICATOR_NUMERIC + INDICATOR_TEXTUAL 在前，按 fileIndex → groupOrder → page → orderInSection
-SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
-不做严重程度分级、不做风险排序
-```
-
-**空态**：`本次报告未提取到明确的异常结论或健康提示。`
-> **不得写成「各项指标均在正常范围内」**——提取不到不等于人是健康的。OCR 糊了、模型漏了、版式没见过都会走到空态，那句话是在替系统下医疗结论。
-**底部声明**：`以上内容均为体检报告原文结论的汇总，不构成二次诊断，如有疑问请咨询医生。`
 
 ### 7.4 模块三：饮食建议
 
@@ -3151,56 +1304,57 @@ SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 ① 不从指标异常推导建议 —— 甘油三酯偏高 ≠ 低脂饮食，只有报告明文写了才生成
 ② 不合并同向建议 —— 「低脂饮食」与「控制体重」各自成卡片，各自引用各自原文
 ③ 不在饮食建议中引用指标数据
-   守法方式是结构性的：本模块的【输入只有 enumKey + rawText】，结构上看不到指标数据
+   守法方式是结构性的：本模块只接收阶段三的标签与来源字段，结构上看不到指标或健康问题数据
 ```
 
 **直接后果（产品已确认接受）**：报告只写「血脂偏高，建议复查」时，
 饮食建议三个分区全空态、菜品推荐空。**这是需求 §7-5 的明确选择，不是缺陷**，
 不做通用建议兜底。
 
-**枚举**（36 个正式 + `OTHER`）：13 食入性过敏原 + 5 非食物过敏原 + 9 营养补充 + 9 饮食注意。
+**枚举**（36 个正式 + 各维度共用的 `OTHER` 哨兵）：
+13 食入性过敏原 + 5 非食入性过敏原 + 9 营养补充 + 9 饮食注意。
+非食入性过敏原进入阶段三与模块三展示，但不参与菜品匹配。
 真源是 `constants` 包的 Java 常量类，**没有 CSV、没有生成器、没有运行时加载**。
 
 **来源标注完全由字段拼出，Java 不做任何推断：**
 
 ```
-来源标注 = 章节展示名 + "–" + 原文
-    章节展示名 = sectionIndex → §7.1 的 displayName
-    「第N条」   = itemNo 非 null 时用它；【为 null 时不写条号，不拿 sourceOrder 顶替】
-    原文       = blockRefs 展开后按 segmentId 取整段 rawText
-排序     = groupOrder → page → sourceOrder
+来源标注 = 章节展示名 + "–" + quote
+    章节展示名 = section（多文件带「报告N-」前缀，fileIndex 由 page 查表得到）
+    「第N条」   = itemNo 非 null 时用它；【为 null 时不写条号，不拿数组下标顶替】
+排序     = recommend / reject 各自的数组顺序；多文件先按 page 收敛
 ```
+
+> **`quote` 与 `rawText` 之间不做包含性校验。** 一条原文拆出多个枚举时各条 `quote`
+> 各摘各的那一段，不可能都是连续子串（实测「减少酒精和高果糖饮料」→「减少高果糖饮料」）。
+> 代价是没有机制能发现编造的建议原文，已登记进设计方案 §11。
 
 **结构化准入政策（2026-08-28 重构，设计方案 §7.3）：**
 
-```java
-// safety.StructuredAdmission —— 两层，第一层是模型判定，第二层是 Java 词表兜底
-第一层：applicability == CURRENT_PATIENT && structuredSafety == NORMAL 才放行
-        两个枚举都由 LLM-A 给；Java【不判断年龄、不解析代词指向、不猜「儿童」在说谁】
-        缺失或非法一律按 UNCERTAIN 处理 → 抑制（fail-closed）
-
-// safety.HighRiskAdviceGate —— 不可被模型推翻的兜底，只扫 adviceQuote
+```
+// safety.HighRiskAdviceGate —— 唯一剩下的一层，不可被模型推翻，只扫 quote
 低蛋白 / 限蛋白 / 优质低蛋白 / 低钾 / 限钾 / 低磷 / 限磷 / 低碘 / 限碘 / 忌碘 / 高碘
-        【人群裸词已移除】妊娠 / 孕期 / 哺乳期 / 儿童 不再在词表里——
-        它们不是限制表述，指向谁由 applicability 判断
-        【扫描对象是 adviceQuote 不是整段 rawText】模型摘出的建议本身那一句，
-        上限 100 字、必须逐字回切；回切不过整条丢弃
+
+【扫描对象是 quote 不是 rawText】模型摘出的建议本身那一句，上限 100 字
+【人群裸词不在词表里】妊娠 / 孕期 / 哺乳期 / 儿童 —— 它们不是限制表述
 ```
 
 ```
-命中任一层 → 打 structuredOutputSuppressed = true，该条按 OTHER 路径处理
+命中 → structuredOutputSuppressed = true，该条按 OTHER 路径处理
        只展示报告原文与来源，不生成食材清单、不参与菜品匹配、不进入打标维度
-   【不覆写 enumKey】—— enumKey 是 LLM-A 的归一化结论，改它就是替模型下另一个结论
-                   模型原本给的值原样保留，仅用于排障归因
+   【不覆写 enumKey】enumKey 是体检报告分析模型的归一化结论，改它就是替模型下另一个结论
 ```
 
 这道闸只会让系统**少输出内容**，永远不会让它输出一个不同的医疗语义——这是它合法的原因。
 
+> **模型侧的那一层已删除。** 旧契约里的 `applicability` / `structuredSafety`
+> 两个枚举不再存在（§6 契约）。后果是「建议家属同查」「孕妇和14岁以下儿童除外」
+> 这类**指向不是受检者**的文本，现在只靠提示词的抽取范围规则拦截，**没有机械兜底**。
+> 设计方案 §7.3 已登记为已接受风险；`HighRiskAdviceGate` 的类注释里必须写明这一点。
+
 > **【作用范围仅限营养补充与饮食注意，不含过敏原】**（2026-08-26 产品确认）
-> 过敏忌口本身就是要展示给用户的安全信息。「妊娠 / 儿童」这类词出现在过敏原原文里是常态，
-> 用它们连带抑制忌口清单，等于把最该看见的内容收掉，**方向反了**。
-> 实现上过敏原卡片的 `structuredOutputSuppressed` 恒为 `false`，
-> 只有 `enumKey == OTHER` 这一个原因会让它走 OTHER 路径。
+> 过敏忌口本身就是要展示给用户的安全信息，用人群词连带抑制忌口清单，方向反了。
+> 过敏原条目的 `structuredOutputSuppressed` 恒为 `false`。
 
 **`OTHER` 的处理**（含被安全闸抑制的条目）：
 
@@ -3212,13 +1366,50 @@ SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 
 > 这不满足需求 §7-3（要求每条建议都列食材/摄入量/搭配建议），**产品已确认接受该降级**。
 
-**空态**（三个分区独立）：
+**展示形态：两个食材清单**（设计方案 §7.6，产品确认）
 
-| 分区 | 文案 |
+```java
+// DietAdviceAssembler
+Set<String> nutritionSet     = union(recommend, NUTRITION, c -> c.recommendIngredients);
+Set<String> dietRecommendSet = union(recommend, DIET,      c -> c.recommendIngredients);
+Set<String> allergenSet      = union(reject,    ALLERGEN,  g -> g.avoidIngredients + g.hiddenFoods);
+Set<String> dietAvoidSet     = union(reject,    DIET,      c -> c.avoidIngredients);
+
+List<String> avoidList     = ordered(allergenSet, dietAvoidSet);
+List<String> recommendList = ordered(nutritionSet, dietRecommendSet);
+recommendList.removeIf(food -> hitsAny(food, avoidList));   // 【最后统一减一次】
+```
+
+**三条硬约束：**
+
+```
+① 差集放在最后，不在各维度内部做
+   报告同时说「补铁」和「低脂饮食」时，猪肝在 nutritionSet 也在 dietAvoidSet；
+   只在营养补充维度内部判断的话，另一个维度的禁忌会漏掉
+
+② 差集用宽松匹配，不用 displayName 精确相等
+   命中判据：适宜多吃里的食材【包含】忌吃少吃侧任意一个 matchWord
+   过敏原「虾蟹类」的 matchWord 含「虾」→「虾仁」「基围虾」全部移除
+   误判代价不对称：少推荐一条只是少条信息，把过敏原推给用户是一级红线（§0-6），宁可多减
+
+③ hiddenFoods 必须并进忌吃少吃
+   虾丸、蟹棒、XO 酱：需求 §7-3 要求展示「易忽略的含该过敏原的常见食物」，
+   两个清单形态下它们没有别的地方可去
+```
+
+**`OTHER` 与被安全闸抑制的条目不产生任何食材**，因此在本形态下不可见
+——它们仍在结果对象里下发（带 `quote` / `section`），前端当前不渲染。
+**`OTHER` 条数进埋点**，占比异常时重新评估本形态。
+
+**空态**（两个清单各自独立）：
+
+
+| 清单 | 文案 |
 |---|---|
-| 过敏提醒 | 本次报告未提取到明确的过敏原相关内容 |
-| 营养补充 | 本次报告未提取到明确的营养补充建议 |
-| 饮食注意 | 本次报告未提取到明确的饮食注意要求 |
+| 适宜多吃 | 本次报告未提取到明确的饮食推荐内容 |
+| 忌吃少吃 | 本次报告未提取到需要避免的食材 |
+
+**「适宜多吃」被差集减空与「本来就没有推荐」走同一句文案**，不解释原因。
 
 > **主语必须是「我们没提取到」，不是「报告未涉及」**——后者是在陈述报告的内容，而我们只知道自己没提取到。过敏这一条尤其不能反过来说。
 
@@ -3227,7 +1418,7 @@ SUMMARY 在后，按 fileIndex → groupOrder → page → sourceOrder
 
 **底部声明**：`以上建议均基于体检报告原文，不构成医疗或营养处方，具体饮食方案请遵医嘱。`
 
-### 7.5 模块四：食堂菜品推荐
+### 7.5 模块四：Java 根据第三次体检报告分析结果中的标签生成食堂菜品推荐
 
 #### 7.5.1 数据前提
 
@@ -3237,14 +1428,16 @@ ct_dish_ingredient  company_id、dishes_id、ingredient_name、weight_g
 【只读，不写，不改结构】实际表名接入时核对；企业与菜品ID列固定为 company_id、dishes_id
 ```
 
-只有凌晨任务可以读取这两张表。在线模块从任务记录取得创建时固化的 `companyId`，只读取
-`dish:recommend:{companyId:bizDate}:...` 集合；禁止在线调用 `DishQueryService` 或回源标签表。
+只有凌晨任务可以读取这两张表。在线链路从任务记录取得创建时固化的 `companyId`，
+只读取 `dish:recommend:{companyId:bizDate}:...` 集合；禁止在线调用 `DishQueryService` 或回源标签表。
+第三次体检报告分析调用不接收这些集合、菜品 ID、菜名或菜品标签；Java 只在第三次输出校验通过后，
+用其中的标准化标签选择 Redis 集合。
 
 > **⚠️ `ct_dish_ingredient` 里没有调味料**（已确认）。油、盐、糖、酱油、醋、料酒、蚝油、
 > 香油、豆瓣酱、沙拉酱、XO酱、鸡精、淀粉一概不入表。
 >
 > **全案禁止「食材表里没有 X 所以判 NEUTRAL」的推理**——它只能推出「主料配料里没有 X」。
-> 这条要写进 LLM-B 提示词，也要写进 Java 兜底的注释里。
+> 这条要写进菜品离线打标提示词，也要写进 Java 兜底的注释里。
 
 #### 7.5.2 三个维度的判定方式
 
@@ -3255,7 +1448,7 @@ ct_dish_ingredient  company_id、dishes_id、ingredient_name、weight_g
 | 饮食注意 | 9 | 凌晨离线发布 9 个不推荐集合；仅低嘌呤、高纤维按主料确证后发布推荐集合 |
 | 吸入性过敏原 | 5 | **不参与** |
 
-LLM-B 实际处理 13 + 9 = **22** 个维度，只输出 `REJECT / UNKNOWN / NEUTRAL`；低嘌呤、高纤维
+菜品离线打标模型实际处理 13 + 9 = **22** 个维度，只输出 `REJECT / UNKNOWN / NEUTRAL`；低嘌呤、高纤维
 正向及 9 个营养维度由 Java 在同一凌晨任务按主料计算。在线最终读取
 13 + 2 + 9 + 9 = **33** 个方向 SET 中与当前报告相关的部分。
 
@@ -3305,7 +1498,7 @@ boolean recommend = safetyVerdict == TagState.NEUTRAL
     && !matchedMainIngredientSet.isEmpty();
 ```
 
-该逻辑由凌晨 `DietPositiveMatcher` 执行。其余 7 个饮食枚举即使 LLM-B 认为“看起来符合”，也不得
+该逻辑由凌晨 `DietPositiveMatcher` 执行。其余 7 个饮食枚举即使菜品离线打标模型认为“看起来符合”，也不得
 写 `diet:recommend`；低脂、低盐、限糖、限酒等缺少调味料、用油量、酒精或完整配方证据，只允许
 根据明确反向证据写 `diet:reject`。执行时点从在线移到离线不构成扩大推荐维度的依据。
 
@@ -3320,17 +1513,18 @@ boolean recommend = safetyVerdict == TagState.NEUTRAL
 
 > **食材表没有调味料之后，这一层实际只剩「菜名」一条通路。**
 > 「蚝油生菜」能拦住是因为菜名里写着蚝油；「红烧肉」里的酱油、「凉拌黄瓜」里的香油
-> **一个都硬匹配不到**；LLM-B 也不能猜成实际配方，缺少明确证据时必须给 `UNKNOWN`，
+> **一个都硬匹配不到**；菜品离线打标模型也不能猜成实际配方，缺少明确证据时必须给 `UNKNOWN`，
 > 由凌晨完整性门槛阻止该菜进入正向集合。
 > 因此词表必须收录调味料在**菜名**里的写法，且 `MOLLUSK` / `SESAME` 是上线阻断项（§0.4）。
 
 **已知代价：过杀。**「鱼香肉丝」在鱼过敏时会被误标，主动接受。
 误杀集中在少数词时加一个 ≤20 条的例外词典（`AllergenExceptions`，已存在）。
 
-#### 7.5.6 枚举外过敏原（`OTHER` 且 `isFoodBorne = true`）
+#### 7.5.6 非食入性过敏原与枚举外过敏原
 
 ```
-OTHER 没有稳定的离线标签维度，不进入 33 个 Redis 集合
+五个非食入性正式枚举保留在模块三，但不进入 33 个 Redis 集合
+OTHER 无论食入性与否都没有稳定的离线标签维度，也不进入 33 个 Redis 集合
 （2026-09-02：`AllergenKeywordFallback.matchesOther` 已随本条删除，它是这条规则确立前的遗留）
 在线没有食材数据，也不得临时查库做字符串匹配
 模块三继续展示报告原文；模块四不据此推荐或排除菜品
@@ -3344,20 +1538,28 @@ OTHER 没有稳定的离线标签维度，不进入 33 个 Redis 集合
 饮食维度不存在正向集合和企业归属，失败时该企业当天 33 个正式集合全部不发布。在线 Key 缺失
 只返回空态并告警，不回源、不补算、不读昨天。
 
-#### 7.5.8 合并裁决
+#### 7.5.8 按第三次标签生成菜品推荐
 
 ```text
-positiveSet = SUNION(当前报告命中的 diet:recommend 与 nutrition:recommend 集合)
-rejectSet   = SUNION(当前报告命中的 allergen:reject 与 diet:reject 集合)
-
-notRecommendedSet = rejectSet
-recommendedSet    = positiveSet - rejectSet
+positiveSet  = SUNION(第三次正向标签对应的 diet:recommend 与 nutrition:recommend 集合)
+rejectSet    = SUNION(第三次反向标签中 13 个食入性正式过敏原的 allergen:reject 与 diet:reject 集合)
+recommended = positiveSet - rejectSet
+rejected    = rejectSet
 ```
 
-只存在过敏原时 `positiveSet` 为空，推荐列表为空，过敏命中的菜仍进入不推荐列表；未命中过敏的
-普通菜不进入任何列表。不推荐优先由差集保证，进入 `rejectSet` 的菜不得返回任何正向标签或
-推荐理由；该规则同样适用于过敏原 `REJECT` 与饮食注意 `REJECT`。
 集合计算必须按当前任务的 `companyId + bizDate` 执行，禁止混入其他企业 Key。
+Java 的唯一裁决点依次执行：
+
+```
+只用已通过 Schema/枚举/方向校验且存在正式方向集合的第三次标签拼 Redis Key
+五个非食入性过敏原与 OTHER 只进模块三，不得拼 Redis Key
+一道菜同时命中正反集合 → 只保留不推荐
+进入不推荐列表的菜 → 移除所有正向标签与推荐理由
+按菜名拼音首字母稳定排序，两列表各取前 3
+```
+
+只存在过敏原时 `positiveSet` 为空，但过敏命中菜仍进入 `rejected`；
+未命中任何标签的普通菜不进入任何列表。
 
 #### 7.5.9 标签、理由、排序、空态
 
@@ -3372,7 +1574,8 @@ recommendedSet    = positiveSet - rejectSet
 旧的在线 `positiveMatchPolicy` 删除；`DietPositiveMatcher` 移到凌晨任务并固定只处理上述两个维度，
 在线组装包不得依赖任何食材匹配器。
 
-**推荐理由直接返回对应维度的报告原文，不拼命中食材：**
+**推荐理由由 Java 通过命中的标签查回第三次响应里同一标签的报告原文，
+不接受模型自由文本，不拼命中食材：**
 
 ```
 菜品名称：菠菜猪肝汤
@@ -3415,9 +1618,9 @@ class NotRecommendedDishCard {
 
 ---
 
-## 8. 离线打标（LLM-B）
+## 8. 菜品离线打标模型链路
 
-**在线链路对 LLM-B 的调用次数必须为 0，对标签的写入次数也必须为 0。**
+**在线链路对菜品离线打标模型的调用次数必须为 0，对标签的写入次数也必须为 0。**
 只允许离线预热任务调用。
 
 ### 8.1 打标任务（xxl-job，每日凌晨）
@@ -3448,10 +1651,10 @@ public void execute() {
 ```
 ① 分页枚举【bizDate】存在在架菜品的 companyId
 ② 每个企业按 dishes_id Keyset 分页查询菜品主表，当前页菜品 ID 一次批量查询食材
-③ 当前页内按模型批量上限继续拆批：LLM-B 完成 13 个过敏 reject 与 9 个饮食 reject 安全判定；
+③ 当前页内按模型批量上限继续拆批：菜品离线打标模型完成 13 个过敏 reject 与 9 个饮食 reject 安全判定；
    Java 完成 LOW_PURINE、HIGH_FIBER 两个饮食 recommend 和 9 个营养 recommend，
    并增量写入该企业当天的 33 个 staging SET
-④ LLM-B 的 22 个维度结果仍可按 companyId 写 MySQL 供离线排障与增量判断；
+④ 菜品离线打标模型的 22 个维度结果仍可按 companyId 写 MySQL 供离线排障与增量判断；
    在线不查询本表。营养推荐标签由 Java 在凌晨计算
 ⑤ 企业全部分页完成后校验处理数量、维度覆盖、正反互斥与企业归属
 ⑥ Lua 原子替换该企业当天 33 个正式 SET，统一 TTL 3 天；失败则该企业当天不发布
@@ -3531,11 +1734,11 @@ DELETE FROM ct_dish_tag
              表持续增长，离线 idx_build 查询逐渐变慢
 ```
 
-**成本按企业实际菜品量计算**：数据库分页大小与 LLM-B 每次最多 40 道菜是两个独立参数；
+**成本按企业实际菜品量计算**：数据库分页大小与菜品离线打标模型每次最多 40 道菜是两个独立参数；
 这里的 40 是模型调用批量，**Redis 方向集合数仍固定为 33**。
 改提示词/词表/模型会让全部 `tagHash` 变化，触发按企业全量重打，需在发版计划里预留窗口。
 
-### 8.2 LLM-B 契约与校验
+### 8.2 菜品离线打标模型契约与校验
 
 饮食维度的模型请求只渲染反向与安全判定内容，禁止渲染 `recommendableFoodList`、
 `PositiveMatchPolicy` 或其他正向触发规则；正向规则只供凌晨 Java 匹配器读取。
@@ -3578,7 +1781,7 @@ hitList 某条不合 Schema     → 剔除该条，菜品随之归入 unknownDis
 不会被推荐出去；它只是不出现在「不推荐」列表里，那是少展示一条，不是安全问题。
 
 **原「绝不补成 UNKNOWN」的顾虑由两点承接**：归入<b>必打日志</b>并带上具体 dishId
-（LLM-B 是全案唯一允许记录完整请求与响应的链路，§13.2.7），以及<b>归入量超过 20%
+（菜品离线打标模型是全案唯一允许记录完整请求与响应的链路，§13.2.7），以及<b>归入量超过 20%
 即整批作废</b>（且至少允许 1 道，避免小批次修一道就作废）——大比例出问题说明这一批
 整体跑偏，不是个别抖动，那时候放行会得到一份大面积 UNKNOWN 的快照。
 
@@ -3590,7 +1793,7 @@ UNKNOWN   数据不足判不出 —— 食材表没调味料、菜名看不出�
 NEUTRAL   有完整配方或调味料标签，能确认不含
 ```
 
-LLM-B 契约只有三态。饮食正向由凌晨 `DietPositiveMatcher` 根据主料确定，且只接受
+菜品离线打标模型契约只有三态。饮食正向由凌晨 `DietPositiveMatcher` 根据主料确定，且只接受
 `LOW_PURINE`、`HIGH_FIBER`；不得通过提示词或解析兼容把其他饮食维度扩展为推荐。
 
 **当前数据条件下，过敏维度的 `NEUTRAL` 应当罕见。**「白灼西兰花」的正确答案是 `UNKNOWN`
@@ -3632,40 +1835,38 @@ Base64URL 无填充编码；禁止把未经编码的外部企业标识直接放�
 食材页中的原始 companyId 仍必须先做精确 `equals` 归属校验，编码不能代替鉴权。
 
 不建 `active` 和 `all` Key。在线用任务创建时固化的 `companyId` 与本次统一 `bizDate` 直接定位
-当天集合；正向候选来自饮食推荐与营养推荐集合并集，不需要全集。只有过敏原时推荐集合为空，
-过敏命中集合仍进入不推荐列表。
+当天集合；只选择第三次体检报告分析结果中已校验且存在正式方向集合的标签对应 Key，不需要全集。
+五个非食入性过敏原与 `OTHER` 在映射前过滤，只保留模块三展示。
+这些集合直接用于 Java 组装最终模块四，不进入任何体检报告分析模型请求。
 
 ```text
-positiveSet = SUNION(相关 diet:recommend, nutrition:recommend)
-rejectSet   = SUNION(相关 allergen:reject, diet:reject)
+positiveSet  = SUNION(第三次正向标签对应的 diet:recommend, nutrition:recommend)
+rejectSet    = SUNION(第三次反向标签中 13 个食入性正式过敏原的 allergen:reject, diet:reject)
 recommended = positiveSet - rejectSet
 rejected    = rejectSet
 ```
 
-当前实现把全部相关维度的 `SMEMBERS` 命令一次入 pipeline，以一次网络往返取回后在 Java 做并集、
-差集和标签归属恢复；不得按维度串行往返，更不得逐菜访问 Redis。排序、冲突裁决后两个列表各取前 3。
-推荐列表只恢复正向标签，不推荐列表只恢复过敏原和饮食注意 reject 标签。
-推荐理由从当前报告对应枚举条目的 `rawText` 取得；
-不推荐菜即使内部仍命中正向 SET，也不得恢复或组装任何正向标签与推荐理由。
-相关正向 Key 列表为空时直接使用空 `Set`，相关排除 Key 列表为空时同理；不得调用零参数
+当前实现把全部相关方向的 `SMEMBERS` 命令一次入 pipeline，以一次网络往返取回后在 Java 做并集、差集和标签归属恢复；
+不得按维度串行往返，更不得逐菜访问 Redis。冲突裁决后按菜名拼音首字母排序，推荐与不推荐各取前 3。
+正向 Key 列表为空时直接使用空 `Set`，排除 Key 列表为空时同理；不得调用零参数
 `SUNION`，也不得为此引入 `all` 或占位 Key。
 
 在线禁止调用 `DishQueryService`、查询菜品/食材表、计算主料、计算 `tagHash`、回源 `ct_dish_tag`
-或调用 LLM-B。当天 Key 缺失时返回空态并告警，不读取前一天数据。
+或调用菜品离线打标模型。当天 Key 缺失时返回空态并告警，不读取前一天数据。
 
 职责拆分固定如下，避免重新长回一个在线大编排类：
 
 | 类 | 职责 |
 |---|---|
 | `DishTagSnapshotBuildService` | 按企业驱动数据库分页、当前页打标与完整性计数 |
-| `DietPositiveMatcher` | 凌晨仅对 `LOW_PURINE`、`HIGH_FIBER` 做主料交集并受 LLM-B 安全结论约束 |
+| `DietPositiveMatcher` | 凌晨仅对 `LOW_PURINE`、`HIGH_FIBER` 做主料交集并受菜品离线打标结论约束 |
 | `DishTagSetPublisher` | staging SET 增量写入、33 个方向校验后的 Lua 原子发布与 TTL |
 | `DishRecommendSetKeyFactory` | 企业编码、日期和标签方向 Key 的唯一生成点 |
 | `DishSetMemberCodec` | `dishId\tdishName` 唯一编解码点 |
-| `DishRecommendSetService` | 在线集合并、差运算及最多 6 道菜的标签归属批量恢复 |
-| `DishRecommendAssembler` | 原文理由关联、冲突后排序、各取前 3 和 DTO 组装 |
+| `DishRecommendSetService` | 按已校验用户标签批量取集合，在线做并集、差集、冲突裁决和标签归属恢复 |
+| `DishRecommendAssembler` | 关联第三次响应的原文理由，按拼音稳定排序、各取前 3 并组装 DTO |
 
-`DishRecommendAssembler` 及其在线依赖包不得依赖 `DishQueryService`、`DishTagModelClient`、
+`DishRecommendSetService` / `DishRecommendAssembler` 及其在线依赖包不得依赖 `DishQueryService`、`DishTagModelClient`、
 `NutritionMatcher`、`DietPositiveMatcher` 或任何菜品 Mapper；用 ArchUnit 锁住这条边界。
 
 ### 8.4 失效与版本
@@ -3692,17 +1893,17 @@ diff 会认为标签已存在，永远不会重算——**而且这个 bug 是�
 | code | HTTP | 触发点 | `reanalyzable` |
 |---|---|---|---|
 | `UNSUPPORTED_FORMAT` | 400 | §5.1 格式判定 | — |
-| `FILE_TOO_LARGE` | 400 | §4.1 上传：**字节超限**（PDF/OFD/DOC/DOCX ≤ 20MB；JPG/PNG ≤ min(10MB, `effectiveOcrImageBytes`)）**或图片总像素超限**（§5.1，用 `ImageReader` 只读尺寸即可判，不整幅解码，§5.6.3） | — |
+| `FILE_TOO_LARGE` | 400 | §4.1 上传：**字节超限**（PDF/OFD ≤ 20MB；JPG/PNG ≤ 10MB）**或图片总像素超限**（§5.1，用 `ImageReader` 只读尺寸即可判，不整幅解码） | — |
 | `FILE_UNREADABLE` | 400 | §5.1 可读性 | — |
 | `MALFORMED_REQUEST` | 400 | §4.1 上传：multipart 报文本身无法解析（边界符损坏、`Content-Type` 与实际内容不符等）。**与字节超限区分**——超限是 `FILE_TOO_LARGE`，让用户压缩文件重试有意义；报文畸形压多小都没用，必须让前端知道是请求构造错了 | — |
 | `FILE_ALREADY_BOUND` | 409 | §4.2 绑定（**必须回已绑定的 taskId**） | — |
 | `FILE_EXPIRED` | 409 | §4.2 绑定时 `file.expire_at <= now`（上传后 30 分钟未提交） | — |
-| `PAGE_LIMIT_EXCEEDED` | 400 / 异步任务失败 | §4.1.1 上传预筛、§4.2 创建下界预筛，或 §4.1.2 Word OCR 后精确容量超限 | 0 |
+| `PAGE_LIMIT_EXCEEDED` | 400 | §4.1.1 上传预筛或 §4.2 创建预筛，全部同步（Word 移除后无异步路径） | — |
 | `TASK_NOT_FINISHED` | 409 | §4.1 result 接口在任务未到 `SUCCEEDED` 时被调用 | — |
-| `NOT_HEALTH_REPORT` | — | §6.2 文件级裁决 | 0 |
-| `UNREADABLE` | — | §6.2 全批不可读；§5.3 OCR 块溢出；§5.6.5 渲染失败 | 0 |
-| `IMAGE_TOO_LARGE` | — | 三个来源：① `ExtractionImageCompressor` 两档压缩后仍超单图上限（§5.6.5）；② `OcrImageEncoder` 回退 JPEG 后仍超 `effectiveOcrImageBytes`（§5.6.2.1）；③ Word 内嵌图片原始字节超 `effectiveOcrImageBytes`。三者都抛 `ImageTooLargeException`，**唯一映射点是 `ParseOrchestrator` 的捕获处**。前端提示「图片过大无法处理，请换一张分辨率更低的图片重新上传」——**不要复用 `UNREADABLE` 的「文件无法读取」文案**，用户的图没问题，照那句做也解决不了 | 0 |
-| `IDENTITY_MISMATCH` | — | §6.6 同一性校验 | 0 |
+| `NOT_HEALTH_REPORT` | — | §6.5 任一阶段返回 `NO_REPORT_FEATURE` | 0 |
+| `UNREADABLE` | — | §5 页面渲染失败，或 §6.5 任一阶段返回 `UNREADABLE` | 0 |
+| `IMAGE_TOO_LARGE` | — | `ExtractionImageCompressor` 两档压缩后仍超单图上限；唯一映射点是 `FileToImageService` | 0 |
+| `IDENTITY_MISMATCH` | — | §6.2 调用一校验后的多文件同一性校验 | 0 |
 | `EXECUTION_TIMEOUT` | — | §4.3 巡检②、§4.4 CAS 撞硬截止 | 1 |
 | `SERVER_ERROR` | 500 | Schema 不合法、契约违约、submit 被拒、心跳超时 | 1 |
 | `RESULT_EXPIRED` | 404 | §4.1 读结果（**四种情况同码，不泄露差异**） | — |
@@ -3718,7 +1919,7 @@ diff 会认为标签已存在，永远不会重算——**而且这个 bug 是�
 **普通日志内容白名单（红线）：**
 
 ```
-普通应用 logger 绝不记录：报告原文、证据文本、OCR 文本、姓名、原始过敏或医嘱文本、
+普通应用 logger 绝不记录：报告原文、页面图、证据文本、姓名、原始过敏或医嘱文本、
                            健康数据、模型完整请求响应、`origin_name` 原始文件名
 唯一例外：上述体检隐私内容可进入 HEALTH_REPORT_SENSITIVE 独立 logger 的 DEBUG 事件；
          该 logger 默认 OFF，仅限排障期临时开启，且不得在同一事件携带 taskId / userId
@@ -3758,13 +1959,12 @@ statusJudgedByModelCount
 
 随之删除的还有单次调用的 `residualNonStandardCount` 传递链：
 `TextNormalizationResult` 只保留 `normalizedText`，
-`PdfParseResult` / `OcrPageSegmentResult` / `WordParseResult` / `OfdParseResult`
-各去掉该字段——进程计数删掉后它就没有任何消费者了。
+相关解析结果类已随 §5 的 Segment 链路整体删除，此条自然失效。
 
 > **注意区分：`DegradeAccumulator` 不是计数器，不在下线之列。**
-> 它记录的 `PAGE_TRUNCATED` / `BATCH_UNREADABLE` / `ALLERGEN_SUSPECT_MISS`
-> 直接决定任务的 `partial` 与 `partial_reason`，**影响输出**。
-> 同理 §5.3 密度闸的路由判定、§7.4 安全闸的抑制行为都保留，只是不再计数。
+> 它记录 `SCHEMA_ITEM_DROPPED` / `DIET_TAG_DROPPED`，直接决定任务的
+> `partial`、`partial_reason` 以及是否抑制模块四，**影响输出**。
+> §7.4 安全闸的抑制行为保留，只是不再计数；密度闸已随 §5 整体删除。
 > 判据仍然是那一条：**影响输出的留下，只用于观察的下线。**
 
 **将来确有观测需求时，先把导出口径定清楚再实现。** 先加计数、指望以后补导出，
@@ -3788,26 +1988,25 @@ statusJudgedByModelCount
 
 | 常量类 | 用途 | 归属 |
 |---|---|---|
-| `AdmittedResultMarks` | §6.5-C 的阳性标记 | 已在内容常量文档中定义 |
 | `IngredientAliasWords` | §7.5.3 食材别名 | 新增，工程侧，不需医学审核 |
-| `RadicalNormalizeMap` | §5.2 部首映射 | 新增，工程侧 |
 | `DisclaimerConstants` / `EmptyStateConstants` | 四个模块的声明与空态文案 | 新增，工程侧 |
 | `SystemActor` | `create_by` / `update_by` 取值 | 新增，工程侧 |
-| `PromptVersions` | LLM-A / LLM-B 提示词版本，**两个独立常量** | 新增，见 §9.4.1 |
+| `PromptVersions` | 三份在线体检报告分析与一份菜品离线打标提示词版本，各自独立 | 新增，见 §9.4.1 |
 
 #### 9.4.1 提示词版本与模型版本的真源
 
-`tagHash` 需要 `promptVersion` 与 `modelVersion`（§9.5.1），但现有 `constants` 包
-**只有 `TagRuleVersion`**，另两个没有真源。而且 **A 与 B 的提示词各自独立演进**
-（版本号以 `constants.PromptVersions` 与 `prompt/versions.tsv` 为准，本节示例不复述具体值——
-复述必然过期，R55a/R55b 已经在锁三处一致），
-**不能用一个公共版本常量**。
+三份在线体检报告分析 Prompt 与菜品离线打标 Prompt 各自演进，不能共用一个版本常量。
+`tagHash` 仅使用离线 `DISH_TAG`；三个在线版本用于结果追溯和发布契约，不进菜品标签哈希。
 
 ```java
 // constants.PromptVersions —— 新增常量类
 public final class PromptVersions {
-    /** 体检报告抽取提示词版本，必须与 prompt/extraction.md 头部和摘要历史一致 */
-    public static final String EXTRACTION = "extraction-x.y.z";
+    /** 健康指标提示词版本，必须与生产文件头和摘要历史一致。 */
+    public static final String INDICATORS = "indicators-x.y.z";
+    /** 健康问题提示词版本，必须与生产文件头和摘要历史一致。 */
+    public static final String PROBLEMS = "problems-x.y.z";
+    /** 饮食建议与标签提示词版本，必须与生产文件头和摘要历史一致。 */
+    public static final String DIET_TAGS = "diet-tags-x.y.z";
     /** 菜品打标提示词版本，必须与 prompt/dish_tag.md 头部和摘要历史一致 */
     public static final String DISH_TAG = "dishtag-x.y.z";
     private PromptVersions() { }
@@ -3819,11 +2018,11 @@ public final class PromptVersions {
 ```
 理由：换模型是【运维动作】，不该要求改代码重新发版；
      而且同一份代码可能在不同环境跑不同模型（灰度、压测）
-落地：application.yml 的 llm.model-version-extraction / llm.model-version-dishtag
+落地：配置项 `llm.extraction.model` / `llm.model-version-dishtag`
      ——【这不是「中间件配置」】，AGENTS.md §5 禁的是数据源/Redis/MyBatis 配置类，
        业务参数照常走配置
-     LLM-A 直连（§6.2.1），model-version-a 就是我们请求里带的模型标识；
-     LLM-B 直连，llm.model-version-dishtag 就是请求里的 model，【没有第二处真源可对不上】
+     体检报告分析模型直连（§6.4），`llm.extraction.model` 就是请求里的模型标识；
+     菜品离线打标模型直连，`llm.model-version-dishtag` 就是请求里的 model，【没有第二处真源可对不上】
 
 ⚠️ 代价必须写明：modelVersion 走配置意味着【改配置就会让全部 tagHash 变化】，
    触发一次全量重打标（§8.4）。因此它必须与发布流程绑定：
@@ -3833,12 +2032,13 @@ public final class PromptVersions {
 **三个版本的一致性由三条测试锁住，缺一条就有一类漂移拦不住：**
 
 ```
-R55   【已撤销】原为「Dify DSL 里的版本号与 Java 常量/配置一致」。LLM-B 改直连后
+R55   【已撤销】原为「Dify DSL 里的版本号与 Java 常量/配置一致」。菜品离线打标改直连后
       DSL 不存在，版本号只有 Java 一处真源，本条无对象可断言（§13.2.0）
-      LLM-A 直连不产出 DSL，它的版本对齐只由 R55a 保证
-R55a  PromptVersions.EXTRACTION / LLM_B 与两份 prompt/*.md 头部声明的版本号逐字一致
+      体检报告分析模型直连不产出 DSL，它的版本对齐只由 R55a 保证
+R55a  PromptVersions 的 INDICATORS / PROBLEMS / DIET_TAGS / DISH_TAG
+      与四份对应生产 Prompt 头部版本逐字一致
 R55b  【版本-摘要基线历史】prompt/versions.tsv 的四条断言 —— 见 §9.4.2。
-      **A、B 各测一份**：LLM-A 的在批次 5 验收，LLM-B 的在批次 7 验收
+      三份在线体检报告分析契约在批次 5 验收，菜品离线打标契约在批次 7 验收
 R55c  同上机制，对象换成内容常量：constants/tag-rule-versions.tsv
 ```
 
@@ -3861,9 +2061,12 @@ R55c  同上机制，对象换成内容常量：constants/tag-rule-versions.tsv
 ##### 采用方案：版本-摘要基线历史（**两处同构**）
 
 ```
-prompt/versions.tsv                追加式，一行一个版本，A 与 B 各占若干行
-    extraction-2.3.1  <sha256(extraction.md 正文)>
-    a-2.4.0  <…>
+prompt/versions.tsv                追加式，一行一个版本，每份生产 Prompt 各自维护历史
+    indicators-1.0.0  <sha256(初版正文)>
+    indicators-1.1.0  <sha256(indicators.md 正文)>    ← 2026-09-03 性别归一化（男/女/null 三值）后追加
+    problems-1.0.0    <sha256(health-problems.md 正文)>
+    diet-tags-1.0.0   <sha256(初版正文)>
+    diet-tags-1.1.0   <sha256(diet-tags.md 正文)>    ← 2026-09-03 收编非食入性过敏原后追加
     dishtag-2.2.1  <sha256(dish_tag.md 正文)>
 
 constants/tag-rule-versions.tsv    同构，对象换成内容常量
@@ -3872,7 +2075,7 @@ constants/tag-rule-versions.tsv    同构，对象换成内容常量
     tag-1.1.0        33f8773bbd3b9277e5bffce9e9de4db379bde3d4e63da60705dd3a421c40e40f
 
 R55b / R55c 各断言四条：
-    ① 末行 version == 对应常量（PromptVersions.EXTRACTION / LLM_B / TagRuleVersion.VALUE）
+    ① 每个前缀的末行 version == 对应 PromptVersions 常量；内容常量则对应 TagRuleVersion.VALUE
     ② 末行 digest  == 实测摘要
     ③ 文件内【无重复 version 对应不同 digest】 ← 这一条逼着改正文/改常量必须换版本号
     ④ 文件内【无重复 digest 对应不同 version】 ← 防止空 bump
@@ -3951,9 +2154,10 @@ TinyPinyin，请求时实时计算不落库；非汉字开头统一排在汉字�
 
 ### 10.1 三个占位符（`AGENTS.md` §5）
 
-> `AGENTS.md` §5 已同步：三个占位符。`DifyClient` 已随 LLM-B 改直连一并删除（§13.2.0），
-> `ExtractionModelClient` 与 `PaddleOcrClient` 明确不在此列（两者都有完整实现，
-> 见 §6.2.1.1 与 §5.6.7）。**两处清单必须一致，改一处就改另一处。**
+> `AGENTS.md` §5 已同步：只有三个占位符。`DifyClient` 已删除；
+> `HealthReportAnalysisModelClient` 有完整的 OpenAI 兼容协议实现，不是占位符。
+> OCR 已退出在线链路，不再定义或保留 `PaddleOcrClient`。
+> **本节与 `AGENTS.md` §5 必须一致，改一处就改另一处。**
 
 只写接口 + `TODO` 空实现，抛 `UnsupportedOperationException`，**绝不写假数据返回**
 ——假数据会让上层测试通过而掩盖未实现。
@@ -3961,15 +2165,12 @@ TinyPinyin，请求时实时计算不落库；非汉字开头统一排在汉字�
 ```java
 infra.S3FileStorage          对象存储读写删
 
-【infra.ExtractionModelClient 不在占位符之列 —— 它有完整实现，见 §6.2.1.1】
+【infra.HealthReportAnalysisModelClient 不在占位符之列 —— 它有完整实现，见 §6.4】
     协议按 OpenAI 兼容写死；换服务商主要改 buildRequestBody / extractContent，
-    鉴权头与 endpoint 也可能一起变（§6.2.4-1）
-    base-url / model / apiKey 走配置（ExtractionProperties），【是部署参数不是代码问题】
+    鉴权头与 endpoint 也可能一起变（§6.4）
+    base-url / model / apiKey 走配置（HealthReportAnalysisModelProperties），【是部署参数不是代码问题】
     因此它可以先写完并用 WireMock 跑通全部红线测试（R57~R65），
-    只有【真实端到端联调】需要等接入方给出凭据（§6.2.4 的三个 ⛔ 项）
-【infra.PaddleOcrClient 不在占位符之列 —— 已有完整实现 PaddleOcrVlClient，见 §5.6.7】
-    与 LLM-A 同一个网关、同一套 OpenAI 兼容协议；base-url / model / apiKey 走配置
-    （OcrConnectionProperties），容量与接口契约走 OcrProperties，都是部署参数
+    只有【真实端到端联调】需要等接入方给出凭据（§6.4 的三个 ⛔ 项）
 infra.CurrentUserProvider    获取当前 userId 与 companyId；两者都来自可信登录上下文
 infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日在架菜品；每批返回最后一条
                              dishes_id 对应的 lastDishesId，下一批原样传回；并按当前批ID批量查询食材
@@ -3988,7 +2189,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 严重程度分级 / 风险排序
 历史报告回看（结果 TTL 2 小时）
 原图跳转与单页预览
-OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生命周期直接冲突，
+页面图 / 模型原始响应落库    ← 与 §3.1 和数据生命周期直接冲突，
                                  前提是先做隐私评估并重定数据留存策略，不是排期问题
 内容管理后台 / 建议内容人工编辑
 报告未写饮食建议时的通用建议兜底
@@ -4018,42 +2219,39 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | # | 用例 | 断言 |
 |---|---|---|
 | **R1** | ArchUnit 扫描生产源码 | 不存在对 `ConclusionLabelWords` / `NormalStatementWords` / `AllergenSectionWords` 的任何引用 |
-| **R2** | 构造模型 `status=NORMAL` 而 `conclusionText="↑偏高"` | 输出 `status` 仍为 `NORMAL`；**不存在任何纠正逻辑** |
-| **R3** | 构造 `includeInHealthProblems=true` 而原文含「未见异常」 | 该条目**进入**模块二；Java 不改写 |
-| **R4** | 构造正式枚举 `SHRIMP_CRAB` 而模型给 `isFoodBorne=false` | 以 `AllergenGroups` 查表为准（`true`）；模型值被丢弃、不计数 |
-| **R5** | 构造 `enumKey=OTHER` + `isFoodBorne=true` + `rawName="艾蒿"` | 采信模型；Java 不校验、不改写、不告警 |
+| **R2** | 构造模型 `conclusionGenerated=false`、`status=NORMAL`，但 `value` 原文含 `↑` | Java 原样保留 `status=NORMAL`，不存在箭头词表纠正；该语义错误由离线评测拦截 |
+| **R3** | 阶段二返回一条 `name` 可在 `rawText` 中找到、但语义上属于正常表述的问题 | Java 不用正常语句词表改写或剔除；该准入错误由阶段二评测拦截 |
+| **R4** | 捕获阶段二、三请求 DTO | 类型上无法设置阶段一/二结果或菜品字段；序列化结果只含通用文本与完整页面图 |
+| **R5** | 阶段三返回食入性枚举外过敏原 `enumKey=OTHER` | 模块三展示原文；模块四不为该条拼 Redis Key，Java 不猜对应食材 |
 | **R6** | ArchUnit 扫描 `parse` 包 | 不存在 `PDFTextStripper` 引用；不存在按坐标聚类的方法 |
 
 #### 安全红线
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R7** | 过敏章节名命中而 `allergens` 为空 | `partial=true`、`partial_reason=ALLERGEN_SUSPECT_MISS`、模块四不输出、模块一二三照常 |
-| **R8** | `D \ A` 非空（有数据行无对应条目） | 同 R7 |
-| **R9** | 某 segment 同时含「牛奶」与「阳性(+)」但不在 `A` 中 | 同 R7 |
-| **R10** | **同上但名称与结果分属两个 segment** | **不触发**——这是 §6.5-C 的已知盲区，用例存在是为了锁住行为不被「优化」成坐标配对 |
-| **R11** | `allergens` 条目来源校验失败 | 该条丢弃 **且**触发 `ALLERGEN_SUSPECT_MISS` |
-| **R12** | `resultStatus` 分别为 `NEGATIVE` / `UNKNOWN` | 都不进链路 |
+| **R7** | 阶段三有一个可定位的非法标签，剔除比例仍在 20% 预算内 | `partial=true / DIET_TAG_DROPPED`；模块三保留其余合法条目，模块四整体不输出 |
+| **R8** | 阶段三非法标签超过 20% 修复预算 | 阶段三失败，整任务 `FAILED/SERVER_ERROR`，不写任何部分结果 |
+| **R9** | 第三次返回过敏原 `enumKey` 不属于 `ALLERGEN` 维度 | 该条剔除并进入阶段修复预算，不得用它拼 Redis Key |
+| **R10** | 第三次输出中出现 `dishId` / `dishName` / `dishRecommendations` | Schema 拒绝；证明菜品数据与菜品选择均不属于体检报告分析模型契约 |
+| **R11** | 阶段三样本含尘螨、花粉、动物皮屑、霉菌或蟑螂阳性 | 对应正式标签保留在 `reject` 并进入模块三；Java 不为它们拼 Redis Key，模块四不受其影响 |
+| **R12** | 阶段三评测样本的食物过敏原结果为阴性或未检出 | 不产生 ALLERGEN 条目；弱阳性、可疑、临界样本另测为保守收录 |
 | **R13** | 某企业分页完成数少于目标数，或任一标签维度覆盖不完整 | 该企业当天 33 个正式 SET 全部不发布；在线不回源、不读昨天 |
 | **R14** | 遍历 `AllergenGroups` 全部组 | `avoidIngredients ∩ hiddenFoods = ∅`；两者 `matchWord` 并集 == 该 key 全部 `matchWord` |
 | **R15** | 高危表述「低蛋白饮食」映射到 `PROTEIN` | `structuredOutputSuppressed=true`、走 `OTHER` 路径、**`enumKey` 原值保留未被覆写** |
-| **R15a** | `applicability=CURRENT_PATIENT` + `structuredSafety=NORMAL` 的常规建议 | 正常进入结构化链路 |
-| **R15b** | 邻句含「儿童」但 `adviceQuote` 只摘了「低脂、低糖饮食」 | **不得抑制**——F3 的误杀现场，词表已不含人群裸词且只扫 `adviceQuote` |
-| **R15c** | `applicability=GENERAL_INFORMATION`（科普段落里的饮食表述） | 抑制；靠适用范围而不是词表 |
-| **R15d** | `applicability=CURRENT_PATIENT` + `structuredSafety=SPECIAL_POPULATION` | 抑制；建议确实给本人但涉特殊人群 |
-| **R15e** | 任一枚举为 `UNCERTAIN` 或缺失 | 抑制（fail-closed） |
-| **R15f** | 模型判 `NORMAL` 但 `adviceQuote` 含「优质低蛋白」 | 抑制；词表兜底不可被模型推翻 |
-| **R15g** | `adviceQuote` 缺失或回切不过 | 该条建议**整条丢弃**，不进任何模块 |
-| **R15h** | 原文「建议低蛋白、低脂饮食」，模型摘成「低脂饮食」并判 `NORMAL` | **抑制**——`adviceQuote` 与证据段原文两处都扫，任一命中即抑制，摘句绕不过方向性限制 |
-| **R15i** | 证据段被 OCR 漏识一字（「低蛋日」），而 `adviceQuote` 写着「低蛋白」 | **抑制**——两个入参各自独立命中 |
-| **R15j** | F3 原文整块（含「儿童除外」）作为证据段，建议是「低脂、低糖饮食」 | **不抑制**——扫原文不得变成新的误杀来源，词表里已无人群裸词 |
+| **R15a** | 常规建议「低脂、低糖饮食」 | 正常进入结构化链路 |
+| **R15b** | 同段落里含「儿童」但 `quote` 只摘了「低脂、低糖饮食」 | **不得抑制**——F3 的误杀现场，词表不含人群裸词且只扫 `quote` |
+| **R15c** | 科普段落里的饮食表述（「血尿酸长期增高可致痛风」邻近的「低嘌呤饮食」） | **已知盲区，不抑制**——模型侧的 `applicability` 已删除，只靠提示词抽取范围拦截（§7.4） |
+| **R15f** | `quote` 含「优质低蛋白」 | 抑制；词表兜底不可被模型推翻 |
+| **R15g** | `quote` 缺失或为空 | 该条建议**整条丢弃**，不进任何模块 |
+| **R15h** | 原文「建议低蛋白、低脂饮食」，模型摘成「低脂饮食」 | **不抑制**——`quote` 里没有高危词。这是删除模型侧那一层之后的已知盲区，与 R15c 同源 |
+| **R15j** | 原文整块含「儿童除外」，`quote` 是「低脂、低糖饮食」 | **不抑制**——只扫 `quote`，不扫 `rawText` |
 | **R16** | 过敏维度 `REJECT` 的菜同时有营养 `RECOMMEND` | 只下发过敏标签，**无任何正面标签**（灰色附注也不行） |
 | **R16a** | `LOW_PURINE` 离线安全判定为 `NEUTRAL`、主料命中低嘌呤白名单 | 凌晨把复合成员写入 `diet:recommend:LOW_PURINE`；在线理由只返回报告原文，不含命中主料 |
 | **R16b** | 同一维度离线判 `REJECT` / `UNKNOWN`，主料仍命中白名单 | `REJECT` 只进饮食不推荐 SET；`UNKNOWN` 不得进入正向 SET |
 | **R16c** | 遍历 9 个饮食注意维度的离线输出 | 9 个维度都允许 `REJECT`；只有 `LOW_PURINE`、`HIGH_FIBER` 可由凌晨 `DietPositiveMatcher` 产出 `RECOMMEND`，且同一道菜不得同时进入正反集合；其余 7 个维度不存在 recommend Key |
 | **R16c1** | `LOW_FAT` 安全判定为 `NEUTRAL`，菜品主料命中低脂推荐食材 | 不写 `diet:recommend:LOW_FAT`，在线不得出现“低脂”推荐标签；执行时点改为离线不能扩大需求正向范围 |
 | **R16d** | 报告同时给出「高纤维饮食」与「补充膳食纤维」，菜品同时命中两个推荐 SET | 正面标签按枚举文案去重；推荐理由直接取并去重报告原文，不读取食材 |
-| **R16e** | LLM-B 在任一维度返回 `recommendDishIds` 或 `RECOMMEND` | Schema 或契约拒绝整批，不写库、不写 staging SET；正向结果只能由 Java 匹配器产生 |
+| **R16e** | 菜品离线打标模型在任一维度返回 `recommendDishIds` 或 `RECOMMEND` | Schema 或契约拒绝整批，不写库、不写 staging SET；正向结果只能由 Java 匹配器产生 |
 | **R16f** | 用户只有虾蟹过敏，Redis 中有 20 道虾蟹 reject 菜 | 推荐列表为空；不推荐集合完整参与排序后只返回前 3 道及全部过敏标签 |
 | **R16g** | 同一复合成员同时位于营养 recommend 与过敏 reject SET | 差集后只进不推荐列表，返回中没有任何推荐标签或推荐理由 |
 | **R16h** | 一个菜命中两个推荐维度，其报告原文分别为「建议补铁」「建议增加蛋白质摄入」 | 只返回 `dishName`、两个推荐标签及两条原文理由；不得返回 dishId、食材、图片、价格或分类 |
@@ -4066,7 +2264,7 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 |---|---|---|
 | **R17** | 枚举模型输入的每一个字段 | 每个字段必须能归入 §9.5.1 的三类之一：**直接进哈希** / **由 `tagRuleVersion`·`promptVersion`·`modelVersion` 覆盖** / **纯标识明确排除**（`dishId`、`enumKey`）。出现归不进去的字段即失败——那说明有一个会影响判定的输入既没进哈希也没有版本兜底 |
 | **R18** | 同一批菜品打乱食材返回顺序 | `tagHash` 不变（排序 + 单位统一 + 名称规范化生效） |
-| **R18a** | 造 `last_seen_date` 为 31 天前与 29 天前的行，跑清理 | 只删前者；且清理必须在打标任务**之后**执行（先删后打会误删当天要用的行） |
+| **R18a** | 造 `last_seen_date` 为 8 天前与 6 天前的行，跑清理 | 只删前者（保留期 7 天，§8.1、设计方案 §8.9）；且清理必须在打标任务**之后**执行（先删后打会误删当天要用的行） |
 | **R18b** | 直接调 `tagService.run(d)` 与 `cleanupService.run(d)` 并传入固定日期 `d` | 企业/菜品分页、Redis `{companyId:bizDate}` Key、`last_seen_date` 与清理比较全部使用入参；除调度入口外不出现 `LocalDate.now()` / `CURRENT_DATE` / `now()` |
 | **R18c** | xxl-job Handler 注册数 | `dish` 包内只有**一个** `@XxlJob` Handler，打标与清理是它的两步（防止有人拆成两个 Handler 后 `bizDate` 又分叉） |
 | **R18d** | 两个企业存在相同 dishId、菜名和标签 | Redis Key 必须不同；企业 A 用户只能得到 A 集合结果，任何 B 成员进入即测试失败 |
@@ -4076,41 +2274,41 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R18h** | 33 个 staging SET 中有空集合和非空集合 | Lua 原子发布后空集合对应正式 Key 不存在、非空集合全部替换成功；并发在线读取只能看到发布前或发布后的完整企业快照 |
 | **R18i** | 企业分页前 `COUNT=1201`、处理 1201 道、分页后 `COUNT=1202` | 判定菜单构建期间发生漂移，该企业当天不发布 |
 | **R18j** | 一个企业恰有 1000 道在架菜，查询批容量 500 | 前两批各返回最后一条 `dishes_id`；第三批返回空 `dishList` 与 `lastDishesId=null` 后结束，不得重查上一批或循环不止 |
-| **R19** | `blockRefs` 传字符串 / 越界 / 重复 / 33 条 | Schema 或展开层拒绝，行为符合 §6.3 |
-| **R20** | `sections[i].sectionIndex != i` | 整批 `FAILED / SERVER_ERROR` |
-| **R21** | 条目 `sectionIndex` 指向不存在的章节 | 该条目整条丢弃、**其余条目不受影响** |
+| **R19** | `page` 越界（0 / 负数 / 大于图序列长度） | 该条目丢弃，行为符合 §6.5 |
+| **R20** | 指标章节的 `page` 越界，或同页同名章节重复 | 越界章节丢弃；重复章节按首次出现顺序合并，其他章节不受影响 |
+| **R21** | 指标条目 `conclusionGenerated=true`，但 `refRange=null` 或 `status!=NORMAL` | 该指标整条丢弃；Java 不补造报告结论 |
 | **R21a** | 构造「有数值无结论**且无参考值**」的指标行 | **不出现在任何模块**；Java 不得为对齐总览数字把它补回来（§6.3.1） |
-| **R21b** | 「有数值无结论**但有参考值**」且结果落在范围内 | 进模块一，`conclusionBasis=REFERENCE_RANGE_IN_RANGE`、`status=NORMAL`、`conclusionText=null`、卡片 `conclusionGenerated=true` |
-| **R21c** | 同上但结果**超出**参考范围 | **不展示**；不得改判为 `HIGH`/`LOW`——报告没写的结论系统不生成 |
-| **R21d** | 报告印 `4.0~10.0`，模型只报下界 `4.0`、上界给 `null`，结果 12.5 | **不展示**——省略一侧边界等于那一侧不设限，任何大值都会被判成正常 |
-| **R21e** | 报告印 `14.0~20.0`，模型报下界 `4.0`（恰好是原文子串）、上界 `20.0` | **不展示**——子串核验拦不住它，整组区间必须与原文解析结果一致 |
-| **R21f** | 报告印 `<3.0`，模型报成闭区间，结果正好 `3.0` | **不展示**——开闭标志参与核验；如实报开区间且结果在范围内时照常展示 |
-| **R21g** | `refRange` 是 `阴性`、`详见报告` 等解析不出区间的写法 | **不展示**（fail-closed），不得对着猜出来的范围宣布正常 |
-| **R21h** | `refRange`、`title` 等短字段给成 `""` 或全空白 | Schema 拦下并**剔除该条目**（§4.4-①，2026-09-02 前为整批作废）；Java 侧来源校验对空白字段一律返回 false——空串是任意原文的子串。两条都保证它进不了展示 |
-| **R21i** | 模型给的上下界在 `refRange` 原文里找不到 | 整条丢弃（防凭空报宽区间） |
-| **R21j** | 参考值有多套人群范围、单位不一致或非数值 | 模型给 `rangeComparison=null`，该指标不展示 |
-| **R21k** | 结果恰好等于开/闭边界；`1.10` 对上界 `1.1` | 按开闭标志判定；标度差异必须判等（`compareTo` 而非 `equals`） |
-| **R21l** | 定性结果「阴性」对参考值「阴性」 | 进模块一，`conclusionBasis=REFERENCE_VALUE_MATCH`、卡片文案「符合报告参考值」 |
-| **R21m** | 定性结果「阴性」对参考值「阴性或弱」（尿胆原真实场景） | 展开为 `["NEGATIVE","WEAK_POSITIVE"]`，结果在集合内 → 展示 |
-| **R21n** | 定性结果「阳性」对参考值「弱阳性」 | **不展示**；不得因「阳性」是「弱阳性」的子串而放行 |
-| **R21o** | 定性结果 `NEGATIVE` 对参考值 `NOT_DETECTED` | **不展示**；Java 不得把两者当同义词 |
-| **R21p** | 归一化取值落在四态枚举之外（如 `NEG`） | Schema 拒绝并**剔除该条指标**（§4.4-①，2026-09-02 前为整批契约失败）；枚举是契约的一部分，写错的那一条必须消失，但不该拖垮同批其余几十条。**不是悄悄丢**：翻转 `SCHEMA_ITEM_DROPPED` 并记带关键字与路径的 WARN |
-| **R22** | LLM-B 返回缺一个 `dishId` / 多一个 / 列表有交集 / 同列表内重复 | 按 §8.2 修复:缺失与跨列表相交归入 `UNKNOWN`、同列表内重复只去重不改判、非本批 `dishId` 丢弃;**修复后覆盖必须精确成立**。修复量超 20%(至少允许 1 道)或违规定位不到某道菜 → 整批作废,不写库、不重试(2026-09-02 前为一律整批作废) |
-| **R23** | 用 `schema/*.json` 校验文档 §4.2 与 §8.2 的示例 | 全部 PASS；两个 Schema 自身通过 `check_schema` |
-| **R24** | `patient.name` 非空但证据数组为空 | Schema 拒绝 |
-| **R25** | `patient.name` 来源校验失败 | 该字段降 `null` 且**不参与同一性判断**（不得因此 `IDENTITY_MISMATCH`） |
+| **R21b** | 模型返回 `conclusionGenerated=true`、`status=NORMAL` 且 `refRange` 非空 | 进模块一；Java 只展示模型结构化结果，不二次解析区间或改写 `status` |
+| **R21c** | 评测输入为「有数值、有参考值、无报告结论且结果超范围」 | Prompt 评测要求该指标不输出；Java 不得自行改判为 `HIGH`/`LOW` |
+| **R21d** | 评测样例中模型把超范围结果标成 `conclusionGenerated=true` | 评测失败并阻止 Prompt/Schema 发版；在线 Java 不通过猜测区间修正医疗语义 |
+| **R21e** | 任一在线响应出现 Schema 未声明字段 | `additionalProperties=false` 拦截；按条目修复预算处理，超预算则该阶段失败 |
+| **R21f** | 必填短字符串为 `""` 或全空白 | 结构校验剔除该条目并计入修复预算，空白内容不得进入展示 |
+| **R21g** | 健康问题 `sourceType=INDICATOR` 但 `indicatorName=null` | 该条目丢弃；不得自动改成 `SUMMARY` |
+| **R21h** | 饮食标签 `recommend` 中出现过敏原标签，或 `reject` 中出现营养方向标签 | 方向校验剔除非法条目并计入修复预算；非法条目不得查询 Redis |
+| **R21i** | 同一正式 `enumKey` 同时出现在 `recommend` 与 `reject` | 拒绝优先：只保留到 `reject`，最终候选做差集时也必须排除 |
+| **R21j** | 某阶段被修复或剔除条目比例超过 20%（至少允许 1 条） | 该阶段失败，任务 `FAILED / SERVER_ERROR`，不调用后续阶段 |
+| **R21k** | 某阶段返回非 JSON、顶层字段缺失或 `reportStatus` 非法 | 该阶段整体失败，任务不返回部分分析结果 |
+| **R21l** | 阶段二 `sourceType=INDICATOR` 的条目无法匹配阶段一异常指标 | **条目保留**，仅不下发 `indicatorId` 跳转按钮（设计方案 §6.2）。准入完全由阶段二模型判定，Java 不得因跨调用匹配失败丢弃条目——两次调用相互独立，阶段一可能在修复预算内恰好剔掉了该指标 |
+| **R21m** | 捕获阶段二、阶段三的实际请求体 | 都只包含相同的完整有序页面图与各自 Prompt/Schema，不含任何前序阶段响应 |
+| **R21n** | 阶段三只有 `reject` 标签 | Java 只计算排除集合，推荐集合为空，不向体检报告分析模型请求补充菜品 |
+| **R21o** | 阶段三 `recommend=[]` 且 `reject=[]` | 模块三、模块四按空态返回；禁止零参数 `SUNION`，也不得默认推荐全量菜品 |
+| **R21p** | 饮食标签 `enumKey` 不在正式枚举中 | Schema/枚举校验剔除该条目并计入修复预算，Java 不做近义词猜测 |
+| **R22** | 菜品离线打标模型返回缺一个 `dishId` / 多一个 / 列表有交集 / 同列表内重复 | 按 §8.2 修复:缺失与跨列表相交归入 `UNKNOWN`、同列表内重复只去重不改判、非本批 `dishId` 丢弃;**修复后覆盖必须精确成立**。修复量超 20%(至少允许 1 道)或违规定位不到某道菜 → 整批作废,不写库、不重试(2026-09-02 前为一律整批作废) |
+| **R23** | 用 `schema/*.json` 校验文档 §4.2 与 §8.2 的示例 | 全部 PASS；三份在线 Schema 和一份离线 Schema 自身都通过 `check_schema` |
+| **R24** | 生产指标响应中的临时患者条目 `name`、`gender` 均为空，或 `page` 越界 | 丢弃该患者条目，不进入最终结果、缓存或日志 |
+| **R25** | 两个文件都给出明确患者身份但互相冲突；另测某文件身份缺失 | 明确冲突时 `IDENTITY_MISMATCH`；缺失时不猜测、不因缺失误报冲突 |
 
 #### 排序与展示
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R26** | 同页两个章节，各自第 1 条 `sourceOrder` 都是 0 | 顺序由 `groupOrder` 分开，**不乱序** |
-| **R27** | 同一章节跨两批（前批 `CURRENT`、后批 `CONTINUATION`） | 合并为一组；后批**没有**返回相同 `sectionSegmentId` |
-| **R28** | 文件第一批就报 `CONTINUATION` | 按 `UNKNOWN` 处理、**不向前跨文件继承** |
-| **R29** | 一个条目跨页引用（`blockRefs` 含 p2 和 p3） | `item.page = 2`（取 min） |
-| **R30** | 两份报告都有「血脂检查」 | 展示为**两个独立分组**，不合并 |
-| **R31** | `problemName = null` 的指标 | `displayName = "甘油三酯 ↑"`（两段原文拼接），**不出现「偏高」**；`displayNameGenerated=true` |
-| **R32** | `itemNo = null` 的建议 | 来源标注**不写条号**，不拿 `sourceOrder` 顶替 |
+| **R26** | 三阶段数组均按报告阅读顺序返回，且契约中没有任何序号字段 | 模块一至三保持数组顺序，不根据名称或状态二次排序 |
+| **R27** | 同名章节在 `sections` 里出现两次 | 保留第一条、其余并入；页面上仍是一张卡片（§6.5） |
+| **R28** | 两个文件的阶段结果都从各自第一页开始 | `page` 通过全局映射确定文件归属，不允许跨文件继承章节或身份 |
+| **R29** | 跨页续表在 `sections` 中合并为一个章节，`page` 是章节开始页 | 保留为单一分组，续页不另起同名卡片 |
+| **R30** | 两份报告都有「血脂检查」 | 按设计方案 §5.3 章节唯一性处理：**保留第一条、其余并入同一分组**，展示名取首次出现章节的 `page` 归属（与 R27 同一条规则，不区分是否跨文件） |
+| **R31** | 健康问题 `name="甘油三酯 ↑"` 且能在 `rawText` 中找到 | `displayName` 直接使用 `name`，Java 不拼「偏高」等归一化措辞 |
+| **R32** | 饮食标签 `itemNo = null` | 来源标注**不写条号**，不拿数组下标顶替 |
 | **R33** | 推荐/不推荐列表各有 5 道候选 | 先全维度裁决再截断到 3；**不是先取 3 再判过敏** |
 | **R33a** | 任务处于 `QUEUED` | task 接口返回 `stage=UPLOADING`、`progress=0`，**不是 404 也不是 PARSING** |
 | **R33b** | `stage` 全部取值 | 只有 `UPLOADING` / `PARSING` / `ASSEMBLING` 三个；`EXTRACTING` **不作为 stage 出现** |
@@ -4130,57 +2328,52 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R40b** | 绑定时文件已过期 | `FILE_EXPIRED`，事务回滚 |
 | **R41** | 巡检对 `heartbeat` 超时与 `deadline` 超时 | `fail_code` 分别为 `SERVER_ERROR` 与 `EXECUTION_TIMEOUT`，**不混用** |
 
-#### 解析与降级
+#### 转图、容量与三次调用
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R42** | PDF 每页 segment 数 > 400 | 该文件整体改走 OCR，`textSource=OCR` |
-| **R43** | OCR 某页识别块 > 400 | **整任务 `FAILED/UNREADABLE`**，不做局部截断，不新增 `partial_reason` |
-| **R43a** | 精确 `totalPages` = 45（三档中的 31~60） | 只处理前 30 等效页；`processedPages=30`、`totalPages=45`；`PAGE_TRUNCATED`；模块三四不输出 |
-| **R43b** | 不含 Word，上传文件的 `precheck_pages` 累计为 61 | analyze 直接拒绝 `PAGE_LIMIT_EXCEEDED`，**不建任务行、不绑文件** |
-| **R43b1** | 分别上传 PDF / 图片 / 原生 81 个 segment 且无图片的 DOCX | `precheck_pages` 分别为真实页数 / 1 / 3；Word 值明确是下界，不冒充精确页数 |
-| **R43b2** | Word 原生 segment 为 1201，或 ≥300×300px 的内嵌图片为 31 张 | 上传直接 `PAGE_LIMIT_EXCEEDED`，不写 file 行、不存对象文件 |
-| **R43b3** | Word 上传预筛未超限，但 OCR 后 `exactSegmentCount=1201` | 任务 `FAILED/PAGE_LIMIT_EXCEEDED`、`reanalyzable=false`，**LLM-A 调用次数为 0** |
-| **R43b4** | 含 Word 的任务预检下界 ≤60，OCR 后精确累计为 61 | 任务 `FAILED/PAGE_LIMIT_EXCEEDED`、`reanalyzable=false`，**LLM-A 调用次数为 0** |
-| **R43b5** | Word OCR 服务调用失败，而不是容量超限 | `FAILED/SERVER_ERROR`、`reanalyzable=true`，不得误报 `PAGE_LIMIT_EXCEEDED` |
-| **R43b6** | **上传预筛**：Word 原生 segment 恰好 1200、合规图片恰好 30 张 | **通过**，正常落 file 行——上限是「≤」不是「<」。**注意这只说明文件能创建，不代表 OCR 后一定通过** |
-| **R43b6a** | **工作线程**：Word 的 `exactSegmentCount` 恰好 1200、图片恰好 30 张 | **通过**，继续执行；1201 才拒（R43b3） |
-| **R43b6b** | Word 原生 1200 segment + 10 张图片，OCR 后每图产出若干块 | 上传**通过**、工作线程**拒绝**（`exactSegmentCount > 1200`）。断言两个阶段的判定**各自独立**，上传通过不隐含运行时通过 |
-| **R43b7** | **上传预筛**：Word 恰好 30 张合规图片、正文为空 | **通过**，`precheck_pages = 0`；不得因正文空判 `FILE_UNREADABLE`（§5.1） |
-| **R43b10** | 上述文件 OCR 后**一个文字块都没出来** | 整任务 `FAILED / UNREADABLE`，**LLM-A 调用次数为 0**；不是 `SUCCEEDED` 带四个空模块（§6.2） |
-| **R43b11** | 纯图片上传 / 扫描版 PDF，OCR **成功但结果为空** | 同 R43b10。而 OCR **调用失败**时是 `SERVER_ERROR`，两者不得混淆 |
-| **R43b8** | 多文件 `precheck_pages` 累计**恰好 60** | analyze **通过**，正常建任务；61 才拒（R43b） |
-| **R43b9** | 单文件恰好 30 等效页 | 全部处理，`partial = false`；31 才触发 `PAGE_TRUNCATED`（R43a） |
-| **R43c** | PDF 20 页在前、Word 800 个有序 segment 在后 | 精确总量40页；保留 PDF 20 页和 Word 前400个segment，`PAGE_TRUNCATED`；不是整份丢弃 Word |
-| **R43d** | `PAGE_TRUNCATED` 与 `ALLERGEN_SUSPECT_MISS` **同时命中** | `suppressDietAdvice=true`（来自前者）；`partialReason=PAGE_TRUNCATED`（严重度更高）；**模块三不得因后者被重新输出** |
-| **R43e** | 三个降级原因全部命中 | 三个布尔全 `true`；`partialReason=PAGE_TRUNCATED`；模块三四都不输出 |
-| **R44** | 一批 `UNREADABLE`、其余正常 | 该批丢弃，`partial_reason=BATCH_UNREADABLE`，模块三四不输出 |
-| **R45** | 全部批次 `NO_REPORT_FEATURE` | `FAILED/NOT_HEALTH_REPORT`（**不是 `UNREADABLE`**） |
-| **R46** | OCR 文本把 `2.8` 认成 `2.6`，模型给 `2.8` | 放宽档通过（编辑距离 1）；`NATIVE` 档同样输入应拒绝 |
+| **R42** | PDF / OFD / 图片混合任务转图 | 按 `fileIndex + pageInFile` 得到唯一完整 `PageImageSequence`，不抽文本、不调 OCR |
+| ~~**R43**~~ | **已撤销**（2026-09-03） | 页数全部精确后，面向用户的容量超限只在创建时同步发生，由 R43b 覆盖；Worker 只做对象与任务快照完整性复核（§4.1.1/§4.1.2） |
+| **R43a** | 精确 `totalPages` = 30 | 全部 30 页进入同一图序列，`processedPages=totalPages=30`，不标记页数降级 |
+| **R43b** | 上传文件的 `precheck_pages` 累计为 31 | analyze 直接拒绝 `PAGE_LIMIT_EXCEEDED`，**不建任务行、不绑文件** |
+| **R43b1** | 分别上传 PDF / 图片 | `precheck_pages` 分别为真实页数 / 1 |
+| **R43b12** | 分别上传 DOC 与 DOCX | 均返回 `UNSUPPORTED_FORMAT`，不落 file 行、不存对象；**DOCX 不得误判为损坏的 OFD**，OFD 正常通过（两者同为 ZIP 容器，§5.1） |
+| **R43b13** | Worker 读回对象存储原文件 | 非空、长度、SHA-256、重新识别的真实格式、格式安全检查、可读性和精确页数必须逐项通过并与 file 行一致；任务快照仍满足文件数、连续 `file_index`、总字节数与总页数上限。任一漂移均 `FAILED/SERVER_ERROR`，三次体检报告分析调用数为 0 |
+| ~~**R43b2~R43b7**~~ | **已撤销**（2026-09-03，含 R43b6/b6a/b6b） | Word 第一期不支持（§5.4），全部 Word 预筛/渲染/容量用例随之移除 |
+| **R43b10** | 任一页无法解码或渲染 | 整任务 `FAILED/UNREADABLE`，三次体检报告分析调用数均为 0，不用其他页生成部分结果 |
+| **R43b11** | 纯图片上传 / 扫描版 PDF 可正常渲染 | 不调 OCR，页面图直接进入三次体检报告分析调用 |
+| **R43b8** | 多文件 `precheck_pages` 累计**恰好 30** | analyze **通过**，正常建任务；31 才拒（R43b） |
+| **R43b9** | 单文件恰好 30 页 | 全部处理，`partial = false`；31 直接失败，不存在 `PAGE_TRUNCATED` |
+| ~~**R43c**~~ | **已撤销**（2026-09-03） | 多文件累计超限在创建时同步拒绝，已由 R43b 覆盖 |
+| **R43d** | 阶段 1/2 有预算内条目剔除 | `partial=true / SCHEMA_ITEM_DROPPED`；其余已校验结果继续组装 |
+| **R43e** | 阶段 3 有预算内标签剔除 | `partial=true / DIET_TAG_DROPPED`、`suppressDishRecommend=true`；被剔除标签不得用于 Redis 查询，模块四整体不输出 |
+| **R44** | 三次任一次返回 `UNREADABLE` | 整任务 `FAILED/UNREADABLE`，不写部分结果，不再发起后续调用 |
+| **R45** | 任一必需阶段返回 `NO_REPORT_FEATURE` | `FAILED/NOT_HEALTH_REPORT`（**不是 `UNREADABLE`**），不写部分结果 |
+| **R46** | 三次请求捕获图像段 | 页数、顺序、页码和 JPEG 字节全部一致，且不为某一次重新渲染或重新压缩 |
 | **R47** | DOCX 解压炸弹 | 流式计数中断，不信 `getSize()` |
 
 #### 数据生命周期与日志
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R48** | 任务成功后检查 Redis `result:{taskId}` | **不含**姓名、性别、完整 OCR 文本；含四模块展示片段 |
-| **R49** | 全流程日志捕获 | 不含报告原文、姓名、OCR 文本、健康数据；`taskId` 不与上述内容同事件 |
+| **R48** | 任务成功后检查 Redis `result:{taskId}` | **不含**姓名、性别、页面图、三次模型原始响应；只含四模块展示所需字段 |
+| **R49** | 全流程日志捕获 | 不含报告原文、姓名、页面图、模型请求/响应正文、健康数据；`taskId` 不与上述内容同事件 |
 | **R50** | `SUCCEEDED` 后跑清理 | 原文件与 file 行立即删；task 行保留至顺延后的 `expire_at` |
 | **R51** | `FAILED` 且 `reanalyzable=1` 后跑清理 | 原文件**保留**至 `expire_at`（否则「重新解析」形同虚设） |
 | **R52** | 任意实体的 insert / update | SQL 中**不出现** `create_time` / `update_time` |
-| **R53** | 一批指标携带已下线的 `statusJudgedByModel` 字段 | `indicators` 条目是 `additionalProperties:false`，**剔除该条**（§4.4-①）。Java 仍**不做任何 status 校验**，`status` 的四个取值都不影响输出（字段随 §4.4-③ 的 13 个计数于 2026-08-27 下线，2026-09-01 从 Schema 与 DTO 删除） |
+| **R53** | 指标条目携带未声明的 `statusJudgedByModel` 字段 | `additionalProperties:false` 拦截并剔除该条、计入修复预算；Java 不新增箭头或结论词表去纠正 `status` |
 
-#### LLM-A 直连红线（§6.2.1）
+#### 体检报告分析模型直连红线（§6.4）
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R57** | ArchUnit 扫 `llm.extraction`、`llm.dishtag` 与 `infra` 包 | 两条模型链路各自只依赖自己的客户端接口：`llm.extraction` 不依赖 `DishTagModelClient`，`llm.dishtag` 不依赖 `ExtractionModelClient`。**`DifyClient` 已删除**，原「非 LLM-B 不得依赖 DifyClient」一条随之撤销（§13.2.0） |
-| **R58** | 捕获一次完整的 LLM-A 请求体 | **不含** `taskId` / `userId` / `origin_name` / `segmentId`；只含 §6.2 定义的字段 |
+| **R57** | ArchUnit 扫 `llm.extraction`、`llm.dishtag` 与 `infra` 包 | 两条模型链路各自只依赖自己的客户端接口：`llm.extraction` 不依赖 `DishTagModelClient`，`llm.dishtag` 不依赖 `HealthReportAnalysisModelClient`。`DifyClient` 已删除 |
+| **R58** | 捕获三次体检报告分析请求体 | **不含** `taskId` / `userId` / `origin_name`；只含 §6.3 定义的字段，且 `chat_template_kwargs.enable_thinking=false` |
 | **R59** | 全流程监控文件系统与对象存储调用 | 图像**只从 `byte[]` 内联**；**不创建临时文件、不调用 `S3FileStorage`** |
-| **R60** | 构造页码 2、5、9 的一批 | 消息序列严格「文本→图→文本→图」；**每对文本与图来自同一个 `BatchPage`**；无漏图、无重复页 |
-| **R61** | 打乱输入页序 / 缺一张图 / 重复一页 | 三种都**在组装前失败**，不得静默发出错配的请求（§6.2.1） |
+| **R60** | 构造全局页码 2、5、9 的 `PageImageSequence` | 消息序列严格「页码文本→图」成对；每对来自同一 `PageImage`，无漏图、无重复页 |
+| **R61** | 打乱输入页序 / 缺一张图 / 重复一页 | 三种都**在组装前失败**，不得静默发出错配的请求（§6.2、§6.3） |
 | **R62** | 模型返回 429 / 500 / 读超时 | 各自**调用次数恰好为 1**（零重试，§6.1）；映射成对应错误码 |
-| **R63** | 上述失败场景的日志 | **不含请求体、响应体、模型响应正文**；`RestClientResponseException` **不得被直接记录**，只记状态码与耗时（§6.2.4） |
+| **R63** | 上述失败场景的日志 | **不含请求体、响应体、模型响应正文**；`RestClientResponseException` **不得被直接记录**，只记状态码与耗时（§6.4） |
 | **R64** | 应用启动后检查 HTTP 客户端配置 | Apache/OkHttp/JDK 的 **wire logging 与 debug 日志为关闭**；`RestTemplate` 未挂任何打印 body 的拦截器 |
 | **R65** | 静态检查 `infra` 包 | **禁止** `HttpEntity<String>`、`ObjectMapper#writeValueAsString`、以及把整请求体拼进 `StringBuilder`/`String` 的写法（ArchUnit + 字节码扫描）。**不检查"有没有 String"**——`buildRequestBody` 本来就返回 `byte[]`，而逐图 base64 的临时 `String` 是合法的 |
 | **R65p** | **性能测试，不进普通单测**（单独 profile / tag） | 固定 JDK 版本、固定 `-Xmx`、固定 8×800KB 样本，用 `ThreadMXBean#getThreadAllocatedBytes` 记录分配量基线并存档。**回归时与存档基线比对，超 30% 报警而非失败**——分配量随 JDK 小版本波动，做成硬断言会变成噪音 |
@@ -4188,18 +2381,18 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 | **R65b** | WireMock 返回超大响应体（**200 与 500 各一次**） | 两次都不把响应完整读进内存：200 走 `BoundedResponseExtractor`；**500 走 `StatusOnlyErrorHandler`，错误处理器不读取也不缓存正文**（框架关闭响应时仍可能对流做清理，这不算读取）——默认的 `DefaultResponseErrorHandler` 会把 body 读满并塞进异常，绕过上限。异常消息里**只有数字，无正文** |
 | **R66** | 一张 3000×4000 的页面图走 `ExtractionImageCompressor` | 输出长边 = 2000px、JPEG、体积 ≤ 1MB；**全程不落盘**（监控文件系统调用） |
 | **R66a** | 一张压缩后仍 > 1MB 的高噪图 | 自动回退档 2（长边 1600px、quality 0.80）；再超限抛 `ImageTooLargeException` → 任务 **`FAILED / IMAGE_TOO_LARGE`**、`reanalyzable = 0`。**断言既不是 `UNREADABLE` 也不是 `SERVER_ERROR`**，前端文案走「图片过大」那条 |
-| **R66f** | 同一份内容分别走 PDF 原生文本层与 OCR 两条路径 | 两边 `bbox` 都是**原始渲染图的左上原点像素坐标**、指向图上同一位置；**OCR 路径不得再被翻一次 Y 轴**（§5.6.6） |
+| **R66f** | 同一份内容分别以 PDF / OFD / 图片输入 | 都只产生有序 `PageImage`，不产生文本层、OCR 文本或 bbox |
 | **R66b** | 上传一张 8000 万像素的 JPG | ① 请求体内的图 ≤ 1MB，不得直传原图；② Spy/Fake `ImageReader` 断言**读过完整尺寸后调用了 `setSourceSubsampling`**；③ 断言实际解出的 `BufferedImage` 宽×高 **≤ 受控上限**；④ ArchUnit：上传图片路径**禁止直接调 `ImageIO.read`**。**不用"峰值分配量"断言**——`ThreadMXBean` 只能看累计分配，证明不了单个对象大小 |
 | **R66g** | 8000 万像素样本，**独立子进程 + 较小 `-Xmx`**（如 512m） | 不 OOM 且正常产出压缩图。**不进普通单测**，与 R65p 同属资源/性能测试 |
-| **R66h** | 上传一张 **EXIF `Orientation = 6`** 的 JPG（宽高互换）| **OCR 服务联调测试**，不进本地单测——它验的是真实 OCR 的 EXIF 行为与我们假设是否一致。断言：在原图已知位置放一段可识别文字，校验最终 `bbox` 框住它 |
-| **R66h1** | **8 个 `Orientation` 值各一组**已知坐标，跑坐标变换函数 | **纯本地确定性单测**，不依赖 OCR。每个值对应一个固定的旋转/镜像矩阵，逐个校验变换后坐标；`Orientation` = 5~8 时**断言宽高互换**。这条与 R66h 是两回事：它验我们的数学，R66h 验对方的行为 |
-| **R66j** | 构造一张恰好 ≤ `effectiveOcrImageBytes`、但组装后请求体超 `ocr.maxRequestBodyBytes` 的图（把协议开销配得偏小） | `PaddleOcrClient` **发送前**抛 `ImageTooLargeException`，Mock OCR **收不到请求**；证明两层兜底都生效（§5.6.2.1） |
-| **R66k** | 启动时把 `ocr.maxRequestBodyBytes` 配成 0 / 负数 / 小于协议开销 | **启动直接失败**，不得跑到第一次调用才报错 |
-| **R66i** | PDF 页走 `OcrImageEncoder` | 输出 PNG 无损（或超限时 JPEG q0.95）；**断言它不是 `ExtractionImageCompressor` 的产物**（质量参数与尺寸都不同，§5.6.2.1） |
-| **R66c** | 档 2 回退后检查 `bbox` | `bbox` 像素坐标按**实际输出尺寸**换算，不是按 2000 硬算；断言坐标与图上位置一致（§5.6.6） |
-| **R66d** | Word 含内嵌图片 | 图片**只进 OCR**，`BatchPage.jpegBytes` 恒为 `null`、`imageRequired` 恒为 `false`（§5.6.2） |
+| **R66h** | 上传一张 **EXIF `Orientation = 6`** 的 JPG（宽高互换）| 转图层先做方向归一化，三次体检报告分析调用收到的 JPEG 方向一致且文字正向 |
+| **R66h1** | **8 个 `Orientation` 值各一组**已知图像 | 纯本地确定性单测；逐个校验旋转/镜像后像素方位，`Orientation` = 5~8 时断言宽高互换 |
+| **R66j** | 单页都合规，但全部页图组装后请求体超 `llm.extraction.max-request-body-bytes` | `HealthReportAnalysisModelClient` 在发送前抛 `RequestTooLargeException`，WireMock 收不到请求 |
+| **R66k** | 启动时把 `llm.extraction.max-request-body-bytes` 配成 0 / 负数 / 小于协议开销 | **启动直接失败**，不得跑到第一次调用才报错 |
+| **R66i** | PDF 页走 `ExtractionImageCompressor` | 输出符合长边、JPEG 质量和 1MiB 上限，与其他格式使用同一页图契约 |
+| **R66c** | 档 2 回退后检查输出 | 实际长边为 1600px、JPEG q0.80、不超 1MiB，且三次请求复用同一字节 |
+| ~~**R66d**~~ | **已撤销**（2026-09-03） | Word 第一期不支持（§5.4），渲染层收不到 Word |
 | **R66e** | PDF 某页渲染失败（构造损坏页） | 整任务 `FAILED / UNREADABLE`；**不抛 `IllegalStateException`**，即不落到 `assertPageListValid`（§5.6.5） |
-| **R65c** | WireMock 返回 200 + 畸形 JSON，正文含「甘油三酯 2.8 阳性」等敏感串 | 抛 `LlmCallException`；**捕获全部日志断言不含该敏感串**——Jackson 解析异常消息会带出错位置附近的原文片段，`extractContent` 必须就地脱敏 |
+| **R65c** | WireMock 返回 200 + 畸形 JSON，正文含「甘油三酯 2.8 阳性」等敏感串 | 抛 `HealthReportAnalysisCallException`；**捕获全部日志断言不含该敏感串**——Jackson 解析异常消息会带出错位置附近的原文片段，`extractContent` 必须就地脱敏 |
 
 #### 交付物一致性（§13）
 
@@ -4207,18 +2400,20 @@ OCR bounding box 落库          ← 与 §3.1「无 segment 表」和数据生�
 |---|---|---|
 | **R54** | 解析 `sql/schema.sql` 与本文 §3.1 的 DDL 代码块 | 列级八项（列名/类型/可空/DEFAULT/ON UPDATE/CHARACTER SET/COLLATE/COMMENT）+ 表级四项（ENGINE/CHARSET/COLLATE/表 COMMENT）+ 索引三要素（名称/列序列/顺序）逐一相等；`.sql` 里**不出现** `CONSTRAINT` / `FOREIGN KEY` / `CHECK` / `TRIGGER` |
 | **R54a** | 空库跑 `schema.sql` vs 空库跑「初版 schema + 全部 alter」 | 两条路径得到的结构**完全一致**（同样比 R54 的十五项）。没有迁移工具，这是唯一能保证「新建库」与「老库升级」不分叉的手段 |
-| ~~**R55**~~ | **已撤销**（2026-08-27） | 原为「解析 LLM-B 的 Dify DSL，断言其中的版本号与 Java 常量/配置一致」。改直连后 DSL 不存在，`modelVersion` 只剩 `llm.model-version-dishtag` 一处真源，**没有第二处可对不上**——本条防的漂移已被结构性消除（§13.2.0）。版本号与提示词的对齐由 R55a / R55b 继续保证 |
-| **R55a** | `PromptVersions` 常量 vs 两份 `prompt/*.md` 头部声明 | `EXTRACTION` 与 `prompt/extraction.md` 头部逐字一致；`DISH_TAG` 与 `prompt/dish_tag.md` 同理。**两者分别断言，不得用同一个公共版本常量**。三条链路都直连之后，版本号仍是排障时分辨「结果出自哪版提示词」的唯一凭据 |
-| **R55b** | 解析 `prompt/versions.tsv`（§9.4.2 的采用方案） | 四条全过：① 末行 version == `PromptVersions.EXTRACTION` / `LLM_B`；② 末行 digest == 实测正文摘要；③ **无重复 version 对应不同 digest**；④ 无重复 digest 对应不同 version。**③ 才是真正拦住「改正文忘 bump」的那条**——只比 `DIGEST` 常量拦不住「正文和 DIGEST 一起改、版本不变」 |
+| ~~**R55**~~ | **已撤销**（2026-08-27） | 原为「解析菜品离线打标的 Dify DSL，断言其中的版本号与 Java 常量/配置一致」。改直连后 DSL 不存在，`modelVersion` 只剩 `llm.model-version-dishtag` 一处真源，**没有第二处可对不上**——本条防的漂移已被结构性消除（§13.2.0）。版本号与提示词的对齐由 R55a / R55b 继续保证 |
+| **R55a** | `PromptVersions` 常量 vs 四份生产 `prompt/*.md` 头部声明 | `INDICATORS`、`PROBLEMS`、`DIET_TAGS`、`DISH_TAG` 分别与各自文件头逐字一致，不得共用一个版本常量 |
+| **R55b** | 解析 `prompt/versions.tsv`（§9.4.2 的采用方案） | 四份 Prompt 都通过：① 末行 version == 对应 `PromptVersions` 常量；② 末行 digest == 实测正文摘要；③ 无重复 version 对应不同 digest；④ 无重复 digest 对应不同 version |
 | **R55c** | 解析 `constants/tag-rule-versions.tsv`，规则与 R55b 完全相同 | 摘要覆盖**全部进入模型输入的内容常量**：`AllergenGroups`（含 `displayName`）、`AllergenExceptions`、`NutritionContents.recommendableFoodList`、`DietRequirementContents` 的三个列表、以及每个条目的 `reviewStatus`。**同样靠「无重复 version 对应不同 digest」强制 bump `TagRuleVersion`**，只比 DIGEST 常量拦不住（§9.4.2） |
-| ~~**R56**~~ | **已撤销**（2026-08-27） | 原为「解析 DSL，断言零重试与三节点拓扑」。改直连后零重试由 `DishTagModelClient` 的实现本身保证（与 LLM-A、OCR 同一套写法），不再需要去解析一份外部文件来证明它 |
-| **R56b** | **新增**：LLM-B 响应剥离思考段 | `<think>…</think>` 正常剥离；**思考段内含示例 JSON 时不得被当成结果**；只有 `</think>` / 有 `<think>` 无 `</think>` / `finish_reason == "length"` 四种形态各自整批作废且不写库（§13.2.3）。**这条是本次改动引入的唯一新静默错误面，必须有能真失败的断言** |
+| ~~**R56**~~ | **已撤销**（2026-08-27） | 原为「解析 DSL，断言零重试与三节点拓扑」。改直连后零重试由两个模型客户端的实现本身保证，不再解析外部 DSL |
+| **R56b** | 菜品离线打标关闭思考与兼容剥离 | 请求必须含 `chat_template_kwargs.enable_thinking=false`；网关仍返回 `<think>…</think>` 时正常剥离，**思考段内含示例 JSON 时不得被当成结果**；只有 `</think>` / 有 `<think>` 无 `</think>` / `finish_reason == "length"` 四种形态各自整批作废且不写库（§13.2.3） |
 
 ### 11.2 契约测试
 
 ```
-schema/extraction_output.schema.json    与文档 §6 各节、prompt/extraction.md 三方一致
-schema/dish_tag_output.schema.json    与文档 §8.2、prompt/dish_tag.md 三方一致
+schema/indicators.schema.json            与文档 §6、prompt/indicators.md 三方一致
+schema/health_problems.schema.json       与文档 §6、prompt/health-problems.md 三方一致
+schema/diet_tags.schema.json             与文档 §6/§7、prompt/diet-tags.md 三方一致，且不含菜品字段
+schema/dish_tag_output.schema.json       与文档 §8.2、prompt/dish_tag.md 三方一致
 ```
 
 每次改契约必须同时跑：Schema 自身 `check_schema` + 文档示例校验 + 提示词字段名比对（R23）。
@@ -4226,19 +2421,19 @@ schema/dish_tag_output.schema.json    与文档 §8.2、prompt/dish_tag.md 三�
 
 ### 11.3 负例与 fail-safe 用例（`AGENTS.md` §7-4 的落地）
 
-上表中 R2~R6、R10、R12、R19~R22、R24、R25、R34~R37、R40、R43、R45 全部是负例或 fail-safe，
-**不得只写 happy path**。特别是 **R10**：它断言的是「**不该**触发」，用来锁住已知盲区
-不被后来者用坐标配对「优化」掉。
+上表中 R2~R6、R10、R12、R19~R22、R24、R25、R34~R37、R40、R43b、R43b12、R45 全部是负例或 fail-safe，
+**不得只写 happy path**。特别是 **R10**：它要锁住「第三次 Schema 不包含任何菜品字段」，
+防止后续又把候选菜或菜品选择塞回体检报告分析模型。
 
 ### 11.4 离线评测集（不在生产链路，但发版前必跑）
 
-三处已下线的在线检查移到这里，评测集是它们唯一的替代：
+已退出在线 Java 的语义检查移到这里，评测集是它们唯一的替代：
 
 ```
 ① status 与报告方向标记一致        「↑偏高」不得判 NORMAL
-② OTHER 过敏原的 isFoodBorne 判定
+② 非食入性过敏原必须进入阶段三与模块三，但不得进入菜品 Redis Key；枚举外过敏原输出 OTHER
 ③ 正常语句不得进模块二             「甲状腺结节，余未见异常」的结节要留、「未见明显异常」要滤掉
-④ 过敏漏抽率                       样本【按 textSource 分层】，电子版 PDF 与扫描件各半
+④ 过敏漏抽率                       样本按 PDF / 扫描件 / 图片 / OFD 输入格式分层
 ⑤ 调味料缺失对过敏召回的影响       50 道真实菜品人工标注，分别测漏标率与过杀率
 ```
 
@@ -4254,10 +2449,10 @@ CI 每次跑全量太慢或不稳定，但**它们没跑过就不许上线**，�
 |---|---|---|
 | **R65p** 请求组装分配量基线 | 分配量随 JDK 小版本波动，做成硬断言是噪音 | 每次发版前；换 JDK 版本时必跑 |
 | **R66g** 8000 万像素样本 + `-Xmx512m` 子进程 | 需要独立 JVM 与特定堆参数 | 同上；改动解码/压缩路径时必跑 |
-| **R66h** EXIF 方向联调 | 依赖真实 OCR 服务 | OCR 接入后一次；换 OCR 版本时重跑 |
+| **R66h** EXIF 方向端到端验证 | 需要真实图像解码与体检报告分析请求组装 | 每次改动图像方向归一化或转图路径时 |
 | **R66b** 大图不得直传 | 需要真实请求组装 | 批次 5 起纳入常规集成测试 |
 
-**跑过的结论要留档**（分配量基线值、实测峰值内存、OCR 的 EXIF 行为结论），
+**跑过的结论要留档**（分配量基线值、实测峰值内存、EXIF 方向归一化结论），
 下次回归时与留档比对——**没有留档等于没跑过**。
 
 ---
@@ -4274,7 +2469,7 @@ pom 依赖（§1）
 三张表 DDL + Entity + Mapper + Service（§3.1，含 §3.1.1 的 @TableField、`precheck_pages` 列）
 **交付物：`sql/schema.sql`**（§13.1）
 IdCanonicalizer / TaskOwnershipGuard / SystemActor（§3.1.3）
-五个占位符（§10.1）
+三个占位符（§10.1）
 错误码枚举（§9.1）
 ```
 
@@ -4287,14 +2482,14 @@ IdCanonicalizer / TaskOwnershipGuard / SystemActor（§3.1.3）
 
 ```
 格式判定与路由、逐格式可读性校验、解压炸弹防御（§5.1）
-    —— 含 Word 的「正文非空 或 ≥1 张合规内嵌图片」判据
+    —— DOC/DOCX 识别即拒（UNSUPPORTED_FORMAT，§5.4）；DOCX 与 OFD 同为 ZIP 容器，
+       两者的区分是本批的重点负例
 CapacityPrecheckService / `precheck_pages` 全格式实现（§4.1.1）
-    —— Word 只数原生 segment 与内嵌图片，**不做 OCR**
 POST /file 上传接口（§4.1）+ 对象存储占位符对接
 ```
 
-**验收**：R43b1、**R43b2**（上传即拒）、**R43b6**（上传预筛边界通过）、
-**R43b7**（图片型 Word 正文空也放行）、R47，以及上传接口对每种格式的正例与负例。
+**验收**：R43b1、**R43b12**（DOC/DOCX 拒收与 ZIP 容器区分）、R47，
+以及上传接口对每种格式的正例与负例。
 **不依赖任何任务或解析逻辑**，可独立跑通。
 
 ### 批次 3 — 任务链路（不含解析）
@@ -4302,74 +2497,66 @@ POST /file 上传接口（§4.1）+ 对象存储占位符对接
 ```
 其余三个接口（§4.1）：`analyze` / `task/{id}` / `result/{id}` + `DELETE task/{id}`
 stage 三态与 progress 区间（§4.3）
-DegradeAccumulator（§6.2.3）—— 先建骨架，批次 5/4 往里填标志
-创建 + 绑定两步（含 ⓪ 事务外预检）+ 两个线程池（§4.2）
+DegradeAccumulator（§6.5）—— 先建骨架，批次 5 写入条目剔除与模块四抑制标志
+创建 + 绑定两步（含 ⓪ 事务外预检）+ 单个 `analysisExecutor`（§4.2）
 状态机、领取 CAS、心跳、三条巡检（§4.3）
 成功写入顺序、expire_at 顺延（§4.4）
 删除与清理矩阵（§4.5）
 ```
 
-**验收**：R33a、R33b、R34~R41、R40a、R40b、R43b（累计 61 拒）、
-**R43b8**（累计恰好 60 通过）、R50~R51 通过。
+**验收**：R33a、R33b、R34~R41、R40a、R40b、R43b（累计 31 拒）、
+**R43b8**（累计恰好 30 通过）、R50~R51 通过。
 工作线程内先塞一个 sleep 占位，跑通全链路状态迁移。
 
-### 批次 4 — 解析与 Segment
+### 批次 4 — 统一转图
 
 ```
-Segment 模型、PDFStreamEngine 覆写、OFD/Word/OCR 适配（§5.2）
-ExtractionImageCompressor + CompressedPageImage（§5.6）：两档压缩、降采样解码、
+PDF / OFD / 图片的 PageRenderer 与唯一 PageImageSequence（§5.2）
+ExtractionImageCompressor + CompressedPageImage（§5.3）：两档压缩、降采样解码、
     不放大 / 铺白底 / RGB / 双线性 / 方向归一化 / 资源释放
-OcrImageEncoder（§5.6.2.1）与 effectiveOcrImageBytes 的启动计算（§5.6.2.1）
-bbox 坐标契约：各解析器把原生坐标转成"渲染图左上原点像素"，仅 PDF 等左下原点来源翻 Y（§5.6.6）
-EXIF Orientation 的 8 值坐标变换函数（§5.6.6.1）
-规范化 + RadicalNormalizeMap（§5.2）
-WordCapacityGuard（§4.1.2）、密度闸（§5.3）、三档页数规则与 PageBudgetService（§5.4）
-批次编址与渲染（§5.5）
+EXIF Orientation 的 8 值图像方向归一化
+全局页码编址与 `page -> (fileIndex, pageInFile)` 映射（§5.3）
 ```
 
-**验收**：R6、R42、R43、R43a、R43c、R43b3~R43b5、**R43b6a**、**R43b6b**、
-**R43b9**（恰好 30 等效页不截断）、**R43b10**、**R43b11**（零 segment → UNREADABLE），
-以及 **R66、R66a、R66c、R66e、R66f、R66h1、R66i**（压缩档位与回退；
-**各解析器统一 bbox 坐标契约，仅 PDF 等左下原点来源做 Y 轴翻转**；
-EXIF 8 值坐标变换的本地数学；渲染失败归属；OCR 独立编码器）通过。
+**验收**：R6、R42、R43a、**R43b9**（恰好 30 页全部发送）、**R43b10**、**R43b11**，
+以及 **R66、R66a、R66c、R66e、R66f、R66h1、R66i**（压缩档位与回退、
+EXIF 方向归一化、各格式统一页图契约、渲染失败归属）通过。
 
 ```
-不在本批：R66b、R66d   → 需要真实请求组装，批次 5
-          R66h         → OCR 服务联调测试，需 §0.4 的 EXIF 答案；R66h1（本地数学）在本批
+不在本批：R66b         → 需要真实请求组装，批次 5
+          R66h         → 跨格式端到端方向验证
           R65p、R66g   → 性能/资源测试，独立 profile，不进普通单测
                          【但它们是上线前必跑项】—— 见 §11.5
 ```
-**先做 §11.4-④ 的样本采集**，
-`MAX_SEGMENTS_PER_PAGE` 与 Word 折算系数用真实数据定，不要用文档里的暂定值上线。
+**先做 OFD 真实样本采集**，渲染保真度要用真实数据定档（设计方案 §11-21）。
 
-### 批次 5 — LLM-A 链路
+### 批次 5 — 体检报告分析模型链路
 
 ```
-分批与并发（§6.1）、调用与批次裁决（§6.2）
-校验流水线 ① → ①a → ①b（§6.3）
-来源校验（§6.4）
-安全扫描 A~F（§6.5）
-合并与同一性校验（§6.6）
-**本批第一件事**：写 `ExtractionModelClient`（§6.2.1.1 有完整代码）+ `ExtractionProperties`
-+ `LlmCallException`；解决 §6.2.2 的提示词打包（a1 或 a2，含启动自检）；
+三次严格串行调用与 fail-fast 编排（§6.2）
+三份生产 Prompt/Schema 的独立加载、版本化和契约校验（§6.1、§6.6）
+页码、枚举、方向、阶段间零业务结果传递与同一性校验（§6.3~§6.5）
+**本批第一件事**：写 `HealthReportAnalysisModelClient`、
+`OpenAiCompatibleHealthReportAnalysisModelClient`、`HealthReportAnalysisModelProperties`
+与 `HealthReportAnalysisCallException`；完成 §6.6 的三份提示词打包与启动自检；
 新增 `PromptVersions` 常量类与 `modelVersion` 配置项（§9.4.1）
 
 > **R57~R65 全部用 WireMock 跑**（真实 HTTP over localhost，`test` scope，需新增依赖）。
 > `MockRestServiceServer` 不行——它绕过 `ClientHttpRequestFactory`，
 > 而 R64（wire logging 关闭）、R65（保持缓冲、`Content-Length`、分配量）恰恰要验的就是那一层。
 >
-> **只有「真实端到端联调」需要 §6.2.4 的三个 ⛔ 项**（`base-url` / `model` / `apiKey`）。
+> **只有「真实端到端联调」需要 §6.4 的三个 ⛔ 项**（`base-url` / `model` / `apiKey`）。
 > 它不在本批验收范围内，单列为上线前的一道门；**服务端限额等其余各项另列上线前核查**。
 ```
 
 **验收**：R2~R5、R7~R12、R19~R25、R43d、R43e、R44~R46、R53，
 以及 **R55a、R55b**（版本号与正文摘要）、**R57~R65、R65a~R65c**（直连红线，WireMock）、
-**R66b、R66d**（大图不得直传、Word 不发图）通过。
+**R66b**（大图不得直传）通过。
 **R65p 不在本批验收**——它是分配量基线，超基线只报警不失败，属 §11.5 的上线前必跑项。
-**R55c / R56b 属于 LLM-B，在批次 7 验收**；R55b 的 LLM-B 那一半也在批次 7。
+**R55c / R56b 属于菜品离线打标模型，在批次 7 验收**；R55b 的菜品离线打标部分也在批次 7。
 **R55 / R56 已随 Dify 一并撤销**（§13.2.0）。
 
-> **不在本批验收：真实端到端联调**——它依赖 §6.2.4 的三个 ⛔ 接入参数，
+> **不在本批验收：真实端到端联调**——它依赖 §6.4 的三个 ⛔ 接入参数，
 > 拿到凭据后单独跑一次，作为上线前的一道门。**本批不得因为"还没联调"而不交代码。****这是全案安全红线最密集的一批，
 建议单独安排一次代码评审，逐条对照 §0.3。**
 
@@ -4380,7 +2567,7 @@ EXIF 8 值坐标变换的本地数学；渲染失败归属；OCR 独立编码器
 模块一（§7.2）、模块二（§7.3）
 ```
 
-**验收**：R26~R32 通过。此时端到端可出结果，可接前端联调。
+**验收**：R26~R32 中模块一、二相关用例通过。完整端到端结果需等批次 7、8 完成后再联调。
 
 ### 批次 7 — 模块三 + 离线打标
 
@@ -4389,17 +2576,17 @@ EXIF 8 值坐标变换的本地数学；渲染失败归属；OCR 独立编码器
 按企业枚举、菜品 Keyset 分页、当前页食材批量查询（§8.1）
 打标任务、tagHash、33 个方向 staging SET 与原子发布（§8）
 DishTagCleanupService（§8.1，**必须排在打标任务之后**）
-LLM-B 饮食/过敏三态契约校验，凌晨 Java 仅生成低嘌呤、高纤维饮食正向标签（§8.2）
+菜品离线打标模型的饮食/过敏三态契约校验，凌晨 Java 仅生成低嘌呤、高纤维饮食正向标签（§8.2）
 ```
 
 **验收**：R15、R17、R18、R18a、R18b~R18j、R22，
-以及 **R55a、R55b、R55c、R56b**（LLM-B 那份）通过。
+以及 **R55a、R55b、R55c、R56b**（菜品离线打标部分）通过。
 **内容证据审核已完成**；若组织制度要求具名执业人员签字，签字未完成前模块三仍不得上线（§0.4）。
 
 ### 批次 8 — 模块四
 
 ```
-企业隔离的 Redis 集合读取与并、差运算（§7.5.7、§7.5.8）
+按第三次已校验标签选择 Redis Key，完成企业隔离的集合读取与并、差运算（§7.5.7、§7.5.8）
 复合成员解码、标签归属批量恢复（§8.3）
 报告原文理由、排序各取前 3、精简 DTO 与空态（§7.5.9）
 ArchUnit 锁定在线模块不依赖 DishQueryService、菜品 Mapper 与食材匹配器
@@ -4410,7 +2597,7 @@ ArchUnit 锁定在线模块不依赖 DishQueryService、菜品 Mapper 与食材�
 `tagRuleVersion=tag-1.1.0` 全量重打，不能沿用旧缓存。
 本次把 `LOW_PURINE`、`HIGH_FIBER` 的 `DietPositiveMatcher` 从在线移动到凌晨，并把 Redis
 方向清单固定为 33 个；提示词、Schema、版本摘要和全量重打必须作为同一批发布，不能沿用
-曾允许 LLM-B 输出 9 个饮食 `RECOMMEND` 的缓存或四态结果。
+曾允许菜品离线打标模型输出 9 个饮食 `RECOMMEND` 的缓存或四态结果。
 
 ### 批次 9 — 收口
 
@@ -4494,15 +2681,15 @@ sql/alter/YYYYMMDD_xxx.sql  【从旧版本升级】的增量，一次变更一�
 > 而它的后果是静默的——测试环境按 `.sql` 建表跑得好好的，评审按文档看也没问题，
 > 直到某天有人依据文档写了个查询去查一个 `.sql` 里叫别的名字的列。
 
-### 13.2 LLM-B 直连接入契约（**不再产出 Dify DSL**）
+### 13.2 菜品离线打标模型直连接入契约（**不再产出 Dify DSL**）
 
-> **2026-08-27 变更：LLM-B 由走 Dify 改为直连模型 API。**
-> 至此三条模型/OCR 出网链路走的是**同一个网关、同一套 OpenAI 兼容协议**，
+> **2026-08-27 变更：菜品离线打标由走 Dify 改为直连模型 API。**
+> 至此体检报告分析与菜品离线打标两条模型出网链路走的是**同一个网关、同一套 OpenAI 兼容协议**，
 > 只有模型标识与配置前缀不同。
 
 #### 13.2.0 为什么去掉 Dify
 
-改直连**与数据敏感度无关**——LLM-B 的请求里只有菜名、食材名、重量、枚举展示名，
+改直连**与数据敏感度无关**——菜品离线打标请求里只有菜名、食材名、重量、枚举展示名，
 一条健康数据都没有，留在 Dify 不违反任何隐私约束。真正的理由是**收益归零**：
 
 ```
@@ -4520,7 +2707,7 @@ sql/alter/YYYYMMDD_xxx.sql  【从旧版本升级】的增量，一次变更一�
 |---|---|
 | `dify/dish_tag.workflow.yml` | 必须做一次「导入 → 导出 → diff」往返验证才可信 |
 | DSL 内嵌的 output schema 副本 | 与 `schema/dish_tag_output.schema.json` 会漂移，R55 存在的唯一理由就是防它 |
-| `modelVersion` 双真源 | DSL 环境变量 vs `llm.model-version-dishtag` 必须一致。**这个值进 `tagHash`，不一致不报错，只是换模型再也不触发重打标**——与已修过的 `modelVersionB` 绑定缺陷是同一种病 |
+| `modelVersion` 双真源 | DSL 环境变量 vs `llm.model-version-dishtag` 必须一致。**这个值进 `tagHash`，不一致不报错，只是换模型再也不触发重打标**——与已修过的菜品打标模型版本绑定缺陷是同一种病 |
 | R55 / R56 | 两条只为锁 DSL 而存在的契约测试 |
 | Dify 侧隐藏重试（原 D6） | 需要专门确认「平台没在背后帮我重试」，与全案零重试冲突 |
 | Dify 运行记录（原 D4） | 部署级、DSL 内无开关、删不掉的一处留存 |
@@ -4530,14 +2717,14 @@ sql/alter/YYYYMMDD_xxx.sql  【从旧版本升级】的增量，一次变更一�
 
 ```
 模型路由（换模型不发版）
-    modelVersion 进 tagHash，换模型必然按企业触发 22 个 LLM-B 维度的全量重打标。
+    modelVersion 进 tagHash，换模型必然按企业触发 22 个菜品离线打标维度的全量重打标。
     这本来就是需要人盯着的运维动作，「不发版」的价值被抵消大半
 
 可观测性（Dify 运行记录）
-    LLM-B 是全案【唯一可以安全记录完整请求与响应】的模型调用
-    —— 输入是食堂公开数据，输出是标签，无健康数据、无用户标识（§6.2.1 分界表）
+    菜品离线打标模型是全案【唯一可以安全记录完整请求与响应】的模型调用
+    —— 输入是食堂公开数据，输出是标签，无健康数据、无用户标识（§0.3 分界）
     直连后记在自己的日志系统里，排障不必去 Dify 控制台翻，反而更顺手
-    【这与 LLM-A / OCR 那两条「正文一个字都不能进日志」的链路完全不同，不要混用规则】
+    【这与体检报告分析模型「正文一个字都不能进普通日志」的链路完全不同，不要混用规则】
 ```
 
 > **什么情况下这个决定应该被推翻**：① 非工程师要在 GUI 里调打标提示词
@@ -4548,11 +2735,11 @@ sql/alter/YYYYMMDD_xxx.sql  【从旧版本升级】的增量，一次变更一�
 
 | 项 | 值 | 说明 |
 |---|---|---|
-| Endpoint | `{llm.dishtag.base-url}` + `{llm.dishtag.chat-completions-path}` | 路径默认 `/v1/chat/completions`，与 LLM-A / OCR 相同 |
-| 测试环境 `base-url` | `http://higress-http.region-4-c86-test.test-kzx1.cncb/public` | 与 LLM-A、OCR 同一个网关；拆分点同样在 `/public` 之后（§5.6.7） |
+| Endpoint | `{llm.dishtag.base-url}` + `{llm.dishtag.chat-completions-path}` | 路径默认 `/v1/chat/completions`，与体检报告分析模型相同 |
+| 测试环境 `base-url` | `http://higress-http.region-4-c86-test.test-kzx1.cncb/public` | 与体检报告分析模型使用同一个网关；拆分点同样在 `/public` 之后 |
 | 鉴权 | `Authorization: Bearer ${DISHTAG_API_KEY}` | 只由环境变量注入，代码库不保存真值 |
 | 模型 | `llm.model-version-dishtag`，测试环境为 `qwen3-32b-k100` | **同时是 `tagHash` 的输入**，改它等于全量重打标（§9.5.1） |
-| 能力 | 文本生成 / 深度思考 | 「深度思考」直接影响响应解析，见 §13.2.3 |
+| 能力 | 文本生成；请求显式关闭深度思考 | 网关忽略关闭参数时的兼容响应见 §13.2.3 |
 
 **不再有 `user` 字段。** 原方案给 Dify 传固定常量 `health-report-dishtag` 是因为
 Dify 要求该字段非空；OpenAI 兼容的 `/chat/completions` 没有这个必填要求，直接不发。
@@ -4566,6 +2753,7 @@ Dify 要求该字段非空；OpenAI 兼容的 `/chat/completions` 没有这个�
   "model": "qwen3-32b-k100",
   "temperature": 0,
   "stream": false,
+  "chat_template_kwargs": { "enable_thinking": false },
   "messages": [
     { "role": "system", "content": "<prompt/dish_tag.md 正文>" },
     { "role": "user",   "content": "<本批菜品与枚举，见下>" }
@@ -4576,19 +2764,30 @@ Dify 要求该字段非空；OpenAI 兼容的 `/chat/completions` 没有这个�
 **`temperature: 0`**：同一批菜必须得到同一批标签。有采样波动时 `tagHash` 的复用语义
 就自相矛盾了——哈希相同却可能产出不同标签。
 
+**`chat_template_kwargs.enable_thinking: false`**：菜品标签是有限枚举分类，思考过程不进入
+任何业务结果；显式关闭以减少 token、耗时和截断概率。该值固定在客户端请求组装中，
+不提供可被部署误开的配置键。
+
 **两条消息，不是一条。** 提示词正文进 `system`，本批数据进 `user`：
 真源是 `prompt/dish_tag.md`，随 JAR 打包后读取并缓存，**只有一份**（原 D1 方案 a 的实质保留）。
 
 **`userMessage` 由 Java 渲染**，格式严格照提示词的「User（每批填充）」小节。
 这是可穷举输入的确定性字符串拼接，按 `AGENTS.md` §3 本就属于 Java。
 
-**`response_format` 暂不发送。** 平台示例里没有它，网关是否支持 `json_object` 未确认
-（与 §6.2.4 第 9 项同一状态）。**Java 侧的 `DishTagContractValidator` 本来就是最终保证**，
+**本链路（菜品打标）`response_format` 暂不发送。** 平台示例里没有它，网关是否支持
+`json_object` 未确认。**Java 侧的 `DishTagContractValidator` 本来就是最终保证**，
 不依赖服务端的结构化输出；确认支持后再加，属于收紧而非补漏。
 
-#### 13.2.3 响应：⛔ 必须先剥离思考段，再解析 JSON
+> **注意与体检报告分析链路口径不同**：在线三次调用的客户端**已经发送**
+> `response_format = json_object`（沿承旧客户端行为）。网关对该字段的支持
+> **必须在真实端到端联调时验证**——不支持则请求直接 400，届时从
+> `OpenAiCompatibleHealthReportAnalysisModelClient.buildRequestBody` 移除该字段即可。
+> 已列入 §0.4 的联调前核查。
 
-**qwen3 把思考过程内联在 `content` 里，不是单独的 `reasoning_content` 字段**：
+#### 13.2.3 响应：⛔ 关闭思考后仍必须兼容剥离，再解析 JSON
+
+请求已显式关闭深度思考，但网关可能忽略模板参数，旧模板或兼容异常也可能继续产出思考段。
+qwen3 此时会把思考过程内联在 `content` 里，而不是单独的 `reasoning_content` 字段：
 
 ```json
 {
@@ -4625,17 +2824,17 @@ Dify 要求该字段非空；OpenAI 兼容的 `/chat/completions` 没有这个�
 >
 > 取**最后一个** `</think>` 而不是第一个：思考段里可能出现被模型引用的 `</think>` 字面量。
 
-##### 正确性不依赖「思考能不能关掉」
+##### 正确性不依赖网关执行关闭参数
 
-qwen3 支持关闭思考，但**网关是否透传该参数未确认**（列入 §0.4）。
-即使确认支持并关掉了，**剥离逻辑也必须无条件保留**：
-一个部署开关不该成为解析正确性的前提，它被谁改回去都不会有编译错误。
+客户端固定发送关闭参数，但**网关是否透传该参数仍须联调确认**（列入 §0.4）。
+**剥离逻辑必须无条件保留**：网关忽略参数、模型模板回退或兼容行为改变都不会产生编译错误，
+不能让外部能力成为解析正确性的前提。
 
-##### `max_tokens` 要按「思考 + JSON」两段预算
+##### `max_tokens` 以 JSON 为主并为兼容思考段保留余量
 
-一次 LLM-B 调用最多携带 40 道菜（不是 40 个 Redis 集合），其紧凑格式输出本身不大，
-但思考段长度不可控。
-`llm.dishtag.max-tokens` **必须留出思考的余量**，否则会在思考还没结束时被截断，
+一次菜品离线打标调用最多携带 40 道菜（不是 40 个 Redis 集合），其紧凑格式输出本身不大，
+正常情况下只需覆盖最终 JSON；但网关忽略关闭参数时思考段长度仍不可控。
+`llm.dishtag.max-tokens` 仍需保留兼容余量，否则会在思考还没结束时被截断，
 `finish_reason` 变成 `length`，`content` 里连 `</think>` 都没有——**按上面的规则 ③ 整批作废**。
 这是可接受的失败形态（显式失败），但配小了会让整个打标任务批批失败。
 
@@ -4667,17 +2866,18 @@ llm.dishtag.base-url                 ⛔ 无默认值
 llm.model-version-dishtag            ⛔ 无默认值，同时是 tagHash 的输入
 llm.dishtag.api-key                  ⛔ 无默认值，绝不进代码库与日志
 llm.dishtag.chat-completions-path     默认 /v1/chat/completions
-llm.dishtag.max-tokens                必须留出思考段余量，见 §13.2.3
+chat_template_kwargs.enable_thinking  固定 false，不开放配置；剥离逻辑仍保留
+llm.dishtag.max-tokens                以 JSON 为主并为网关忽略关闭参数保留兼容余量，见 §13.2.3
 llm.dishtag.max-request-body-bytes    默认 1MiB，有界写入，见下
 llm.dishtag.max-response-body-bytes   有界读取
 llm.dishtag.connect-timeout-millis    默认 10s
 llm.dishtag.read-timeout-millis       离线批量，可比在线链路宽松
 ```
 
-##### 请求体同样有界，但理由与 LLM-A / OCR 不同
+##### 请求体同样有界，但理由与体检报告分析模型不同
 
-LLM-A 与 OCR 的载荷本身就大（Base64 图像），上限是**常态约束**；
-LLM-B 的载荷是文本，正常单次调用约 17KB（提示词 12.7KB + 最多 40 道菜渲染），
+体检报告分析模型的载荷本身就大（Base64 图像），上限是**常态约束**；
+菜品离线打标模型的载荷是文本，正常单次调用约 17KB（提示词 12.7KB + 最多 40 道菜渲染），
 1MiB 留了约 60 倍余量——**它防的不是常态，是上游数据异常**：
 
 ```
@@ -4695,7 +2895,7 @@ Dish / DishIngredient 只校验非空
 ```java
 // DishTagClient
 catch (RequestTooLargeException exception) {
-    throw new DishTagBatchRejectedException("LLM-B 批次请求体超限，整批作废");
+    throw new DishTagBatchRejectedException("菜品离线打标批次请求体超限，整批作废");
 }
 ```
 
@@ -4705,29 +2905,29 @@ catch (RequestTooLargeException exception) {
 
 也不能翻译成 `DishTagCallException`：请求根本没出过进程，而且重试同一批数据也不会变小。
 
-#### 9.4.2 模型输出契约的落地类（`llm.schema`）
+##### 13.2.5.1 模型输出契约的落地类（`llm.schema`）
 
 ```
-ModelOutputSchemaRegistry   两份 Schema 的唯一加载点；@Component，启动即加载，失败即启动失败
+ModelOutputSchemaRegistry   三份在线 Schema 与一份离线 Schema 的唯一加载点；@Component，启动即加载，失败即启动失败
 ModelOutputSchema           单份契约，只做校验
 ```
 
 **存在的理由是消掉两处重复加载**：`ExtractionSchemaValidator` 与 `DishTagContractValidator`
-原先各有一个 `loadSchema`，两份 Schema 的编译入口因此有两个。
+原先各有一个 `loadSchema`，四份 Schema 的编译入口因此有两个。
 
 > **（2026-09-02）「传输版投影」那一半已删除。** 它原本用于把 Schema 随
-> `response_format=json_schema` 发给模型。实测下来这条路没有价值：**LLM-B 用不了
-> `json_schema`**；LLM-A 侧只有一个候选模型支持，而它剩下的失败是条件约束（`const`），
-> 投影必须剥掉、约束解码看不到。加上条目剔除机制已经把可用性救回来（§4.4-①），
+> `response_format=json_schema` 发给模型。实测下来这条路没有价值：**菜品离线打标模型用不了
+> `json_schema`**；体检报告分析侧只有一个候选模型支持，而它剩下的失败是条件约束（`const`），
+> 投影必须剥掉、约束解码看不到。加上条目剔除机制已经把可用性救回来（§6.5），
 > 那部分只剩「少剔几条」的边际收益，却要每批多付约 6k token。
 >
 > 一整块零生产调用的代码留着比删了危险——后来的人会当它在用而去维护、去同步。
-> 若要恢复，依据记在设计方案 §4.4-①；网关侧的探针 `JsonSchemaGatewayVerificationIT` 保留。
+> 若要恢复，依据记在设计方案 §4.4；网关侧的探针 `JsonSchemaGatewayVerificationIT` 保留。
 
 #### 13.2.6 落地类
 
 ```
-infra.DishTagModelClient              直连接口，只返回 content 原文（含未剥离的思考段）
+infra.DishTagModelClient              直连接口，只返回 content 原文（兼容情况下可能含未剥离的思考段）
 infra.OpenAiCompatibleDishTagClient    实现；不剥离、不校验、不重试
 infra.DishTagConnectionProperties      llm.dishtag.* 连接参数（不含 model，见 §13.2.1）
 llm.dishtag.DishTagPromptProvider      提示词唯一真源，从 JAR 读取并缓存
@@ -4747,24 +2947,21 @@ llm.dishtag.DishTagStartupValidator    启动自检
 `StatusOnlyErrorHandler`（只看状态码、绝不读错误 body）、
 `BoundedResponseExtractor`、`CappedByteArrayOutputStream`、零重试策略。
 
-**不复用**：日志策略。LLM-A 与 OCR 的请求响应含健康数据，正文一个字都不进普通应用日志；
+**不复用**：日志策略。体检报告分析模型的请求响应含健康数据，正文一个字都不进普通应用日志；
 排障期仅可进入 §9.2 默认关闭的独立敏感 DEBUG logger；
-**LLM-B 允许记录完整请求与响应**（§13.2.0）。这是全案唯一的例外，
-写实现时要显式注释出来，避免有人照着 LLM-A 的写法把排障能力一起抄掉。
+**菜品离线打标模型允许记录完整请求与响应**（§13.2.0）。这是全案唯一的例外，
+写实现时要显式注释出来，避免有人照着体检报告分析模型的写法把排障能力一起抄掉。
 
 ### 13.3 交付物与批次的对应
 
 | 交付物 | 产出批次 | 验收 |
 |---|---|---|
 | `sql/schema.sql` | 批次 1 | R54、R54a |
-| `dify/dish_tag.workflow.yml` | 已产出设计稿；批次 7 **开工第一件事是导入控制台做一次往返验证**（§13.2.1） | R55、R55a、R55b、R55c、R56 |
+| `prompt/*.md` + `schema/*.json` 四对生产契约 | 三份在线于批次 5、离线打标于批次 7 | R23、R55a、R55b、R55c、R56b |
 | `sql/alter/*.sql` | 每次结构变更 | 与 §3.1、`schema.sql` **三件一起改**，跑 R54 + R54a |
 
-> **没有 `dify/extraction.workflow.yml`**——LLM-A 直连，不产出 DSL（§6.2.1）。
-
-> **字段路径表已补全（§13.2.1），R55 / R56 可以写成可执行断言。**
-> 但 D4 那条**不写断言**——核查结论是部署级，DSL 里没有对应字段，
-> 硬写出来就是永远为真的空壳，比没有断言更糟。
+> **不产出任何 Dify DSL**——两条模型链路都直连（§6.4、§13.2），
+> R55 / R56 已随之撤销（§13.2.0），版本对齐由 R55a / R55b / R55c 承担。
 
 ---
 
@@ -4784,7 +2981,7 @@ llm.dishtag.DishTagStartupValidator    启动自检
    必须在报告里单独列出 —— 这类改动是 AGENTS.md §7-6 明令禁止的
 ③ §13 的交付物随代码一起交，【不是收尾时补】：
    改了 DDL   → §3.1 + sql/schema.sql + 新增一个 sql/alter/*.sql，三件一起改，跑 R54 + R54a
-   改了 LLM-B 提示词或换模型 → 同步 Dify DSL 的版本号并跑 R55
-   改了 LLM-A 提示词或换模型 → 同步 PromptVersions / DIGEST / 配置项并跑 R55a + R55b
+   改了菜品离线打标提示词或换模型 → 同步 PromptVersions / DIGEST / 配置项并跑 R55b + R55c + R56b
+   改了体检报告分析提示词或换模型 → 同步 PromptVersions / DIGEST / 配置项并跑 R55a + R55b
    —— 这两处漂移都是静默的，靠事后补一定会漏
 ```

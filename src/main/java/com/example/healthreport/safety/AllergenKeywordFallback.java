@@ -2,9 +2,9 @@ package com.example.healthreport.safety;
 
 import com.example.healthreport.constants.AllergenExceptions;
 import com.example.healthreport.constants.AllergenGroup;
+import com.example.healthreport.constants.AllergenGroups;
 import com.example.healthreport.constants.AllergenWord;
 import com.example.healthreport.constants.ReviewStatus;
-import com.example.healthreport.constants.SourceField;
 import com.example.healthreport.dish.Dish;
 import com.example.healthreport.dish.DishIngredient;
 import org.springframework.stereotype.Service;
@@ -20,7 +20,7 @@ public class AllergenKeywordFallback {
      * <p>食材表没有调味料，因此“未命中”绝不推出 NEUTRAL；它只表示本兜底没有新增拒绝。</p>
      */
     public boolean matches(AllergenGroup group, Dish dish) {
-        if (group == null || dish == null || !group.isFoodBorne()) {
+        if (group == null || dish == null || !AllergenGroups.FOOD_BORNE_KEYS.contains(group.getKey())) {
             return false;
         }
         for (AllergenWord word : group.getWordList()) {
@@ -42,8 +42,8 @@ public class AllergenKeywordFallback {
 
     private boolean dishNameExcepted(AllergenGroup group, AllergenWord word, String dishName) {
         for (AllergenExceptions.Rule rule : AllergenExceptions.ALL) {
+            // 例外规则只作用于菜名命中（食材表里的明确命中永远优先，不可被例外覆盖）。
             if (rule.getReviewStatus() == ReviewStatus.REVIEWED
-                    && rule.getSourceField() == SourceField.DISH_NAME
                     && rule.getAllergenKey() == group.getKey()
                     && rule.getMatchWord().equals(word.getMatchWord())
                     && dishName.contains(rule.getExceptionPhrase())) {

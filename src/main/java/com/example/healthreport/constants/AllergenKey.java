@@ -62,7 +62,7 @@ public enum AllergenKey {
 	/** 蟑螂（非食物过敏原，不进菜品链路） */
 	COCKROACH,
 
-	/** 枚举外的过敏原。按 isFoodBorne 拆两条路径处理 */
+	/** 枚举外的过敏原。只展示原文，不参与菜品匹配，Java 不猜其是否食入性 */
 	OTHER;
 
 }

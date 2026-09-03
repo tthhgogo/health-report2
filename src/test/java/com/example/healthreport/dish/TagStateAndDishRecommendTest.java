@@ -1,8 +1,8 @@
 package com.example.healthreport.dish;
 
+import com.example.healthreport.assemble.dishrecommend.DishNameSorter;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendAssembler;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendInput;
-import com.example.healthreport.assemble.sort.DisplayOrder;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -13,32 +13,25 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** R13、R16、R33：五态门槛、过敏标签净化和全量裁决后截断。 */
+/**
+ * R16、R33：拒绝优先净化正向标签、全量裁决后再排序截断。
+ * <p>在线只有 RECOMMEND/REJECT 两个方向（设计方案 §8.9）：五态裁决只存在于凌晨构建，
+ * 原 TagStateResolver / DishDisposition 已随之删除。</p>
+ */
 class TagStateAndDishRecommendTest {
 
-	private final TagStateResolver resolver = new TagStateResolver();
-
-	private final DishRecommendAssembler assembler = new DishRecommendAssembler(resolver, new DisplayOrder());
-
-	@Test
-	void missingRejectCapableDimensionShouldHideEvenWithNutritionRecommendation() {
-		List<TagStateResolver.Fact> factList = Arrays.asList(
-				new TagStateResolver.Fact(TagState.TAG_MISSING, true, true),
-				new TagStateResolver.Fact(TagState.RECOMMEND, false, false));
-
-		assertThat(resolver.resolve(factList)).isEqualTo(DishDisposition.HIDDEN);
-	}
+	private final DishRecommendAssembler assembler = new DishRecommendAssembler(new DishNameSorter());
 
 	@Test
 	void allergyRejectShouldRemoveEveryPositiveTagAndReason() {
-		DishRecommendInput.Match allergy = match(TagState.REJECT, true, true, DishRecommendInput.TagType.ALLERGY,
-				"虾蟹过敏", null);
-		DishRecommendInput.Match nutrition = match(TagState.RECOMMEND, false, false,
-				DishRecommendInput.TagType.NUTRITION, "补铁", "建议补充铁");
+		DishRecommendInput.Match allergy = new DishRecommendInput.Match(true, "虾蟹过敏", null);
+		DishRecommendInput.Match nutrition = new DishRecommendInput.Match(false, "补铁", "建议补充铁");
 
 		DishRecommendAssembler.Result result = assembler.assemble(new DishRecommendInput(false, true, Collections
 			.singletonList(new DishRecommendInput.Candidate(1L, "菠菜虾仁", Arrays.asList(allergy, nutrition)))));
 
+		// 拒绝优先：进不推荐列表，且不携带任何正向标签或理由。
+		assertThat(result.getRecommendList()).isEmpty();
 		assertThat(result.getRejectList()).hasSize(1);
 		assertThat(result.getRejectList().get(0).getNotRecommendTagList()).containsExactly("虾蟹过敏");
 	}
@@ -50,13 +43,13 @@ class TagStateAndDishRecommendTest {
 		candidateList.add(recommended(2L, "冬瓜"));
 		candidateList.add(recommended(3L, "番茄"));
 		candidateList.add(new DishRecommendInput.Candidate(4L, "菠菜",
-				Arrays.asList(
-						match(TagState.RECOMMEND, false, false, DishRecommendInput.TagType.NUTRITION, "补铁", "建议补充铁"),
-						match(TagState.REJECT, true, true, DishRecommendInput.TagType.ALLERGY, "过敏", null))));
+				Arrays.asList(new DishRecommendInput.Match(false, "补铁", "建议补充铁"),
+						new DishRecommendInput.Match(true, "过敏", null))));
 		candidateList.add(recommended(5L, "油菜"));
 
 		DishRecommendAssembler.Result result = assembler.assemble(new DishRecommendInput(false, true, candidateList));
 
+		// 先全量裁决再截断：菠菜被拒后，前三名推荐是拼音序的白菜、冬瓜、番茄。
 		assertThat(result.getRecommendList()).extracting("dishName").containsExactly("白菜", "冬瓜", "番茄");
 		assertThat(result.getRejectList()).extracting("dishName").containsExactly("菠菜");
 		assertThat(result.getRecommendList()).hasSize(3);
@@ -74,20 +67,14 @@ class TagStateAndDishRecommendTest {
 	}
 
 	@Test
-	void recommendationWithoutEvidenceOrRawTextShouldFailSafe() {
-		assertThatThrownBy(() -> new DishRecommendInput.Match(TagState.RECOMMEND, false, false,
-				DishRecommendInput.TagType.NUTRITION, "补充", null))
+	void recommendationWithoutRawTextShouldFailSafe() {
+		assertThatThrownBy(() -> new DishRecommendInput.Match(false, "补充", null))
 			.isInstanceOf(IllegalArgumentException.class);
 	}
 
 	private DishRecommendInput.Candidate recommended(long id, String name) {
 		return new DishRecommendInput.Candidate(id, name, Collections.singletonList(
-				match(TagState.RECOMMEND, false, false, DishRecommendInput.TagType.NUTRITION, "补充", "建议补充")));
-	}
-
-	private DishRecommendInput.Match match(TagState state, boolean rejectCapable, boolean allergy,
-			DishRecommendInput.TagType tagType, String text, String rawText) {
-		return new DishRecommendInput.Match(state, rejectCapable, allergy, tagType, text, rawText);
+				new DishRecommendInput.Match(false, "补充", "建议补充")));
 	}
 
 }

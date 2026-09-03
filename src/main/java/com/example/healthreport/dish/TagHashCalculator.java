@@ -1,6 +1,6 @@
 package com.example.healthreport.dish;
 
-import com.example.healthreport.parse.segment.TextNormalizer;
+import com.example.healthreport.support.text.TextNormalizer;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -73,7 +73,7 @@ public class TagHashCalculator {
     }
 
     private String normalize(String value) {
-        return textNormalizer.normalize(value).getNormalizedText();
+        return textNormalizer.normalize(value);
     }
 
     private String weightText(BigDecimal weightG) {

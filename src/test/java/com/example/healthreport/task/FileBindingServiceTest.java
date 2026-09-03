@@ -63,9 +63,9 @@ class FileBindingServiceTest {
 	}
 
 	@Test
-	void shouldFailTransactionOutPrecheckAtSixtyOnePagesWithoutLockOrWrite() {
+	void shouldFailTransactionOutPrecheckAtThirtyOnePagesWithoutLockOrWrite() {
 		List<String> fileIdList = Arrays.asList(FILE_1, FILE_2);
-		List<FileBindingRecord> recordList = Arrays.asList(record(FILE_1, 30), record(FILE_2, 31));
+		List<FileBindingRecord> recordList = Arrays.asList(record(FILE_1, 15), record(FILE_2, 16));
 		when(fileService.findForPrecheck(fileIdList, USER_ID, COMPANY_ID)).thenReturn(recordList);
 
 		assertFailCode(() -> service.precheckFiles(fileIdList, USER_ID, COMPANY_ID), FailCode.PAGE_LIMIT_EXCEEDED);
@@ -75,9 +75,9 @@ class FileBindingServiceTest {
 	}
 
 	@Test
-	void shouldAllowExactlySixtyPages() {
+	void shouldAllowExactlyThirtyPages() {
 		List<String> fileIdList = Arrays.asList(FILE_1, FILE_2);
-		List<FileBindingRecord> recordList = Arrays.asList(record(FILE_1, 30), record(FILE_2, 30));
+		List<FileBindingRecord> recordList = Arrays.asList(record(FILE_1, 15), record(FILE_2, 15));
 		when(fileService.findForPrecheck(fileIdList, USER_ID, COMPANY_ID)).thenReturn(recordList);
 
 		service.precheckFiles(fileIdList, USER_ID, COMPANY_ID);

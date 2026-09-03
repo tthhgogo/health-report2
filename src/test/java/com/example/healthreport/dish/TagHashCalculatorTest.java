@@ -1,6 +1,6 @@
 package com.example.healthreport.dish;
 
-import com.example.healthreport.parse.segment.TextNormalizer;
+import com.example.healthreport.support.text.TextNormalizer;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

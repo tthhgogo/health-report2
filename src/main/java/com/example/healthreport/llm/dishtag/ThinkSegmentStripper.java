@@ -3,8 +3,9 @@ package com.example.healthreport.llm.dishtag;
 /**
  * 从 qwen3 的 {@code content} 里剥离思考段，取出真正的 JSON。
  *
- * <p>该模型把思考过程<b>内联在 {@code content} 里</b>，不是单独的 {@code reasoning_content}
- * 字段，形如 {@code <think>…</think>\n\n{ JSON }}。因此 {@code content} 不能直接解析。</p>
+ * <p>请求已经显式关闭深度思考；网关忽略参数或模板回退时，该模型仍会把思考过程
+ * <b>内联在 {@code content} 里</b>，不是单独的 {@code reasoning_content} 字段，
+ * 形如 {@code <think>…</think>\n\n{ JSON }}。因此 {@code content} 仍不能直接解析。</p>
  *
  * <p><b>为什么规则必须这么严。</b> 思考段里极常出现示例 JSON——模型会在里面自言自语地
  * 试写输出格式。任何「找第一个 <code>{</code> 到最后一个 <code>}</code>」式的宽松提取，

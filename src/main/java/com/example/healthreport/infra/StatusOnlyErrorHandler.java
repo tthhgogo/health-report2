@@ -21,6 +21,6 @@ public class StatusOnlyErrorHandler implements ResponseErrorHandler {
     @Override
     public void handleError(ClientHttpResponse response) throws IOException {
         int status = response.getRawStatusCode();
-        throw new LlmCallException(FailCode.SERVER_ERROR, status, 0L);
+        throw new HealthReportAnalysisCallException(FailCode.SERVER_ERROR, status);
     }
 }

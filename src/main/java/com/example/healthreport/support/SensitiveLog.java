@@ -35,15 +35,6 @@ public final class SensitiveLog {
     private SensitiveLog() {
     }
 
-    /**
-     * 是否已开启隐私正文日志。
-     * <p>调用方在<b>拼接代价不为零</b>时（例如拼请求体摘要）先判这个，
-     * 避免关闭状态下仍然付出字符串拼接成本。</p>
-     */
-    public static boolean enabled() {
-        return LOG.isDebugEnabled();
-    }
-
     /** 记录一条隐私正文；参数占位符与 SLF4J 一致。 */
     public static void debug(String format, Object... argumentArray) {
         LOG.debug(format, argumentArray);

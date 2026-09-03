@@ -41,7 +41,9 @@ public class AnalysisExecutorProperties {
      */
     public int calculateWorkerCount() {
         validate();
-        int quotaUpperBound = modelConcurrencyQuota / (4 * instanceCount);
+        // 单任务同一时刻只有 1 个在途模型请求（三阶段串行，P0-33c）；
+        // 旧的 ÷4 是批次并发时代每任务占 4 个配额的口径，批次池删除后不再成立。
+        int quotaUpperBound = modelConcurrencyQuota / instanceCount;
         int memoryUpperBound = (heapBudgetMb - webReservedMb) / taskPeakMb;
         int workerCount = Math.min(quotaUpperBound, memoryUpperBound);
         if (workerCount < 1) {

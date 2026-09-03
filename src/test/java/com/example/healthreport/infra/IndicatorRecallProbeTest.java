@@ -1,6 +1,6 @@
 package com.example.healthreport.infra;
 
-import com.example.healthreport.parse.segment.TextNormalizer;
+import com.example.healthreport.support.text.TextNormalizer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.networknt.schema.JsonSchema;
@@ -115,8 +115,8 @@ class IndicatorRecallProbeTest {
                 .as("gateway HTTP status; response body saved under " + outputDir).isEqualTo(200);
 
         // 复用生产解析：finish_reason 非 stop 判死、content / reasoning_content 双通道同一套裁决。
-        String content = new OpenAiCompatibleExtractionModelClient(objectMapper, properties(baseUrl, model, apiKey))
-                .extractContent(result.envelope, 0);
+        String content = new OpenAiCompatibleHealthReportAnalysisModelClient(objectMapper, properties(baseUrl, model, apiKey))
+                .extractContent(result.envelope, "PROBE");
         JsonNode root = objectMapper.readTree(content);
         Files.write(outputDir.resolve("indicators.json"),
                 objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
@@ -402,8 +402,7 @@ class IndicatorRecallProbeTest {
 
     /** 比较前统一规范化并去掉全部空白：全角/半角、NFKC 差异不该算成漏抽。 */
     private String key(String text) {
-        return textNormalizer.normalize(text == null ? "" : text)
-                .getNormalizedText().replaceAll("\\s+", "").toLowerCase();
+        return textNormalizer.normalize(text == null ? "" : text).replaceAll("\\s+", "").toLowerCase();
     }
 
     // ---------- 读写 ----------
@@ -552,8 +551,8 @@ class IndicatorRecallProbeTest {
         }
     }
 
-    private ExtractionProperties properties(String baseUrl, String model, String apiKey) {
-        ExtractionProperties extractionProperties = new ExtractionProperties();
+    private HealthReportAnalysisModelProperties properties(String baseUrl, String model, String apiKey) {
+        HealthReportAnalysisModelProperties extractionProperties = new HealthReportAnalysisModelProperties();
         extractionProperties.setBaseUrl(baseUrl);
         extractionProperties.setModel(model);
         extractionProperties.setApiKey(apiKey);

@@ -47,8 +47,8 @@ class ContentConstantsReviewTest {
 	void molluskAndSesameShouldBeFormalFoodBorneGroups() {
 		assertThat(AllergenGroups.foodBorneGroups()).hasSize(13);
 		assertThat(AllergenGroups.ALL).hasSize(18);
-		assertThat(AllergenGroups.MOLLUSK.isFoodBorne()).isTrue();
-		assertThat(AllergenGroups.SESAME.isFoodBorne()).isTrue();
+		assertThat(AllergenGroups.FOOD_BORNE_KEYS.contains(AllergenKey.MOLLUSK)).isTrue();
+		assertThat(AllergenGroups.FOOD_BORNE_KEYS.contains(AllergenKey.SESAME)).isTrue();
 		Set<AllergenKey> expectedKeySet = EnumSet.allOf(AllergenKey.class);
 		expectedKeySet.remove(AllergenKey.OTHER);
 		assertThat(AllergenGroups.ALL.keySet()).containsExactlyElementsOf(expectedKeySet);
@@ -76,10 +76,11 @@ class ContentConstantsReviewTest {
 		for (AllergenKey key : AllergenKey.values()) {
 			allergenKeySet.add(key.name());
 		}
-		JsonNode extractionSchema = objectMapper.readTree(Paths.get("schema/extraction_output.schema.json").toFile());
-		assertThat(enumValueSet(extractionSchema.at("/$defs/allergenKey/enum"))).isEqualTo(allergenKeySet);
+		JsonNode dietTagsSchema = objectMapper.readTree(Paths.get("schema/diet_tags.schema.json").toFile());
+		// 新契约 enumKey 为开放串，枚举归属由 StructuralValidator 在 Java 侧校验（R21p）。
+		assertThat(dietTagsSchema.at("/properties/reject").isMissingNode()).isFalse();
 
-		String extractionPrompt = new String(Files.readAllBytes(Paths.get("prompt/extraction.md")),
+		String extractionPrompt = new String(Files.readAllBytes(Paths.get("prompt/diet-tags.md")),
 				StandardCharsets.UTF_8);
 		String dishTagPrompt = new String(Files.readAllBytes(Paths.get("prompt/dish_tag.md")), StandardCharsets.UTF_8);
 		assertThat(dishTagPrompt).contains("MOLLUSK", "SESAME");

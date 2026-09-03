@@ -1,11 +1,7 @@
 package com.example.healthreport.assemble.dishrecommend;
 
-import com.example.healthreport.assemble.sort.DisplayOrder;
 import com.example.healthreport.constants.DisclaimerConstants;
 import com.example.healthreport.constants.EmptyStateConstants;
-import com.example.healthreport.dish.DishDisposition;
-import com.example.healthreport.dish.TagState;
-import com.example.healthreport.dish.TagStateResolver;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Getter;
 import org.springframework.stereotype.Service;
@@ -23,13 +19,10 @@ public class DishRecommendAssembler {
 	/** 推荐与不推荐列表各最多展示三道菜。 */
 	private static final int MAX_DISPLAY_DISHES = 3;
 
-	private final TagStateResolver tagStateResolver;
+	private final DishNameSorter dishNameSorter;
 
-	private final DisplayOrder displayOrder;
-
-	public DishRecommendAssembler(TagStateResolver tagStateResolver, DisplayOrder displayOrder) {
-		this.tagStateResolver = tagStateResolver;
-		this.displayOrder = displayOrder;
+	public DishRecommendAssembler(DishNameSorter dishNameSorter) {
+		this.dishNameSorter = dishNameSorter;
 	}
 
 	/** 先对全部候选完成拒绝优先裁决，再分别排序并截断。 */
@@ -43,16 +36,16 @@ public class DishRecommendAssembler {
 		List<RecommendedDishCard> recommendCardList = new ArrayList<RecommendedDishCard>();
 		List<NotRecommendedDishCard> rejectCardList = new ArrayList<NotRecommendedDishCard>();
 		for (DishRecommendInput.Candidate candidate : input.getCandidateList()) {
-			DishDisposition disposition = tagStateResolver.resolve(facts(candidate.getMatchList()));
-			if (disposition == DishDisposition.RECOMMENDED) {
-				recommendCardList.add(recommendedCard(candidate));
-			}
-			else if (disposition == DishDisposition.NOT_RECOMMENDED) {
+			// 拒绝优先：任一方向命中拒绝即进不推荐列表，正向命中不可恢复（需求 §8-3）。
+			if (hasReject(candidate)) {
 				rejectCardList.add(rejectedCard(candidate));
 			}
+			else if (!candidate.getMatchList().isEmpty()) {
+				recommendCardList.add(recommendedCard(candidate));
+			}
 		}
-		recommendCardList = truncate(displayOrder.sortDishByPinyin(recommendCardList));
-		rejectCardList = truncate(displayOrder.sortDishByPinyin(rejectCardList));
+		recommendCardList = truncate(dishNameSorter.sortByPinyin(recommendCardList));
+		rejectCardList = truncate(dishNameSorter.sortByPinyin(rejectCardList));
 
 		String emptyState = null;
 		if (!input.isFormalAdvicePresent()) {
@@ -64,19 +57,20 @@ public class DishRecommendAssembler {
 		return new Result(recommendCardList, rejectCardList, emptyState, DisclaimerConstants.MODULE_FOUR);
 	}
 
-	private List<TagStateResolver.Fact> facts(List<DishRecommendInput.Match> matchList) {
-		List<TagStateResolver.Fact> factList = new ArrayList<TagStateResolver.Fact>(matchList.size());
-		for (DishRecommendInput.Match match : matchList) {
-			factList.add(new TagStateResolver.Fact(match.getState(), match.isRejectCapable(), match.isAllergy()));
+	private boolean hasReject(DishRecommendInput.Candidate candidate) {
+		for (DishRecommendInput.Match match : candidate.getMatchList()) {
+			if (match.isReject()) {
+				return true;
+			}
 		}
-		return factList;
+		return false;
 	}
 
 	private RecommendedDishCard recommendedCard(DishRecommendInput.Candidate candidate) {
 		Set<String> recommendTagSet = new LinkedHashSet<String>();
 		Set<String> recommendReasonSet = new LinkedHashSet<String>();
 		for (DishRecommendInput.Match match : candidate.getMatchList()) {
-			if (match.getState() == TagState.RECOMMEND) {
+			if (!match.isReject()) {
 				recommendTagSet.add(match.getTagText());
 				recommendReasonSet.add(match.getRawText());
 			}
@@ -88,7 +82,7 @@ public class DishRecommendAssembler {
 	private NotRecommendedDishCard rejectedCard(DishRecommendInput.Candidate candidate) {
 		Set<String> rejectTagSet = new LinkedHashSet<String>();
 		for (DishRecommendInput.Match match : candidate.getMatchList()) {
-			if (match.getState() == TagState.REJECT) {
+			if (match.isReject()) {
 				rejectTagSet.add(match.getTagText());
 			}
 		}
@@ -126,7 +120,7 @@ public class DishRecommendAssembler {
 
 	/** 推荐菜输出：只返回菜名、推荐标签与报告原文理由。 */
 	@Getter
-	public static final class RecommendedDishCard implements DisplayOrder.DishNameItem {
+	public static final class RecommendedDishCard implements DishNameSorter.DishNameItem {
 
 		@JsonIgnore
 		private final long dishId;
@@ -149,7 +143,7 @@ public class DishRecommendAssembler {
 
 	/** 不推荐菜输出：只返回菜名与全部命中的负向标签。 */
 	@Getter
-	public static final class NotRecommendedDishCard implements DisplayOrder.DishNameItem {
+	public static final class NotRecommendedDishCard implements DishNameSorter.DishNameItem {
 
 		@JsonIgnore
 		private final long dishId;
