@@ -171,11 +171,11 @@ DishQueryService       查询当日在架菜品与食材
 - 捕获后重抛或包装的非业务异常，错误日志必须把异常对象作为最后一个参数
   （`log.error("文件解析异常", exception);`），只记 `getMessage()` 不够。
 - 禁止 `System.out` / `System.err` / `printStackTrace`。
-- **普通日志内容白名单**：普通应用 logger 绝不记录报告原文、证据文本、OCR 文本、姓名、
+- **普通日志内容白名单**：普通应用 logger 绝不记录报告原文、证据文本、模型响应正文、姓名、
   原始过敏或医嘱文本、健康数据与凭证。唯一例外是上述体检隐私内容可进入独立
   `HEALTH_REPORT_SENSITIVE` logger 的 DEBUG 事件；该 logger 默认 `OFF`，仅限排障期临时开启，
   且不得在同一事件中携带 taskId / userId。凭证和图片字节在任何 logger、任何级别都禁止记录。
-  LLM-A、OCR 的完整内容仅允许走该独立敏感 logger；仅处理公开菜品数据且不含用户与健康信息的
+  体检报告分析模型的完整内容仅允许走该独立敏感 logger；仅处理公开菜品数据且不含用户与健康信息的
   LLM-B 链路，允许在自己的 DEBUG 日志中记录完整请求响应。任务与用户标识可用于普通日志关联，
   但不得进 URL 查询串或分享链接。
 

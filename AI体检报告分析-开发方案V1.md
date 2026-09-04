@@ -1945,7 +1945,7 @@ taskId / userId 仅用于普通日志关联，也不得进 URL 查询串或分�
 statusConflictCount / foodBorneConflictCount / normalAdmitSuspectCount
         —— 2026-08-25 随三张语义词表一起移入离线评测（§11.4）
 
-schemaMissCount / evidenceMissCount / ocrFuzzyMatchCount /
+schemaMissCount / evidenceMissCount /
 allergenSuspectMissCount / allergenPositiveUncoveredCount / allergenUnknownCount /
 adviceOtherCount / sectionRefMissCount / sectionUnknownCount /
 highRiskSuppressedCount / glyphLevelPdfCount / residualNonStandardCount /
@@ -1953,7 +1953,7 @@ statusJudgedByModelCount
         —— 2026-08-27 因只写不读整体下线
 ```
 
-**下线理由**：这 13 个计数每个都有自增点，却**没有任何读取点**——
+**下线理由**：这些计数每个都有自增点，却**没有任何读取点**——
 既不进日志、也没有导出方式，`src/main` 里连一次 getter 调用都没有，只有单测在读。
 读不到的计数不提供信息，只增加一处并发状态与一处维护负担。
 

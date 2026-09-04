@@ -107,23 +107,23 @@ class TaskResultCacheTest {
 
     private void assertR48SafePayload(String resultJson, List<String> prohibitedMarkerList) {
         assertThat(resultJson).doesNotContain("\"patients\"", "\"patientName\"",
-                "\"gender\"", "\"ocrText\"", "\"segments\"");
+                "\"gender\"", "\"reportFullText\"", "\"segments\"");
         for (String prohibitedMarker : prohibitedMarkerList) {
             assertThat(resultJson).doesNotContain(prohibitedMarker);
         }
     }
 
-    /** 证明 R48 断言会拒绝身份字段和完整 OCR 字段的测试载荷。 */
+    /** 证明 R48 断言会拒绝身份字段和完整报告全文字段的测试载荷。 */
     @Getter
     private static final class UnsafeRedisPayload {
         private final String patientName;
         private final String gender;
-        private final String ocrText;
+        private final String reportFullText;
 
-        private UnsafeRedisPayload(String patientName, String gender, String ocrText) {
+        private UnsafeRedisPayload(String patientName, String gender, String reportFullText) {
             this.patientName = patientName;
             this.gender = gender;
-            this.ocrText = ocrText;
+            this.reportFullText = reportFullText;
         }
     }
 }

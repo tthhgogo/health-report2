@@ -196,7 +196,7 @@ class AnalysisTaskWorkerTest {
 	void r49WorkerFailureLogsShouldExcludeSensitiveExceptionMessages() {
 		String taskId = "123e4567-e89b-12d3-a456-426614174000";
 		List<String> prohibitedMarkerList = Arrays.asList("R49_REPORT_PAYLOAD_TOKEN", "R49_PERSON_NAME_TOKEN",
-				"R49_OCR_TOKEN", "R49_HEALTH_TOKEN", "R49_CREDENTIAL_TOKEN", "R49_MODEL_BODY_TOKEN",
+				"R49_REPORT_TEXT_TOKEN", "R49_HEALTH_TOKEN", "R49_CREDENTIAL_TOKEN", "R49_MODEL_BODY_TOKEN",
 				"R49_ORIGIN_NAME_TOKEN");
 		TaskStateService stateService = mock(TaskStateService.class);
 		TaskResourceCleanupService cleanupService = mock(TaskResourceCleanupService.class);

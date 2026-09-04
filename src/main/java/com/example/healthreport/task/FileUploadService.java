@@ -147,8 +147,8 @@ public class FileUploadService {
 	}
 
 	private void assertByteLimit(int contentLength, ContentType contentType) {
-		// OCR 退出后图片上限只剩产品口径：模型请求体的约束由压缩器（单页 ≤1MiB）
-		// 与客户端请求体上限承担，上传原始字节数与请求体积已经解耦，不再反推。
+		// 图片上传采用产品口径；模型请求体约束由压缩器（单页 ≤1MiB）与客户端上限承担，
+		// 上传原始字节数与请求体积已经解耦，不再反推。
 		long maxBytes = contentType == ContentType.JPG || contentType == ContentType.PNG
 				? PRODUCT_IMAGE_MAX_BYTES : DOCUMENT_MAX_BYTES;
 		if ((long) contentLength > maxBytes) {

@@ -38,11 +38,8 @@ import static org.mockito.Mockito.when;
 @SpringBootTest(classes = HealthReportApplication.class,
 		properties = { "spring.datasource.url=jdbc:h2:mem:lifecycle;MODE=MySQL;DB_CLOSE_DELAY=-1",
 				"spring.datasource.driver-class-name=org.h2.Driver", "spring.datasource.username=sa",
-				"spring.datasource.password=", "spring.main.web-application-type=none", "ocr.base-url=http://127.0.0.1",
-				"ocr.model=test-ocr-model", "ocr.api-key=test-ocr-api-key", "ocr.max-encoded-image-bytes=8388608",
-				"ocr.max-request-body-bytes=12582912", "ocr.request-encoding=JSON_BASE64",
-				"ocr.accepts-encoded-bytes=true", "ocr.applies-exif-orientation=true",
-				"ocr.returns-image-dimensions=true", "llm.dishtag.base-url=http://127.0.0.1",
+				"spring.datasource.password=", "spring.main.web-application-type=none",
+				"llm.dishtag.base-url=http://127.0.0.1",
 				"llm.model-version-dishtag=test-dishtag-model", "llm.dishtag.api-key=test-dishtag-api-key",
 				"llm.extraction.base-url=http://127.0.0.1", "llm.model-version-extraction=test-model",
 				"llm.extraction.api-key=test-api-key" })

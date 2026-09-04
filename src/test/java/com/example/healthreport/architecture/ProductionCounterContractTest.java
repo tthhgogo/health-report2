@@ -31,11 +31,11 @@ class ProductionCounterContractTest {
      * 曾经存在过、现已全部下线的计数名，禁止以任何形式重新出现。
      *
      * <p>前三个是 2026-08-25 随语义词表一起移入离线评测的；
-     * 其余 13 个是 2026-08-27 因只写不读整体下线的。</p>
+     * 其余计数是 2026-08-27 因只写不读整体下线的。</p>
      */
     private static final Set<String> RETIRED_COUNTER_NAME_SET = new HashSet<String>(Arrays.asList(
             "statusConflictCount", "foodBorneConflictCount", "normalAdmitSuspectCount",
-            "schemaMissCount", "evidenceMissCount", "ocrFuzzyMatchCount",
+            "schemaMissCount", "evidenceMissCount",
             "allergenSuspectMissCount", "allergenPositiveUncoveredCount",
             "allergenUnknownCount", "adviceOtherCount", "sectionRefMissCount",
             "sectionUnknownCount", "highRiskSuppressedCount", "glyphLevelPdfCount",

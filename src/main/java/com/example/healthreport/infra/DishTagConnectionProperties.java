@@ -17,7 +17,7 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "llm.dishtag")
 public class DishTagConnectionProperties {
 
-    /** 网关根地址，必填，与 LLM-A、OCR 是同一个网关但各配各的。 */
+    /** 网关根地址，必填；与体检报告分析模型共用网关，但必须独立配置。 */
     private String baseUrl;
 
     /** OpenAI 兼容的对话补全路径。 */
@@ -35,8 +35,8 @@ public class DishTagConnectionProperties {
 
     /**
      * 请求体上限。
-     * <p>与 LLM-A / OCR 同样用有界缓冲，理由却不同：那两条的载荷本身就大（Base64 图像），
-     * 这条的载荷是文本，正常一批约 17KB（提示词约 12.7KB + 40 道菜的渲染）。
+     * <p>体检报告分析请求包含 Base64 图像，载荷本身较大；本链路载荷是文本，
+     * 正常一批约 17KB（提示词约 12.7KB + 40 道菜的渲染）。
      * 1MiB 留了约 60 倍余量，<b>它防的不是常态而是上游数据异常</b>——
      * {@code Dish} 与 {@code DishIngredient} 只校验非空，菜名和食材名长度、
      * 单菜食材条数都没有上限，一次数据迁移事故就能造出巨大的批次。</p>

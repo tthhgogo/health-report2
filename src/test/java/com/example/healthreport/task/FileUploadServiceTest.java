@@ -108,7 +108,7 @@ class FileUploadServiceTest {
 
 	@Test
 	void shouldApplyProductImageLimitBeforeStorage() {
-		// OCR 退出后图片上限只剩产品口径 10MB；模型请求体约束由压缩器与客户端上限承担。
+		// 图片上传采用产品口径 10MB；模型请求体约束由压缩器与客户端上限承担。
 		byte[] contentBytes = new byte[11 * 1024 * 1024];
 		contentBytes[0] = (byte) 0xFF;
 		contentBytes[1] = (byte) 0xD8;
@@ -184,7 +184,7 @@ class FileUploadServiceTest {
 	void r49UploadFailureLogsShouldExcludeAllSensitiveMarkersAndOriginName() {
 		String originNameMarker = "R49_ORIGIN_NAME_TOKEN";
 		List<String> prohibitedMarkerList = Arrays.asList(originNameMarker, "R49_REPORT_PAYLOAD_TOKEN",
-				"R49_PERSON_NAME_TOKEN", "R49_OCR_TOKEN", "R49_HEALTH_TOKEN", "R49_CREDENTIAL_TOKEN",
+				"R49_PERSON_NAME_TOKEN", "R49_REPORT_TEXT_TOKEN", "R49_HEALTH_TOKEN", "R49_CREDENTIAL_TOKEN",
 				"R49_MODEL_BODY_TOKEN");
 		byte[] contentBytes = new byte[] { 1 };
 		MockMultipartFile file = new MockMultipartFile("file", originNameMarker, "application/octet-stream",

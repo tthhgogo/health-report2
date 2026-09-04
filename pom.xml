@@ -192,7 +192,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <!-- 性能与真实 OCR 门禁必须显式选择，普通单测不得误报为已执行。 -->
+                    <!-- 性能与真实模型能力探针必须显式选择，普通单测不得误报为已执行。 -->
                     <excludedGroups>pre-release-only,image-probe</excludedGroups>
                 </configuration>
             </plugin>
