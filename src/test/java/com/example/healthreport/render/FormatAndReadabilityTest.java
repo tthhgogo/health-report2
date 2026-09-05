@@ -1,5 +1,6 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,7 +18,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * 格式判定与读取边界回归测试。
- * <p>R43b12：DOC/DOCX 识别即拒（UNSUPPORTED_FORMAT），且 DOCX 不得误判为损坏的 OFD。</p>
+ * <p>R43b12（2026-09-05 改版）：DOCX 按内容识别为 DOCX 并进入排版转换；
+ * 旧版 DOC 与普通 ZIP 识别即拒（UNSUPPORTED_FORMAT）；残缺 DOCX 容器在预检按不可读拒绝。</p>
  */
 class FormatAndReadabilityTest {
 
@@ -30,7 +32,7 @@ class FormatAndReadabilityTest {
         zipBombGuard = new ZipBombGuard();
         ImageContentInspector imageContentInspector = new ImageContentInspector();
         formatDetector = new FormatDetector(zipBombGuard);
-        precheckService = new CapacityPrecheckService(imageContentInspector);
+        precheckService = new CapacityPrecheckService(imageContentInspector, new DocxToPdfConverter());
     }
 
     @Test
@@ -39,17 +41,26 @@ class FormatAndReadabilityTest {
         assertDetectedAndReadable(SyntheticFileFactory.image("jpg", 100, 100), ContentType.JPG);
         assertDetectedAndReadable(SyntheticFileFactory.image("png", 100, 100), ContentType.PNG);
         assertDetectedAndReadable(SyntheticFileFactory.ofd(1), ContentType.OFD);
+        if (DocxToPdfConverter.cjkFontEnvironmentAvailable()) {
+            assertDetectedAndReadable(SyntheticFileFactory.validDocx("合成用例段落"), ContentType.DOCX);
+        }
     }
 
-    /** R43b12：DOC 与 DOCX 均返回 UNSUPPORTED_FORMAT，不落 file 行、不存对象。 */
+    /** R43b12（2026-09-05 改版）：DOCX 识别为 DOCX；DOC 识别即拒；残缺 DOCX 容器预检不可读。 */
     @Test
-    void docAndDocxMustBeRejectedAtDetection() throws Exception {
-        assertRejectedAsUnsupported(SyntheticFileFactory.docx(1, 0));
-        assertRejectedAsUnsupported(SyntheticFileFactory.emptyDocx());
-        assertRejectedAsUnsupported(SyntheticFileFactory.oldDoc());
-        // DOCX 是 ZIP 容器：必须给「暂不支持该格式」，不得误判成损坏的 OFD 报「文件无法读取」。
-        // OFD 同为 ZIP 容器，正常通过。
+    void docxIsAcceptedWhileDocAndBrokenContainersAreRejected() throws Exception {
+        assertThat(formatDetector.detect(SyntheticFileFactory.validDocx("合成"))).isEqualTo(ContentType.DOCX);
+        // ZIP 容器互不误判：OFD 仍为 OFD，不因 DOCX 放行而混淆。
         assertThat(formatDetector.detect(SyntheticFileFactory.ofd(1))).isEqualTo(ContentType.OFD);
+        assertRejectedAsUnsupported(SyntheticFileFactory.oldDoc());
+
+        // 残缺容器：够得上 DOCX 识别（含 word/document.xml），但 docx4j 无法排版——
+        // 按「文件无法读取」拒绝，不是「暂不支持该格式」。
+        byte[] brokenDocx = SyntheticFileFactory.docx(1, 0);
+        assertThat(formatDetector.detect(brokenDocx)).isEqualTo(ContentType.DOCX);
+        assertThatThrownBy(() -> precheckService.precheckPages(brokenDocx, ContentType.DOCX))
+                .isInstanceOfSatisfying(HealthReportException.class,
+                        exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_UNREADABLE));
     }
 
     @Test
@@ -68,7 +79,8 @@ class FormatAndReadabilityTest {
         ImageContentInspector imageContentInspector = mock(ImageContentInspector.class);
         when(imageContentInspector.readDimensions(any(byte[].class)))
                 .thenReturn(new ImageDimensions(10000, 8001));
-        CapacityPrecheckService checker = new CapacityPrecheckService(imageContentInspector);
+        CapacityPrecheckService checker = new CapacityPrecheckService(imageContentInspector,
+                new DocxToPdfConverter());
 
         assertThatThrownBy(() -> checker.precheckPages(new byte[]{1}, ContentType.PNG))
                 .isInstanceOfSatisfying(HealthReportException.class,

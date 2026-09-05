@@ -1,9 +1,12 @@
 package com.example.healthreport.support;
 
+import io.swagger.annotations.ApiModel;
+
 /**
  * 部分结果的主降级原因（设计方案 §4.4）。
  * <p>单值列；两类同时发生时取 {@link #DIET_TAG_DROPPED}——它携带「模块四已抑制」的行为后果。</p>
  */
+@ApiModel(value = "PartialReason", description = "部分结果的主降级原因；两类同时发生时取 DIET_TAG_DROPPED")
 public enum PartialReason {
 
     /**

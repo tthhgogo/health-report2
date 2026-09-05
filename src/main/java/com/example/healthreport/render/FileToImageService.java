@@ -1,5 +1,6 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.render.image.UploadedImageAdapter;
 import com.example.healthreport.render.ofd.OfdPageRenderer;
 import com.example.healthreport.render.pdf.PdfPageRenderer;
@@ -32,15 +33,18 @@ public class FileToImageService {
     private final OfdPageRenderer ofdPageRenderer;
     private final UploadedImageAdapter uploadedImageAdapter;
     private final ExtractionImageCompressor extractionImageCompressor;
+    private final DocxToPdfConverter docxToPdfConverter;
 
     public FileToImageService(PdfPageRenderer pdfPageRenderer,
                               OfdPageRenderer ofdPageRenderer,
                               UploadedImageAdapter uploadedImageAdapter,
-                              ExtractionImageCompressor extractionImageCompressor) {
+                              ExtractionImageCompressor extractionImageCompressor,
+                              DocxToPdfConverter docxToPdfConverter) {
         this.pdfPageRenderer = pdfPageRenderer;
         this.ofdPageRenderer = ofdPageRenderer;
         this.uploadedImageAdapter = uploadedImageAdapter;
         this.extractionImageCompressor = extractionImageCompressor;
+        this.docxToPdfConverter = docxToPdfConverter;
     }
 
     /**
@@ -75,6 +79,10 @@ public class FileToImageService {
             case OFD:
                 renderOfd(file.getFileIndex(), contentBytes, builder);
                 return;
+            case DOCX:
+                // 排版转 PDF 后完全复用 PDF 渲染路径（逐页渲染、逐页压缩、逐页释放）。
+                renderPdf(file.getFileIndex(), docxToPdf(contentBytes), builder);
+                return;
             case JPG:
             case PNG:
                 CompressedPageImage adapted =
@@ -82,8 +90,17 @@ public class FileToImageService {
                 builder.addPage(file.getFileIndex(), 1, adapted.getJpegBytes());
                 return;
             default:
-                // DOC/DOCX 在上传口已被拒（§5.4），走到这里说明数据被改过。
+                // 旧版 DOC 在上传口已被拒（§5.4），走到这里说明数据被改过。
                 throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
+        }
+    }
+
+    /** 排版失败按不可读处理；字体环境缺失由转换器直接抛 SERVER_ERROR，不在此改写。 */
+    private byte[] docxToPdf(byte[] contentBytes) {
+        try {
+            return docxToPdfConverter.toPdf(contentBytes);
+        } catch (IOException exception) {
+            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
         }
     }
 

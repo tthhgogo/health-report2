@@ -75,7 +75,8 @@ class TaskResultCacheTest {
         resultCache.write(taskId, result);
 
         org.mockito.ArgumentCaptor<String> jsonCaptor = forClass(String.class);
-        verify(valueOperations).set(org.mockito.ArgumentMatchers.eq("result:" + taskId),
+        // key 字面量刻意硬编码：改 key 等于 bump ResultSchemaVersion，必须在这里显形而非静默通过。
+        verify(valueOperations).set(org.mockito.ArgumentMatchers.eq("result:v2:" + taskId),
                 jsonCaptor.capture(), org.mockito.ArgumentMatchers.eq(2L),
                 org.mockito.ArgumentMatchers.eq(TimeUnit.HOURS));
         String resultJson = jsonCaptor.getValue();
@@ -86,10 +87,12 @@ class TaskResultCacheTest {
         assertThat(modulesNode.path("healthIndicators").isObject()).isTrue();
         assertThat(modulesNode.path("healthIndicators").has("overview")).isTrue();
         assertThat(modulesNode.path("healthProblems").has("itemList")).isTrue();
-        assertThat(modulesNode.path("dietAdvice").has("recommendFoodList")).isTrue();
+        assertThat(modulesNode.path("dietAdvice").has("allergyReminderList")).isTrue();
+        assertThat(modulesNode.path("dietAdvice").has("nutritionSupplementList")).isTrue();
+        assertThat(modulesNode.path("dietAdvice").has("dietAttentionList")).isTrue();
         assertThat(modulesNode.path("dishRecommendations").has("recommendList")).isTrue();
 
-        when(valueOperations.get("result:" + taskId)).thenReturn(resultJson);
+        when(valueOperations.get("result:v2:" + taskId)).thenReturn(resultJson);
         AnalysisResult restored = resultCache.read(taskId);
         assertThat(restored.isPartial()).isFalse();
         assertThat(restored.getModules().getHealthIndicators()).isNotNull();

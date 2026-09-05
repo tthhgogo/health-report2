@@ -9,10 +9,10 @@ import java.util.Set;
 /**
  * 依据文件内容识别受支持格式。
  *
- * <p><b>DOC/DOCX 识别逻辑保留，判定结果为拒绝</b>（设计方案 §3.2.1）：DOCX 与 OFD
- * 同为 ZIP 容器（magic number 都是 {@code PK\x03\x04}），不区分的话 DOCX 会被当成
- * 损坏的 OFD 报「文件无法读取」，而正确提示是「暂不支持该文件格式」。
- * 识别只读 ZIP 条目名，不做全量内容解压。普通 ZIP 同样拒绝。</p>
+ * <p>DOCX 与 OFD 同为 ZIP 容器（magic number 都是 {@code PK\x03\x04}），按标志性条目
+ * （{@code word/document.xml} / {@code OFD.xml}）区分；两种都像或都不像的 ZIP 一律拒绝。
+ * 旧版 DOC（OLE2 复合文档）仍不支持，识别即拒（设计方案 §3.2.1，DOCX 于 2026-09-05 恢复）。
+ * 识别只读 ZIP 条目名，不做全量内容解压。</p>
  */
 @Component
 public class FormatDetector {
@@ -29,7 +29,7 @@ public class FormatDetector {
 
     /**
      * 判定真实格式；调用方不得传扩展名参与判断。
-     * DOC / DOCX / 普通 ZIP / 未知格式一律 UNSUPPORTED_FORMAT。
+     * DOC / 普通 ZIP / 未知格式一律 UNSUPPORTED_FORMAT。
      */
     public ContentType detect(byte[] contentBytes) {
         if (startsWith(contentBytes, PDF_MAGIC)) {
@@ -55,7 +55,10 @@ public class FormatDetector {
         if (ofd && !docx) {
             return ContentType.OFD;
         }
-        // DOCX、两种都像、两种都不像：统一按不支持的格式拒绝——
+        if (docx && !ofd) {
+            return ContentType.DOCX;
+        }
+        // 两种都像、两种都不像的 ZIP：统一按不支持的格式拒绝——
         // 用户拿到「暂不支持该文件格式」而不是「文件无法读取」。
         throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
     }

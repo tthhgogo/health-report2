@@ -27,8 +27,8 @@ package com.example.healthreport.constants;
  */
 public final class TagRuleVersion {
 
-	/** 2026-08-28 饮食注意维度开放 LOW_PURINE、HIGH_FIBER 的 Java 确定性推荐后的版本。 */
-	public static final String VALUE = "tag-1.1.0";
+	/** 2026-09-04 PROTEIN 裁减瘦牛肉、黄豆、牛奶以满足 3~8 展示上限（待医务审核确认）后的版本。 */
+	public static final String VALUE = "tag-1.2.0";
 
 	private TagRuleVersion() {
 	}

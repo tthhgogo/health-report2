@@ -34,6 +34,10 @@ public class DishTagStartupValidator implements ApplicationRunner {
                 || !StringUtils.hasText(dishTagProperties.getModelVersionDishtag())) {
             throw new IllegalStateException("LLM-B baseUrl、apiKey、模型版本必须配置");
         }
+        // model_version 落 ct_dish_tag VARCHAR(64)；超长配置在这里失败，而不是凌晨打标任务 insert 报错。
+        if (dishTagProperties.getModelVersionDishtag().length() > 64) {
+            throw new IllegalStateException("LLM-B 模型版本超过数据库列宽64");
+        }
         if (connectionProperties.getConnectTimeoutMillis() < 1
                 || connectionProperties.getReadTimeoutMillis() < 1
                 || connectionProperties.getMaxTokens() < 1) {

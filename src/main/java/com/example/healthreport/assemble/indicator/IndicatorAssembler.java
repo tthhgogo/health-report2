@@ -5,6 +5,10 @@ import com.example.healthreport.constants.EmptyStateConstants;
 import com.example.healthreport.llm.extraction.IndicatorStatus;
 import com.example.healthreport.llm.extraction.IndicatorsResult;
 import com.example.healthreport.render.PageImageSequence;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import org.springframework.stereotype.Service;
 
@@ -110,14 +114,28 @@ public class IndicatorAssembler {
     }
 
     /** 模块一完整返回结构。 */
+    @ApiModel(value = "IndicatorResult", description = "模块一（健康指标）完整返回结构")
     @Getter
     public static final class Result {
+
+        @ApiModelProperty(value = "总览条；totalCount 为 0 或模型未给总览时为 null，前端不展示总览")
         private final Overview overview;
+
+        @ApiModelProperty(value = "按章节分组的指标卡片区；数组顺序即展示顺序", required = true)
         private final List<Group> groupList;
+
+        @ApiModelProperty(value = "分组为空时的空态文案；有内容时为 null",
+                example = "本次报告未提取到带明确结论的指标项")
         private final String emptyState;
+
+        @ApiModelProperty(value = "模块底部声明", required = true)
         private final String disclaimer;
 
-        Result(Overview overview, List<Group> groupList, String emptyState, String disclaimer) {
+        @JsonCreator
+        Result(@JsonProperty("overview") Overview overview,
+               @JsonProperty("groupList") List<Group> groupList,
+               @JsonProperty("emptyState") String emptyState,
+               @JsonProperty("disclaimer") String disclaimer) {
             this.overview = overview;
             this.groupList = Collections.unmodifiableList(new ArrayList<Group>(groupList));
             this.emptyState = emptyState;
@@ -126,16 +144,33 @@ public class IndicatorAssembler {
     }
 
     /** 模块一总览条；reportOriginal 为真时两个数字来自报告印刷汇总。 */
+    @ApiModel(value = "IndicatorOverview", description = "模块一总览条")
     @Getter
     public static final class Overview {
+
+        @ApiModelProperty(value = "指标总数", required = true, example = "42")
         private final int totalCount;
+
+        @ApiModelProperty(value = "正常指标数（totalCount - abnormalCount，下限 0）", required = true,
+                example = "38")
         private final int normalCount;
+
+        @ApiModelProperty(value = "异常指标数", required = true, example = "4")
         private final int abnormalCount;
+
+        @ApiModelProperty(value = "异常占比百分数，0~100 取整", required = true, example = "10")
         private final int abnormalPercentage;
+
+        @ApiModelProperty(value = "为 true 时两个数字来自报告印刷汇总，否则为模型统计", required = true,
+                example = "true")
         private final boolean reportOriginal;
 
-        Overview(int totalCount, int normalCount, int abnormalCount,
-                 int abnormalPercentage, boolean reportOriginal) {
+        @JsonCreator
+        Overview(@JsonProperty("totalCount") int totalCount,
+                 @JsonProperty("normalCount") int normalCount,
+                 @JsonProperty("abnormalCount") int abnormalCount,
+                 @JsonProperty("abnormalPercentage") int abnormalPercentage,
+                 @JsonProperty("reportOriginal") boolean reportOriginal) {
             this.totalCount = totalCount;
             this.normalCount = normalCount;
             this.abnormalCount = abnormalCount;
@@ -145,13 +180,24 @@ public class IndicatorAssembler {
     }
 
     /** 一个章节一张卡片区；数组顺序即展示顺序。 */
+    @ApiModel(value = "IndicatorGroup", description = "模块一章节分组；一个章节一张卡片区")
     @Getter
     public static final class Group {
+
+        @ApiModelProperty(value = "分组展示名；多文件时带「报告N-」前缀，无章节时为「未标注章节」",
+                required = true, example = "血脂检查")
         private final String displayName;
+
+        @ApiModelProperty(value = "章节所在页码，从 1 开始", required = true, example = "3")
         private final int page;
+
+        @ApiModelProperty(value = "本章节的指标卡片列表", required = true)
         private final List<Card> cardList;
 
-        Group(String displayName, int page, List<Card> cardList) {
+        @JsonCreator
+        Group(@JsonProperty("displayName") String displayName,
+              @JsonProperty("page") int page,
+              @JsonProperty("cardList") List<Card> cardList) {
             this.displayName = displayName;
             this.page = page;
             this.cardList = Collections.unmodifiableList(new ArrayList<Card>(cardList));
@@ -163,19 +209,46 @@ public class IndicatorAssembler {
      * <p>{@code conclusionGenerated=true} 表示结论由系统按参考值判定，不是报告原文，
      * <b>前端必须据此在视觉上区分</b>（需求 §5-3 第 80 行）。</p>
      */
+    @ApiModel(value = "IndicatorCard", description = "健康指标卡片；标签颜色由 status 决定")
     @Getter
     public static final class Card {
+
+        @ApiModelProperty(value = "卡片 ID，模块二健康问题跳转的锚点", required = true, example = "ind-1")
         private final String indicatorId;
+
+        @ApiModelProperty(value = "指标名称，报告原文", required = true, example = "甘油三酯")
         private final String name;
+
+        @ApiModelProperty(value = "结果值，报告原文；可能为定性结果", required = true, example = "2.8")
         private final String value;
+
+        @ApiModelProperty(value = "单位，报告原文；报告未印时为 null", example = "mmol/L")
         private final String unit;
+
+        @ApiModelProperty(value = "参考范围；报告未印时为固定占位「报告未提供」", required = true,
+                example = "0.56~1.70")
         private final String refRange;
+
+        @ApiModelProperty(value = "展示结论文案；报告印了结论时为状态标准文案，否则为系统判定固定文案",
+                required = true, example = "偏高")
         private final String conclusionText;
+
+        @ApiModelProperty(value = "为 true 表示结论由系统按参考值判定而非报告原文，前端必须做视觉区分（需求 §5-3）",
+                required = true, example = "false")
         private final boolean conclusionGenerated;
+
+        @ApiModelProperty(value = "指标状态，决定标签颜色", required = true, example = "HIGH")
         private final IndicatorStatus status;
 
-        Card(String indicatorId, String name, String value, String unit, String refRange,
-             String conclusionText, boolean conclusionGenerated, IndicatorStatus status) {
+        @JsonCreator
+        Card(@JsonProperty("indicatorId") String indicatorId,
+             @JsonProperty("name") String name,
+             @JsonProperty("value") String value,
+             @JsonProperty("unit") String unit,
+             @JsonProperty("refRange") String refRange,
+             @JsonProperty("conclusionText") String conclusionText,
+             @JsonProperty("conclusionGenerated") boolean conclusionGenerated,
+             @JsonProperty("status") IndicatorStatus status) {
             this.indicatorId = indicatorId;
             this.name = name;
             this.value = value;

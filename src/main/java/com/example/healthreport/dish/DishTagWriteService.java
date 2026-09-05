@@ -131,6 +131,15 @@ public class DishTagWriteService {
 				}
 			}
 		}
+		// matched_ingredients VARCHAR(512) / reason VARCHAR(256)：schema 的 maxItems/maxLength
+		// 已把正常值挡在远低于列宽处，这里只防 JSON 转义把长度翻倍的极端食材名——超限必须
+		// 显式失败，不能等 insert 报 SQL 异常。
+		if (entity.getMatchedIngredients() != null && entity.getMatchedIngredients().length() > 512) {
+			throw new IllegalArgumentException("命中食材JSON超过数据库列宽512");
+		}
+		if (entity.getReason() != null && entity.getReason().length() > 256) {
+			throw new IllegalArgumentException("判定理由超过数据库列宽256");
+		}
 		// DDL 没有 CHECK 兜底，本方法是写库前业务规则的唯一执行点。
 	}
 

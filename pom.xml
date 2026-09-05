@@ -30,10 +30,13 @@
         <ofdrw.version>2.4.0</ofdrw.version>
         <tinypinyin.version>2.0.3</tinypinyin.version>
         <json-schema-validator.version>1.0.87</json-schema-validator.version>
+        <swagger-annotations.version>1.6.2</swagger-annotations.version>
         <embedded-redis.version>1.4.3</embedded-redis.version>
         <xxl-job.version>2.4.1</xxl-job.version>
         <archunit.version>1.0.1</archunit.version>
         <wiremock.version>2.35.1</wiremock.version>
+        <poi.version>5.2.5</poi.version>
+        <docx4j.version>8.3.15</docx4j.version>
     </properties>
 
     <dependencies>
@@ -91,6 +94,12 @@
             <artifactId>xxl-job-core</artifactId>
             <version>${xxl-job.version}</version>
         </dependency>
+        <!-- 仅接口文档注解（@Api/@ApiModel 等，AGENTS.md §6）；不引入 springfox/knife4j 文档 UI，由部署侧决定 -->
+        <dependency>
+            <groupId>io.swagger</groupId>
+            <artifactId>swagger-annotations</artifactId>
+            <version>${swagger-annotations.version}</version>
+        </dependency>
         <!-- 常量类的 @Getter；provided 作用域，不进运行时依赖 -->
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -128,6 +137,36 @@
             <artifactId>wiremock-jre8</artifactId>
             <version>${wiremock.version}</version>
             <scope>test</scope>
+        </dependency>
+        <!-- DOCX 文本抽取路线评估实验（设计方案 §12-16 相关）；仅测试作用域，不进生产依赖。
+             结论落定后若不立项，连同实验测试一起移除。 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>${poi.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 老版二进制 DOC 转图路线评估实验（POI HWPF → WordToFoConverter → FOP）；
+             仅测试作用域。FOP 由 docx4j-export-fo 传递提供，评估结论落定前不进生产依赖。 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-scratchpad</artifactId>
+            <version>${poi.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- DOCX 排版转 PDF（设计方案 §3.2.1，2026-09-05 恢复 DOCX 支持）：
+             docx4j → XSL-FO/FOP 是唯一不依赖 LibreOffice/商业库/Office 本体的纯 Java 转图路线，
+             真实样本评估通过后由 test 转为生产作用域；产出 PDF 复用既有 pdfbox 渲染路径。
+             8.x 是 Java 8 兼容线；保真依赖部署镜像的 CJK 字体（DocxToPdfConverter 候选表）。 -->
+        <dependency>
+            <groupId>org.docx4j</groupId>
+            <artifactId>docx4j-JAXB-ReferenceImpl</artifactId>
+            <version>${docx4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.docx4j</groupId>
+            <artifactId>docx4j-export-fo</artifactId>
+            <version>${docx4j.version}</version>
         </dependency>
     </dependencies>
 

@@ -95,7 +95,9 @@ class FileUploadServiceTest {
 		assertThat(entity.getTaskId()).isNull();
 		assertThat(entity.getFileIndex()).isNull();
 		assertThat(entity.getStatus()).isEqualTo(FileStatus.UPLOADED.name());
-		assertThat(entity.getOriginName()).isEqualTo("renamed.txt");
+		// 展示名安全生成：不含用户输入的原始文件名，扩展名取内容判定的真实格式而非用户扩展名。
+		assertThat(entity.getDisplayName()).isEqualTo("体检报告-00000000.pdf");
+		assertThat(entity.getDisplayName()).matches("^体检报告-[0-9a-f]{8}\\.(pdf|jpg|png|ofd|docx)$");
 		assertThat(entity.getContentType()).isEqualTo(ContentType.PDF.name());
 		assertThat(entity.getPrecheckPages()).isEqualTo(2);
 		assertThat(entity.getSizeBytes()).isEqualTo(3L);

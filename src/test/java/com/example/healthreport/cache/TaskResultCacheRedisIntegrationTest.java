@@ -75,7 +75,8 @@ class TaskResultCacheRedisIntegrationTest {
         assertThat(loaded.getProcessedPages()).isEqualTo(3);
         assertThat(loaded.getTotalPages()).isEqualTo(5);
 
-        Long ttlSeconds = redisTemplate.getExpire("result:" + taskId, TimeUnit.SECONDS);
+        // key 字面量刻意硬编码：改 key 等于 bump ResultSchemaVersion，必须在这里显形而非静默通过。
+        Long ttlSeconds = redisTemplate.getExpire("result:v2:" + taskId, TimeUnit.SECONDS);
         assertThat(ttlSeconds).isNotNull();
         assertThat(ttlSeconds)
                 .isBetween(EXPECTED_TTL_SECONDS - TTL_TOLERANCE_SECONDS, EXPECTED_TTL_SECONDS);
@@ -84,6 +85,24 @@ class TaskResultCacheRedisIntegrationTest {
     @Test
     void missingKeyShouldReadAsNullRatherThanThrow() {
         assertThat(cache.read("9f2c1a4e-0000-4000-8000-00000000ffff")).isNull();
+    }
+
+    /** 删除契约：当前版本与历史版本（v1 无版本段）键都要立即清掉，不能等 TTL。 */
+    @Test
+    void deleteShouldRemoveCurrentAndLegacyVersionKeys() {
+        String taskId = "9f2c1a4e-0000-4000-8000-000000000002";
+        AnalysisResult result = AnalysisResult.create(
+                new DegradeAccumulator(), 1, 1, AnalysisModules.empty());
+        cache.write(taskId, result);
+        // 模拟滚动发布窗口内旧 Pod 写入的 v1 历史键。
+        redisTemplate.opsForValue().set("result:" + taskId, "{legacy}", 2, TimeUnit.HOURS);
+
+        assertThat(cache.delete(taskId)).isTrue();
+
+        assertThat(redisTemplate.opsForValue().get("result:v2:" + taskId)).isNull();
+        assertThat(redisTemplate.opsForValue().get("result:" + taskId)).isNull();
+        // 幂等：再删返回 false 而不抛错。
+        assertThat(cache.delete(taskId)).isFalse();
     }
 
     /** 取一个当前空闲端口，避免与开发机上已有的 Redis 抢 6379。 */

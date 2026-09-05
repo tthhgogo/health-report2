@@ -1,6 +1,9 @@
 package com.example.healthreport.llm.extraction;
 
+import io.swagger.annotations.ApiModel;
+
 /** LLM-A 返回的检查指标状态；Java 只保存，不重新判定。 */
+@ApiModel(value = "IndicatorStatus", description = "检查指标状态；决定指标卡片标签颜色")
 public enum IndicatorStatus {
 
     /** 报告或模型判定为正常。 */

@@ -4,6 +4,7 @@ import com.example.healthreport.infra.DishTagModelClient;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.Dependency;
+import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -126,6 +127,23 @@ class ProductionSafetyArchitectureTest {
                     if (!allowed) {
                         events.add(SimpleConditionEvent.violated(dependency,
                                 "非 LLM-B 类依赖了 DishTagModelClient: " + item.getName()));
+                    }
+                }
+            }
+        });
+    }
+
+    @Test
+    void apiModelPropertyFieldsShouldNotEscapeTheTypeSystemAsObject() {
+        productionClassesRule(new ArchCondition<JavaClass>("@ApiModelProperty 字段不得声明为 Object") {
+            @Override
+            public void check(JavaClass item, ConditionEvents events) {
+                for (JavaField field : item.getFields()) {
+                    if (field.isAnnotatedWith("io.swagger.annotations.ApiModelProperty")
+                            && "java.lang.Object".equals(field.getRawType().getFullName())) {
+                        // Object 会切断 Swagger 的嵌套结构展开，也让 Jackson 读回 LinkedHashMap 而非强类型。
+                        events.add(SimpleConditionEvent.violated(field,
+                                "@ApiModelProperty 字段逃逸类型系统: " + field.getFullName()));
                     }
                 }
             }

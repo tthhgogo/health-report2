@@ -154,6 +154,8 @@ public class DishTagService {
 			// 期望值随之变成 2，恰好绕过下面那条本该发现它的校验。
 			boolean capReached = countBefore > maxDishesPerCompany;
 			Set<Long> processedDishIdSet = new LinkedHashSet<Long>();
+			// 跨页累计每个方向集合的成员数，仅用于发布前的 INFO 汇总；分页菜品 ID 唯一，直接求和不会重复计数。
+			Map<DishTagSetRef, Integer> memberCountByRefMap = new LinkedHashMap<DishTagSetRef, Integer>();
 			Long lastDishesId = null;
 			while (true) {
 				if (processedDishIdSet.size() >= maxDishesPerCompany) {
@@ -174,7 +176,7 @@ public class DishTagService {
 						throw new IllegalStateException("企业分页出现重复菜品ID");
 					}
 				}
-				processPage(companyId, bizDate, buildId, enrichedDishList);
+				processPage(companyId, bizDate, buildId, enrichedDishList, memberCountByRefMap);
 				if (dishPage.getDishList().size() < currentPageSize) {
 					break;
 				}
@@ -189,6 +191,7 @@ public class DishTagService {
 			if (countBefore != countAfter || expectedDishCount != processedDishIdSet.size()) {
 				throw new IllegalStateException("企业菜品分页数量与前后计数不一致");
 			}
+			logDirectionSummary(bizDate, memberCountByRefMap);
 			setCache.publish(companyId, bizDate, buildId, setCatalog.publishRefs());
 			if (capReached) {
 				// 被闸掉的菜品当天对模块四不存在：不推荐，也不拦截。企业标识不进日志。
@@ -243,7 +246,8 @@ public class DishTagService {
 		return resultList;
 	}
 
-	private void processPage(String companyId, LocalDate bizDate, String buildId, List<Dish> dishList) {
+	private void processPage(String companyId, LocalDate bizDate, String buildId, List<Dish> dishList,
+			Map<DishTagSetRef, Integer> memberCountByRefMap) {
 		Map<Long, String> hashByDishIdMap = hashes(dishList);
 		List<Dimension> dimensionList = dimensions();
 		Set<Long> dishIdSet = new LinkedHashSet<Long>(hashByDishIdMap.keySet());
@@ -275,7 +279,8 @@ public class DishTagService {
 			tagMissingBatches(bizDate, dimension, missingDishList, hashByDishIdMap, dishByIdMap, entityByTripleMap);
 		}
 		assertComplete(dishList, dimensionList, hashByDishIdMap, entityByTripleMap);
-		appendDirections(companyId, bizDate, buildId, dishList, hashByDishIdMap, entityByTripleMap, dimensionList);
+		appendDirections(companyId, bizDate, buildId, dishList, hashByDishIdMap, entityByTripleMap, dimensionList,
+				memberCountByRefMap);
 	}
 
 	private void tagMissingBatches(LocalDate bizDate, Dimension dimension, List<Dish> missingDishList,
@@ -325,7 +330,7 @@ public class DishTagService {
 
 	private void appendDirections(String companyId, LocalDate bizDate, String buildId, List<Dish> dishList,
 			Map<Long, String> hashByDishIdMap, Map<String, CtDishTagEntity> entityByTripleMap,
-			List<Dimension> dimensionList) {
+			List<Dimension> dimensionList, Map<DishTagSetRef, Integer> memberCountByRefMap) {
 		Map<DishTagSetRef, Set<String>> memberByRefMap = new LinkedHashMap<DishTagSetRef, Set<String>>();
 		for (Dish dish : dishList) {
 			String member = memberCodec.encode(dish.getDishId(), dish.getDishName());
@@ -350,7 +355,44 @@ public class DishTagService {
 		}
 		for (Map.Entry<DishTagSetRef, Set<String>> entry : memberByRefMap.entrySet()) {
 			setCache.append(companyId, bizDate, buildId, entry.getKey(), entry.getValue());
+			Integer accumulatedCount = memberCountByRefMap.get(entry.getKey());
+			memberCountByRefMap.put(entry.getKey(),
+					(accumulatedCount == null ? 0 : accumulatedCount) + entry.getValue().size());
 		}
+	}
+
+	/**
+	 * 发布前按方向集合打一条 INFO 汇总：非空集合带成员数，空集合单独点名。
+	 * <p>推荐侧空集合是发现主料别名表缺口最便宜的信号——Java 交集只会漏不会错，
+	 * 「nutrition:recommend:IRON 常年为空」大概率是食堂主料命名对不上词表标准名。
+	 * 只记数量与维度名，不记菜名与企业标识（与本类既有日志口径一致）。</p>
+	 */
+	private void logDirectionSummary(LocalDate bizDate, Map<DishTagSetRef, Integer> memberCountByRefMap) {
+		StringBuilder filledBuilder = new StringBuilder();
+		StringBuilder emptyBuilder = new StringBuilder();
+		for (DishTagSetRef setRef : setCatalog.publishRefs()) {
+			Integer memberCount = memberCountByRefMap.get(setRef);
+			if (memberCount == null || memberCount == 0) {
+				appendJoined(emptyBuilder, refName(setRef));
+			}
+			else {
+				appendJoined(filledBuilder, refName(setRef) + "=" + memberCount);
+			}
+		}
+		log.info("企业方向集合构建汇总，业务日={}，非空集合[{}]，空集合[{}]", bizDate, filledBuilder, emptyBuilder);
+	}
+
+	/** 方向集合的日志展示名，与 Redis Key 末三段一致，如 nutrition:recommend:IRON。 */
+	private String refName(DishTagSetRef setRef) {
+		return setRef.getCategory().getKeySegment() + ":" + setRef.getDirection().getKeySegment() + ":"
+				+ setRef.getEnumKey();
+	}
+
+	private void appendJoined(StringBuilder builder, String segment) {
+		if (builder.length() > 0) {
+			builder.append(',');
+		}
+		builder.append(segment);
 	}
 
 	private Map<String, TagState> finalSafetyStates(Dish dish, String tagHash,

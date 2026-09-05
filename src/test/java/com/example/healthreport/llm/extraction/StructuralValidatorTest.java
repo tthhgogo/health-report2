@@ -1,6 +1,11 @@
 package com.example.healthreport.llm.extraction;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,9 +67,28 @@ class StructuralValidatorTest {
                 Arrays.asList(tag("NUTRITION", "CALCIUM"), tag("ALLERGEN", "DUST_MITE"),
                         tag("DIET", "LOW_SODIUM"), tag("ALLERGEN", "OTHER")));
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                () -> validator.validateDietTags(result, 5, 0))
-                .isInstanceOf(com.example.healthreport.support.HealthReportException.class);
+        Logger logger = (Logger) LoggerFactory.getLogger(StructuralValidator.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                    () -> validator.validateDietTags(result, 5, 0))
+                    .isInstanceOf(com.example.healthreport.support.HealthReportException.class);
+
+            String renderedLog = renderedLog(appender);
+            assertThat(renderedLog)
+                    .contains("路径=$.recommend[0]", "原因=TAG_DIRECTION_INVALID")
+                    .contains("路径=$.reject[0]", "结构校验剔除超预算")
+                    .doesNotContain("SHRIMP_CRAB", "CALCIUM", "建议内容原文一句",
+                            "承载该建议的整条原文");
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
     }
 
     @Test
@@ -106,5 +130,13 @@ class StructuralValidatorTest {
             keyList.add(tag.getEnumKey());
         }
         return keyList;
+    }
+
+    private String renderedLog(ListAppender<ILoggingEvent> appender) {
+        StringBuilder renderedLog = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            renderedLog.append(event.getFormattedMessage()).append('\n');
+        }
+        return renderedLog.toString();
     }
 }

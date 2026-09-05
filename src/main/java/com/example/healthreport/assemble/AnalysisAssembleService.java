@@ -46,8 +46,8 @@ public class AnalysisAssembleService {
 
 	/**
 	 * 组装四个模块。
-	 * @param images 全局图序列，供多文件来源标注按 page 查表定位文件
-	 * @param fileCount 本次参与分析的文件数，决定多文件场景下的来源前缀
+	 * @param images 全局图序列，供多文件来源标注按 page 查表定位文件；模块三不参与，其来源只拼 section 与 quote
+	 * @param fileCount 本次参与分析的文件数，决定模块一/二多文件场景下的「报告N-」来源前缀；模块三不加前缀
 	 */
 	public AnalysisModules assemble(ExtractionOutcome outcome, PageImageSequence images, int fileCount,
 			String companyId, LocalDate bizDate, DegradeAccumulator degradeAccumulator) {

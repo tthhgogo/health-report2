@@ -79,7 +79,7 @@ class TaskLifecycleIntegrationTest {
 				+ "update_time DATETIME DEFAULT CURRENT_TIMESTAMP, update_by VARCHAR(50))");
 		jdbcTemplate.execute("CREATE TABLE ct_health_report_file ("
 				+ "file_id VARCHAR(36) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, task_id VARCHAR(36), "
-				+ "file_index INT, status VARCHAR(16) NOT NULL, origin_name VARCHAR(255) NOT NULL, "
+				+ "file_index INT, status VARCHAR(16) NOT NULL, display_name VARCHAR(64) NOT NULL, "
 				+ "content_type VARCHAR(64) NOT NULL, size_bytes BIGINT NOT NULL, precheck_pages INT NOT NULL, "
 				+ "content_hash CHAR(64) NOT NULL, cloud_file_key VARCHAR(255) NOT NULL, expire_at DATETIME NOT NULL, "
 				+ "create_time DATETIME DEFAULT CURRENT_TIMESTAMP, create_by VARCHAR(50), "

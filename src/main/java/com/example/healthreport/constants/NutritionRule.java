@@ -17,6 +17,8 @@ import java.util.List;
 public final class NutritionRule {
 
     private final NutritionKey key;
+    /** 卡片展示名，如「铁」。 */
+    private final String displayName;
     /** 可触发自动推荐的食材。必须写别名表右侧的标准名。 */
     private final List<String> recommendableFoodList;
     /** 仅展示的食材，不触发推荐。 */
@@ -27,10 +29,12 @@ public final class NutritionRule {
     private final String contraindication;
     private final ReviewStatus reviewStatus;
 
-    NutritionRule(NutritionKey key, List<String> recommendableFoodList, List<String> displayOnlyFoodList,
+    NutritionRule(NutritionKey key, String displayName,
+                  List<String> recommendableFoodList, List<String> displayOnlyFoodList,
                   List<String> intakeNoteList, List<String> pairingTipList,
                   String contraindication, ReviewStatus reviewStatus) {
         this.key = key;
+        this.displayName = displayName;
         this.recommendableFoodList = Collections.unmodifiableList(recommendableFoodList);
         this.displayOnlyFoodList = Collections.unmodifiableList(displayOnlyFoodList);
         this.intakeNoteList = Collections.unmodifiableList(intakeNoteList);

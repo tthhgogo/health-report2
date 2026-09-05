@@ -148,6 +148,12 @@ DishQueryService       查询当日在架菜品与食材
 - 安全 / 业务规则常量集中在指定常量类中。
 - 不对安全规则做聪明的抽象，代码要易于审计。
 - 不在未同步更新测试与文档的情况下改动公开 API 字段语义。
+- **接口文档注解（Swagger 2 注解，`io.swagger.annotations`）**：Controller 类必须有 `@Api`，
+  Controller 方法必须有 `@ApiOperation`，方法参数必须有 `@ApiParam`；
+  请求类必须有 `@ApiModel`、其成员必须有 `@ApiModelProperty`，响应类及其依赖的
+  bean（嵌套 DTO、枚举）同样如此。注解字段尽量填全（`value` / `notes` / `required` /
+  `example` 等），描述写中文并与类/字段注释语义一致；`@JsonIgnore` 的字段标
+  `hidden = true`。依赖仅引 `swagger-annotations`，不引入 springfox / knife4j 文档 UI。
 
 ### 注释
 

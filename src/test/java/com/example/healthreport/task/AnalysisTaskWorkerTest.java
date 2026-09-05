@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.assemble.AnalysisAssembleService;
+import com.example.healthreport.assemble.TestAnalysisModulesFactory;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.AnalysisResult;
 import com.example.healthreport.llm.extraction.DietTagsResult;
@@ -248,7 +249,7 @@ class AnalysisTaskWorkerTest {
 		ExtractionOrchestrator orchestrator = mock(ExtractionOrchestrator.class);
 		AnalysisAssembleService assembleService = mock(AnalysisAssembleService.class);
 		ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
-		AnalysisModules assembled = new AnalysisModules("indicator", "problem", "advice", "dish");
+		AnalysisModules assembled = TestAnalysisModulesFactory.populated();
 		ExtractionOutcome outcome = outcome();
 		PageImageSequence images = images();
 		when(stateService.claim(taskId)).thenReturn(true);
@@ -276,8 +277,8 @@ class AnalysisTaskWorkerTest {
 		ArgumentCaptor<AnalysisResult> captor = ArgumentCaptor.forClass(AnalysisResult.class);
 		verify(stateService).markSucceeded(eq(taskId), captor.capture());
 		AnalysisResult written = captor.getValue();
-		assertThat(written.getModules().getHealthIndicators()).isEqualTo("indicator");
-		assertThat(written.getModules().getDishRecommendations()).isEqualTo("dish");
+		assertThat(written.getModules().getHealthIndicators()).isSameAs(assembled.getHealthIndicators());
+		assertThat(written.getModules().getDishRecommendations()).isSameAs(assembled.getDishRecommendations());
 		assertThat(written.getProcessedPages()).isEqualTo(2);
 		assertThat(written.getTotalPages()).isEqualTo(2);
 	}

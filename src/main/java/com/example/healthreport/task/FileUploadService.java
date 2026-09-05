@@ -9,7 +9,6 @@ import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import com.example.healthreport.support.IdCanonicalizer;
-import com.example.healthreport.support.SensitiveLog;
 import com.example.healthreport.support.Sha256Hex;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +18,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.Locale;
 
 /**
  * 单文件上传入口：完整校验后写对象存储并落文件元数据。
@@ -72,9 +72,7 @@ public class FileUploadService {
 	 * </p>
 	 */
 	public String upload(MultipartFile multipartFile, String userId, String companyId) {
-		if (userId == null || userId.length() == 0 || companyId == null || companyId.length() == 0) {
-			throw new IllegalArgumentException("用户与企业归属不能为空");
-		}
+		OwnerContext.assertValid(userId, companyId);
 		if (multipartFile == null || multipartFile.isEmpty()) {
 			throw new HealthReportException(FailCode.FILE_UNREADABLE, 400);
 		}
@@ -90,7 +88,7 @@ public class FileUploadService {
 
 		String fileId = idCanonicalizer.newFileId();
 		String objectKey = "health-report/" + fileId;
-		CtHealthReportFileEntity fileEntity = buildFileEntity(multipartFile, userId, companyId, contentBytes,
+		CtHealthReportFileEntity fileEntity = buildFileEntity(userId, companyId, contentBytes,
 				contentType, precheckPages, fileId, objectKey);
 
 		// ⛔ 顺序不能反：【先插库行，再写对象】。
@@ -122,10 +120,8 @@ public class FileUploadService {
 			fileStorage.write(objectKey, contentBytes);
 			// 上传成功是用户能感知到的第一个节点，必须留痕：出问题时先看这条在不在，
 			// 就能把「根本没传上去」和「传上去了但后面分析失败」分开，不用去翻对象存储。
-			// 【不带 origin_name】它常含姓名与体检属性（§9.2 红线），只走 SensitiveLog。
 			log.info("文件上传成功，fileId={}，格式={}，字节数={}，预检等效页数={}", fileId, contentType, contentBytes.length,
 					precheckPages);
-			SensitiveLog.debug("文件上传成功的原始文件名，fileId={}，originName={}", fileId, fileEntity.getOriginName());
 			return fileId;
 		}
 		catch (RuntimeException exception) {
@@ -156,7 +152,7 @@ public class FileUploadService {
 		}
 	}
 
-	private CtHealthReportFileEntity buildFileEntity(MultipartFile multipartFile, String userId, String companyId,
+	private CtHealthReportFileEntity buildFileEntity(String userId, String companyId,
 			byte[] contentBytes, ContentType contentType, int precheckPages, String fileId, String objectKey) {
 		CtHealthReportFileEntity fileEntity = new CtHealthReportFileEntity();
 		fileEntity.setFileId(fileId);
@@ -165,8 +161,7 @@ public class FileUploadService {
 		fileEntity.setTaskId(null);
 		fileEntity.setFileIndex(null);
 		fileEntity.setStatus(FileStatus.UPLOADED.name());
-		String originalFilename = multipartFile.getOriginalFilename();
-		fileEntity.setOriginName(originalFilename == null ? "" : originalFilename);
+		fileEntity.setDisplayName(displayName(fileId, contentType));
 		fileEntity.setContentType(contentType.name());
 		fileEntity.setSizeBytes((long) contentBytes.length);
 		fileEntity.setPrecheckPages(precheckPages);
@@ -174,6 +169,14 @@ public class FileUploadService {
 		fileEntity.setCloudFileKey(objectKey);
 		fileEntity.setExpireAt(LocalDateTime.now(clock).plusMinutes(30L));
 		return fileEntity;
+	}
+
+	/**
+	 * 展示名完全由服务端生成，不含任何用户输入；原始文件名（常含姓名与体检属性）从不落任何存储。
+	 * <p>扩展名由内容判定的真实格式映射，不信任用户扩展名；fileId 前缀保证同任务多文件可区分且幂等。</p>
+	 */
+	private String displayName(String fileId, ContentType contentType) {
+		return "体检报告-" + fileId.substring(0, 8) + "." + contentType.name().toLowerCase(Locale.ROOT);
 	}
 
 	/**

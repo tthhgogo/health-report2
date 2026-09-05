@@ -56,7 +56,7 @@ class AnalysisTaskBindingIntegrationTest {
 				+ "update_time DATETIME DEFAULT CURRENT_TIMESTAMP, update_by VARCHAR(50))");
 		jdbcTemplate.execute("CREATE TABLE ct_health_report_file ("
 				+ "file_id VARCHAR(36) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, task_id VARCHAR(36), "
-				+ "file_index INT, status VARCHAR(16) NOT NULL, origin_name VARCHAR(255) NOT NULL, "
+				+ "file_index INT, status VARCHAR(16) NOT NULL, display_name VARCHAR(64) NOT NULL, "
 				+ "content_type VARCHAR(64) NOT NULL, size_bytes BIGINT NOT NULL, precheck_pages INT NOT NULL, "
 				+ "content_hash CHAR(64) NOT NULL, cloud_file_key VARCHAR(255) NOT NULL, expire_at DATETIME NOT NULL, "
 				+ "create_time DATETIME DEFAULT CURRENT_TIMESTAMP, create_by VARCHAR(50), "
@@ -134,9 +134,9 @@ class AnalysisTaskBindingIntegrationTest {
 
 	private void insertFile(LocalDateTime expireAt, int pages) {
 		jdbcTemplate.update("INSERT INTO ct_health_report_file "
-				+ "(file_id,company_id,user_id,status,origin_name,content_type,size_bytes,precheck_pages,content_hash,"
+				+ "(file_id,company_id,user_id,status,display_name,content_type,size_bytes,precheck_pages,content_hash,"
 				+ "cloud_file_key,expire_at,create_by,update_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", FILE_ID,
-				COMPANY_ID, USER_ID, FileStatus.UPLOADED.name(), "synthetic.pdf", "PDF", 1024L, pages,
+				COMPANY_ID, USER_ID, FileStatus.UPLOADED.name(), "体检报告-00000000.pdf", "PDF", 1024L, pages,
 				"0000000000000000000000000000000000000000000000000000000000000000", "health-report/synthetic", expireAt,
 				"HEALTH_REPORT_API", "HEALTH_REPORT_API");
 	}

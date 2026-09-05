@@ -84,9 +84,7 @@ public class AnalysisTaskCreateService {
 
 	/** 用户与企业归属都必须在任务创建前由可信认证上下文给出。 */
 	private void assertOwnerContext(String userId, String companyId) {
-		if (userId == null || userId.length() == 0 || companyId == null || companyId.length() == 0) {
-			throw new IllegalArgumentException("用户与企业归属不能为空");
-		}
+		OwnerContext.assertValid(userId, companyId);
 	}
 
 }

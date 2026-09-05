@@ -35,8 +35,8 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 
 ### 0.2 已登记的冲突
 
-**本文与设计方案当前无冲突。** 曾登记的 Word 过渡方案冲突已于 2026-09-03 随裁决消除：
-**第一期不支持 DOC/DOCX，上传识别即拒**（设计方案 §3.2.1、§12-16，本文 §5.4）。
+**本文与设计方案当前无冲突。** 曾登记的 Word 过渡方案冲突已于 2026-09-03 随裁决消除；
+2026-09-05 改裁为 **DOCX 恢复支持（docx4j 转图）、DOC 仍识别即拒**（设计方案 §3.2.1、§12-16，本文 §5.4）。
 设计方案相对产品需求的偏离统一登记在设计方案 §12；其中
 §12-12 明确覆盖所有进入 `rejectSet` 的菜，包括过敏原 `REJECT` 和饮食注意 `REJECT`，不能缩写成
 只有过敏冲突。
@@ -64,11 +64,10 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 
 ③ MySQL 不存报告正文、页面图和结构化健康结论；这些不进普通应用日志，
    排障期仅可进入 §9.2 规定的独立敏感 DEBUG logger
-   —— 注意措辞：**不是「MySQL 不含任何敏感信息」**，`origin_name` 就是已登记的例外
    姓名 / 性别 / 页面图 / 三次原始模型响应：只在工作线程内存，从不写 Redis
    四模块要展示的原文片段：随结果写 Redis，TTL 2h
-   ⚠️ 【已登记的例外】ct_health_report_file.origin_name 是敏感元数据
-      （常含姓名与体检属性），约束见 §3.2 —— 不要再说"MySQL 不含任何敏感信息"
+   ✅ 曾经的例外 origin_name 已于 2026-09-04 消除：原始文件名从不落任何存储，
+      改存服务端安全生成的 display_name（§3.2）
    日志白名单见 AGENTS.md §6
 ```
 
@@ -120,7 +119,7 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 | `MOLLUSK` / `SESAME` 两组过敏原补齐 | **工程已完成**：常量、Schema、Prompt、版本和测试已同步；部署需全量重打 | 设计方案 §7.2.1、§10 P0-15a |
 | 「酱油→小麦」「做法词入 WHEAT」口径 | **已裁决**：明确酱油/豉油为高可信线索；红烧/酱爆/卤不入硬词表，配方不明为 `UNKNOWN` | `constants/内容常量说明V3.md` §4.3 |
 | §12 全部产品确认项 | 对应模块展示 | 设计方案 §12 |
-| **`origin_name` 是否保留原始文件名** | 敏感元数据面，非阻塞但需表态 | 本文 §3.2 |
+| ~~**`origin_name` 是否保留原始文件名**~~ | **已裁决（2026-09-04）**：不保留。改存安全生成的 `display_name`，原始文件名从不落任何存储 | 本文 §3.2 |
 | **对象存储 `health-report/` 前缀的 Bucket 生命周期规则** | **上线阻断**——它是「孤儿对象永久残留」的最后兜底，不依赖应用代码正确。主控制是 §4.1 的写入顺序（先插库行再写对象），但那只能兜住我们想到的路径 | 本文 §4.1 |
 | **`S3FileStorage.delete` 对不存在的 key 必须幂等成功** | **阻塞编码之外的正确性**——§4.1 的四种失败形态里有两种会去删不存在的对象；抛异常会让 file 行永远删不掉，孤儿清理原地卡死 | 本文 §4.1 |
 | **网关是否透传 qwen3 的关闭思考参数**（菜品离线打标模型） | **不阻塞正确性**——剥离逻辑无条件保留（§13.2.3）；只影响 token 成本与 `max-tokens` 该配多大 | 本文 §13.2.3 |
@@ -173,6 +172,7 @@ javax.*，绝不 jakarta.*                        Maven
 | `mysql-connector-java` | 驱动 | 8.0.x |
 | `org.apache.pdfbox:pdfbox` | PDF 解析 | **2.0.x**，不升 3.x |
 | `org.ofdrw:ofdrw-reader` | OFD | |
+| `org.docx4j:docx4j-JAXB-ReferenceImpl` + `docx4j-export-fo` | DOCX 排版转 PDF（§5.4，2026-09-05） | **8.3.x**（Java 8 兼容线）；思源黑体已内置（OFL），部署零字体依赖 |
 | `com.github.promeg:tinypinyin` | 菜名拼音 | |
 | `com.networknt:json-schema-validator` | 模型输出 Schema 校验 | Java 8 兼容版本 |
 | `com.xuxueli:xxl-job-core` | 离线打标调度 | |
@@ -308,8 +308,8 @@ CREATE TABLE ct_health_report_file (
   task_id        VARCHAR(36)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '关联任务ID，未绑定任务时为NULL',
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始，即用户提交fileIds的顺序',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件状态：UPLOADED已上传，当前仅此一个取值',
-  origin_name    VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '敏感元数据：用户上传的原始文件名，可能含姓名与体检属性如张三-2026体检报告.pdf。仅用于前端回显，禁止进日志与外部系统，随file行一起删除。是否改为安全生成的展示名待产品确认',
-  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD，不信任扩展名；DOC/DOCX识别即拒不落行',
+  display_name   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '安全生成的展示名：体检报告-{fileId前8位}.{ext}，ext由内容判定的真实格式映射；不含任何用户输入，原始文件名从不落任何存储，2026-09-04起消除敏感元数据例外',
+  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD/DOCX，不信任扩展名；旧版DOC识别即拒不落行（DOCX于2026-09-05恢复支持）',
   size_bytes     BIGINT       NOT NULL COMMENT '文件大小，单位字节',
   precheck_pages INT          NOT NULL COMMENT '创建任务容量预检页数：PDF与OFD为真实页数，图片恒为1，全部为精确值',
   content_hash   CHAR(64)     CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件内容SHA-256哈希，小写十六进制',
@@ -415,24 +415,24 @@ support.IdCanonicalizer
 
 **Redis 只有两个用途，不承载任何调度状态**（设计方案 §9.1）。
 
-> **⚠️ 「MySQL 不存健康数据」有一个例外：`ct_health_report_file.origin_name`。**
-> 它原样保存用户上传的文件名，而真实世界里这个字段经常长这样：
-> `张三-2026年度体检报告.pdf`——**姓名 + 体检属性都在里面**。
+> **✅ 「MySQL 不存健康数据」的例外已于 2026-09-04 消除。**
+> 旧版 `origin_name` 原样保存用户上传的文件名（现实中经常是
+> `张三-2026年度体检报告.pdf`——姓名 + 体检属性都在里面）。
 >
 > ```
-> 本版口径：承认它是【敏感元数据】，按四条约束
->     ① 仅用于前端回显"你上传了哪些文件"，不参与任何业务判定
->     ② 【禁止进入普通应用日志】—— 排障期仅可进入 §9.2 默认关闭的独立敏感 DEBUG logger
->     ③ 【禁止传给任何外部系统】—— 不进三次体检报告分析请求、不进菜品离线打标请求、不进对象存储元数据
->     ④ 随 file 行一起删除（§4.5 清理矩阵），不单独延长留存
->
-> 待产品确认（§0.4）：是否改成不存原始文件名、只存安全生成的展示名（「报告1.pdf」+ content_type）
->     彻底消除这个面；代价是前端回显失去用户熟悉的文件名，属产品取舍
+> 现行口径：不存原始文件名，改存服务端安全生成的 display_name
+>     ① 生成规则 = 「体检报告-」+ fileId 前 8 位 + 「.」+ 扩展名（由 content_type 映射，
+>        不信任用户扩展名）；幂等、可区分、零语义，长度恒 17 字符左右
+>     ② 【原始文件名从不落任何存储】——不进 MySQL、不进任何日志（含 §9.2 敏感 DEBUG logger）、
+>        不进对象存储元数据；FileUploadService 不再调用 getOriginalFilename()
+>     ③ 上传页「你上传了哪些文件」的回显由前端用浏览器本地文件名完成，不依赖服务端
+>     ④ 契约守护：FileUploadServiceTest 断言落库展示名匹配 ^体检报告-[0-9a-f]{8}\.(pdf|jpg|png|ofd)$
+>     存量数据：sql/alter/20260904_display_name.sql 改名、覆写存量值并收窄列宽至 VARCHAR(64)
 > ```
 
 | Key | 类型 | 内容 | TTL |
 |---|---|---|---|
-| `result:{taskId}` | String(JSON) | 四模块结果 | 2h |
+| `result:v2:{taskId}` | String(JSON) | 四模块结果；版本段真源为 `ResultSchemaVersion`，结果结构破坏性变更时 bump | 2h |
 | `dish:recommend:{companyId:bizDate}:allergen:reject:<enumKey>` | Set | Member=`dishId\tdishName`，过敏原不推荐集合 | 3d |
 | `dish:recommend:{companyId:bizDate}:diet:recommend:<enumKey>` | Set | Member=`dishId\tdishName`，饮食推荐集合；仅 `LOW_PURINE`、`HIGH_FIBER` | 3d |
 | `dish:recommend:{companyId:bizDate}:diet:reject:<enumKey>` | Set | Member=`dishId\tdishName`，饮食不推荐集合 | 3d |
@@ -534,7 +534,7 @@ Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 �
 #### 4.1.1 `precheck_pages` 在上传时算定
 
 它只服务于创建任务前的**容量预筛**，全部支持格式都是精确值
-（第一期不支持 Word，§5.4——无折算值、无 Worker 二次业务容量裁决）。
+（DOCX 为确定性排版转换后的页数，§5.4——无折算值、无 Worker 二次业务容量裁决）。
 
 ```java
 // render.CapacityPrecheckService —— 上传时调用，不保存报告原文
@@ -554,13 +554,13 @@ Worker 从对象存储逐文件读回后必须重新执行运行时完整性复�
 任务快照还必须满足文件数、连续 `file_index`、总字节数和总页数上限。任一项漂移按
 `SERVER_ERROR` 失败且三次模型调用数为 0，不重新归因成用户输入错误。
 
-#### 4.1.2 【已随 Word 移除】Worker 二次业务容量裁决
+#### 4.1.2 【已移除，DOCX 恢复后仍不需要】Worker 二次业务容量裁决
 
-第一期不支持 Word（§5.4）后所有格式页数在上传时即精确，`WordCapacityGuard`、
+所有格式页数在上传时即精确（DOCX 为确定性排版转换后的页数，§5.4），`WordCapacityGuard`、
 等效页折算与「渲染后再作业务裁决」整体不存在。`PAGE_LIMIT_EXCEEDED` 只在上传与
 analyze 创建时**同步**发生，不再是异步任务失败码。§4.1.1 的 Worker 复核只验证对象与
-任务快照未发生漂移，命中时是 `SERVER_ERROR`，不是重新引入本机制。恢复 Word 支持时按
-设计方案 §3.2.1 的恢复条件一并恢复本节机制。
+任务快照未发生漂移（DOCX 复核时重转一次、页数必与落库值相等），命中时是
+`SERVER_ERROR`，不是重新引入本机制。
 
 #### `POST /api/health-report/analyze` 创建任务
 
@@ -615,7 +615,10 @@ file.expireAt >  now
 "modules": {
   "healthIndicators":    { "overview": {...}, "groupList": [...] },
   "healthProblems":      { "itemList": [...] },
-  "dietAdvice":          { "allergenSection": {...}, ... },
+  "dietAdvice":          { "allergyReminderList": [...], "allergyEmptyState": null,
+                           "nutritionSupplementList": [...], "nutritionEmptyState": null,
+                           "dietAttentionList": [...], "dietAttentionEmptyState": null,
+                           "entryList": [...], "disclaimer": "..." },
   "dishRecommendations": null
 }
 ```
@@ -808,10 +811,10 @@ UPDATE ct_health_report_task SET status='FAILED', fail_code='SERVER_ERROR', rean
 
 ```java
 // task.TaskStateService#markSucceeded
-① redis.set("result:"+taskId, json, 2h)          // 此时结果【尚不可见】
+① redis.set("result:v2:"+taskId, json, 2h)       // 此时结果【尚不可见】；v2 段真源为 ResultSchemaVersion
 ② int rows = mapper.casSucceeded(taskId);        // 唯一的「提交点」
 ③ if (rows == 0) {
-       redis.delete("result:"+taskId);
+       redis.delete("result:v2:"+taskId);
        // 超过 deadline → FAILED/EXECUTION_TIMEOUT；已删除/已被巡检判失败 → 什么都不做
    }
 ```
@@ -845,7 +848,7 @@ expire_at 顺延         否则第 30 分钟任务行被删，归属校验失去
 ① UPDATE task SET deleted_at=now()
     WHERE task_id=? AND user_id=? AND company_id=? AND deleted_at IS NULL
    —— 任何状态下都允许，包括 SUCCEEDED 和执行中
-② 删除：对象存储原文件、ct_health_report_file 行（整行删）、Redis result:{taskId}
+② 删除：对象存储原文件、ct_health_report_file 行（整行删）、Redis result:v2:{taskId}
 ③ 【不中断】已经在跑的工作线程 —— 不 Future.cancel、不发中断
 ④ 工作线程每次 CAS、每次写结果都带 deleted_at IS NULL；写回被④拦下
 ```
@@ -941,13 +944,12 @@ expire_at 顺延         否则第 30 分钟任务行被删，归属校验失去
 |---|---|---|
 | PDF | `%PDF-` 头 | PDFBox 能打开、页数 ≥ 1 |
 | JPG/PNG | magic number + **实际解码** | 解码成功、宽高 ≥ 100px、总像素 ≤ 8000 万 |
-| DOCX | ZIP 容器 + 内含 `word/document.xml` | 不适用——**识别即拒**（§5.4） |
+| DOCX | ZIP 容器 + 内含 `word/document.xml` | docx4j 排版转 PDF 成功、页数 ≥ 1（§5.4，2026-09-05 恢复） |
 | OFD | ZIP 容器 + 内含 `OFD.xml` | ofdrw 能打开、页数 ≥ 1 |
 | DOC | OLE2 头 `D0CF11E0` | 不适用——**识别即拒**（§5.4） |
 
 `.zip` 不是支持格式，直接拒。但 DOCX 与 OFD 自身就是 ZIP，magic number 相同，
-必须解开查内部结构才能区分——**DOC/DOCX 不支持但识别逻辑必须保留**：
-不区分的话 DOCX 会被当成损坏 OFD 报「文件无法读取」，正确文案是「暂不支持该文件格式」。
+必须解开查内部结构、按标志性条目区分；两种都像或都不像的 ZIP 一律拒绝。
 识别只读 ZIP 条目名与目标条目，不做全量内容解压。
 
 **PDF 不再判断「有没有文本层」。** 一律转图，字形密度闸随之删除。
@@ -967,6 +969,7 @@ render
 ├── PageImage                   一页：JPEG 字节 + 宽高 + 全局 page
 ├── pdf/PdfPageRenderer         已存在，不改：300dpi、长边 ≤3600、Rotate 归一化
 ├── ofd/OfdPageRenderer         ofdrw 逐页转图
+├── docx/DocxToPdfConverter     docx4j 排版转 PDF，产物复用 PDF 渲染路径（2026-09-05）
 ├── image/UploadedImageAdapter  解码 → EXIF Orientation 归一化 → 重编码
 └── ExtractionImageCompressor   已存在，不改：长边 2000/q0.85，超 1MiB 降 1600/0.80
 ```
@@ -1062,23 +1065,45 @@ public final class PageImageSequence {
 **`locate` 是查数组，不是推断**（设计方案 §0-2）。模型只报全局 `page`，
 「它属于哪个文件的第几页」由这张表回答。越界的 `page` 由调用方按「引用了不存在的页」丢弃条目。
 
-### 5.4 Word：第一期不支持（2026-09-03 裁决）
+### 5.4 Word 支持口径（2026-09-05 改裁：DOCX 恢复，DOC 仍不支持）
 
-DOC / DOCX 上传即返回 `UNSUPPORTED_FORMAT`，不落 file 行、不存对象（设计方案 §3.2.1、§12-16）。
-裁决理由：纯 Java 开源路线（docx4j+FOP / XDocReport）对重表格医疗文档保真度不合格，
-会造成表格串行的静默错读；LibreOffice / 商业库需新增部署依赖或采购，
-在 Word 上传占比（设计方案 §11-9）未证实前不值得付出。
+2026-09-03 曾裁决 DOC/DOCX 均拒收，理由「docx4j+FOP 对重表格医疗文档保真度不合格」
+已被真实样本评估证伪（设计方案 §3.2.1）。现行口径：
 
-**不写 `WordPageRenderer`，也不留抛 `UnsupportedOperationException` 的占位**
-——格式在上传口就被拒了，渲染层根本收不到 Word。POI 依赖随之从 pom 移除（§1）。
+**DOCX**：`render/docx/DocxToPdfConverter`（丢弃图片、仅排版文字与表格 → docx4j 8.x → XSL-FO/FOP → PDF），
+产出 PDF 完全复用既有渲染路径——`CapacityPrecheckService` 转换后按 PDF 数页
+（即丢弃图片后的 DOCX 精确页数，不要求与原 Word 文档含图片时的页数一致），
+`FileToImageService` 转换后走 `renderPdf` 逐页渲染压缩。
 
-**随本裁决移除的机制清单**（恢复 Word 支持时按设计方案 §3.2.1 一并恢复）：
+**图片处理契约（设计方案 §3.2.1，2026-09-05 确认）：**
 
-```
-等效页折算 ceil(字符数/1800)+内嵌图片数     WordCapacityGuard 与 Worker 二次容量裁决
-「正文非空或 ≥1 张合规内嵌图片」可读性判据    R43b2~R43b7 全部 Word 容量测试
-PAGE_LIMIT_EXCEEDED 的异步失败路径          POI（poi-ooxml / poi-scratchpad）依赖
-```
+- DOCX 内全部图片一律丢弃：内嵌、外链，正文、表格、页眉、页脚均无例外；
+  DrawingML 与 VML 两种表示都须覆盖。医学影像、带文字的截图与扫描图片均不参与分析，
+  不分类、不另做 OCR，也不以丢弃图片作为保真缺陷。
+- 文字与表格仍走排版 → PDF → 页面图；不抽取文本替代视觉链路。
+  独立 JPG/PNG、扫描版 PDF、OFD 的转图行为不变。
+- 在任何图片资源读取或导出之前阻断处理：不得因图片访问外链，不得把内嵌图片写为临时文件。
+  必须覆盖全部转换阶段，含页眉、页脚尺寸预计算；不能只检查最终 PDF 是否含图片。
+- 上传预检、Worker 复核和 Worker 渲染共用相同的图片丢弃与字体规则，保持页数一致。
+
+**待修复安全缺口（2026-09-05 复核）：** 当前主转换通过 `FOSettings.setImageHandler(DROP_ALL_IMAGES)`
+跳过图片，但 docx4j 的 `FOPAreaTreeHelper` 在页眉、页脚尺寸预计算时另建转换配置，
+未继承该处理器；已复现页眉、页脚外链图片触发 HTTP 读取，以及内嵌图片留下临时 PNG。
+**TODO：补齐该子转换路径的阻断，并通过 R66d1/R66d2；正文用例通过不能代表全链路安全。**
+本次图片处理口径确认不代表上述缺口已经修复。
+
+失败映射：文档损坏/排版失败 = 不可读（上传 `FILE_UNREADABLE`、Worker `UNREADABLE`）；
+**字体环境不可用 = `SERVER_ERROR`**——环境问题不得归因为用户文件，
+更不能把中文渲染成 # 后静默送给模型。字体环境：思源黑体
+（`resources/fonts/SourceHanSansCN-Regular.otf`，SIL OFL 1.1，许可证同目录随包分发）
+内置并**优先于系统字体**——跨机器分页一致，部署零字体依赖；文件 SHA-256 由
+`DocxToPdfConverterTest` 钉死（换字体 = 换排版结果，必须显式过评审）；
+物理字体扫描范围与声明字体映射表均钉死在 `DocxToPdfConverter`。
+已知成本：一次 DOCX 任务共三次排版转换（上传预检、Worker 复核、Worker 渲染），单次秒级。
+
+**DOC**：仍上传即拒 `UNSUPPORTED_FORMAT`，不落 file 行、不存对象。
+旧版裁决移除的等效页折算 / `WordCapacityGuard` / Worker 二次容量裁决**不恢复**：
+DOCX 页数已是精确值，不需要那套机制（§4.1.2）。POI 依赖仅测试作用域（合成夹具用）。
 
 ### 5.5 容量限制
 
@@ -1087,8 +1112,8 @@ PAGE_LIMIT_EXCEEDED 的异步失败路径          POI（poi-ooxml / poi-scratch
 超限                 PAGE_LIMIT_EXCEEDED，不建任务、不绑文件；不截断、不输出部分结果
 ```
 
-`CapacityPrecheckService` 保留（只处理 PDF / OFD / 图片；上传预检与对象存储读回复核共用）；
-`WordCapacityGuard` 与 `PageBudgetService` 删除——前者随 Word 移除（§5.4），后者因不再截断页面。
+`CapacityPrecheckService` 保留（处理 PDF / OFD / 图片 / DOCX；上传预检与对象存储读回复核共用）；
+`WordCapacityGuard` 与 `PageBudgetService` 删除——前者的机制随 DOCX 精确页数口径不再需要（§5.4），后者因不再截断页面。
 
 
 ## 6. 体检报告分析模型链路（三次串行调用）
@@ -1186,7 +1211,7 @@ llm.extraction.max-request-body-bytes
 llm.extraction.max-response-body-bytes
 ```
 
-三次请求都不含 `taskId/userId/companyId/origin_name`。普通日志不得记录请求体、响应体、
+三次请求都不含 `taskId/userId/companyId/display_name`（原始文件名根本不存在于系统中）。普通日志不得记录请求体、响应体、
 页面图、报告引用、饮食建议或模型异常中可能携带的响应摘要。
 
 ### 6.5 校验与结果原子性
@@ -1204,7 +1229,7 @@ llm.extraction.max-response-body-bytes
 | 二 | `INDICATOR` 引用与调用一异常指标的匹配**只决定 `indicatorId` 跳转按钮，匹配不到不丢弃条目**（设计方案 §6.2）；`name` 的原文片段能在 `rawText` 中找到。该匹配发生在调用后，不把阶段 1 输出发给阶段 2 |
 | 三 | `enumKey` 属于 `dimension`；方向符合固定表；不从指标/问题输入推导；不得出现任何菜品字段 |
 
-任意调用失败都让整任务 `FAILED`，不写部分 `result:{taskId}`。
+任意调用失败都让整任务 `FAILED`，不写部分 `result:v2:{taskId}`。
 `NO_REPORT_FEATURE` 映射 `NOT_HEALTH_REPORT`，`UNREADABLE` 映射 `UNREADABLE`，服务端异常映射
 `SERVER_ERROR/reanalyzable=true`。全链路零重试。
 
@@ -1246,8 +1271,8 @@ public static final String DIET_TAGS = "diet-tags-1.1.0";
 模块四   拼音首字母（需求 §8-4/§8-5），与上面三条无关
 ```
 
-**多文件时先按 `page` 收敛，再按数组顺序。** `page` 是全局图序号，天然递增且跨文件唯一，
-它同时承担了旧链路里 `fileIndex` + `groupOrder` + `page` 三个键的作用。
+**多文件时同样只按各数组原始顺序展示，不做 `page` 重排。** `page` 是全局图序号，
+只用于模块一/二的「报告N-」来源前缀定位（`PageImageSequence.locate`）与同一性校验。
 
 `assemble/sort` 包连同 `GroupOrderCalculator`、`SectionGroupKey` 一并删除。
 
@@ -1320,9 +1345,9 @@ public static final String DIET_TAGS = "diet-tags-1.1.0";
 
 ```
 来源标注 = 章节展示名 + "–" + quote
-    章节展示名 = section（多文件带「报告N-」前缀，fileIndex 由 page 查表得到）
+    章节展示名 = section（模块三**不加**「报告N-」前缀、不使用 page；前缀只在模块一/二）
     「第N条」   = itemNo 非 null 时用它；【为 null 时不写条号，不拿数组下标顶替】
-排序     = recommend / reject 各自的数组顺序；多文件先按 page 收敛
+排序     = recommend / reject 各自的数组顺序；不做 page 重排
 ```
 
 > **`quote` 与 `rawText` 之间不做包含性校验。** 一条原文拆出多个枚举时各条 `quote`
@@ -1356,60 +1381,71 @@ public static final String DIET_TAGS = "diet-tags-1.1.0";
 > 过敏忌口本身就是要展示给用户的安全信息，用人群词连带抑制忌口清单，方向反了。
 > 过敏原条目的 `structuredOutputSuppressed` 恒为 `false`。
 
-**`OTHER` 的处理**（含被安全闸抑制的条目）：
+**`OTHER` 的处理**（含被安全闸抑制与内容未过审的条目）：
 
 ```
-照常展示该条建议的报告原文与来源标注
+在所属维度分区生成「仅原文」卡片：名称为 null、食材清单为空，只有来源标注
 不加任何说明文字（产品决策）
 不生成食材清单、不参与菜品匹配、不进入打标维度
+同一枚举先「仅原文」后完整时用完整卡片替换，反向不降级
 ```
 
-> 这不满足需求 §7-3（要求每条建议都列食材/摄入量/搭配建议），**产品已确认接受该降级**。
+> 这些条目仍不满足需求 §7-3（要求每条建议都列食材/摄入量/搭配建议），**产品已确认接受该降级**。
 
-**展示形态：两个食材清单**（设计方案 §7.6，产品确认）
+**展示形态：三维度卡片分区**（设计方案 §7.6，2026-09-04 改版；
+旧「适宜多吃/忌吃少吃」两清单形态已废弃）
 
 ```java
-// DietAdviceAssembler
-Set<String> nutritionSet     = union(recommend, NUTRITION, c -> c.recommendIngredients);
-Set<String> dietRecommendSet = union(recommend, DIET,      c -> c.recommendIngredients);
-Set<String> allergenSet      = union(reject,    ALLERGEN,  g -> g.avoidIngredients + g.hiddenFoods);
-Set<String> dietAvoidSet     = union(reject,    DIET,      c -> c.avoidIngredients);
+// DietAdviceAssembler.Result —— 三个分区各自成卡片列表，各自独立空态
+List<AllergyReminder>     allergyReminderList;      // allergenKey / allergenName / foodBorne
+                                                    // avoidFoodList（AVOID 桶）/ hiddenFoodList（HIDDEN 桶）/ source
+List<NutritionSupplement> nutritionSupplementList;  // nutritionKey / nutritionName / recommendFoodList
+                                                    // intakeNoteList / pairingTipList / source
+List<DietAttention>       dietAttentionList;        // requirementKey / requirementName / recommendFoodList
+                                                    // avoidFoodList / cookingTipList / source
+String allergyEmptyState; String nutritionEmptyState; String dietAttentionEmptyState;
+List<Entry> entryList;    // 逐条来源与抑制状态，排障用，前端不渲染
+String disclaimer;
 
-List<String> avoidList     = ordered(allergenSet, dietAvoidSet);
-List<String> recommendList = ordered(nutritionSet, dietRecommendSet);
-recommendList.removeIf(food -> hitsAny(food, avoidList));   // 【最后统一减一次】
+// source = { section, itemNo, quote, displayText }
+// displayText = "来源：" + section + "–" + quote（section 为空只拼 quote；itemNo 为 null 不写条号）
 ```
+
+卡片展示名来自常量表（`AllergenGroup.displayName` / `NutritionRule.displayName` /
+`DietRequirementRule.displayName`）；推荐食材 = `recommendableFoodList ∪ displayOnlyFoodList`
+（LinkedHashSet 去重）。卡片顺序 = reject、recommend 数组的原始顺序，同一枚举去重取首次来源；
+饮食注意卡片无论条目落在哪个数组，都同时带推荐与需避免两侧内容。
 
 **三条硬约束：**
 
 ```
-① 差集放在最后，不在各维度内部做
-   报告同时说「补铁」和「低脂饮食」时，猪肝在 nutritionSet 也在 dietAvoidSet；
-   只在营养补充维度内部判断的话，另一个维度的禁忌会漏掉
+① 维度之间不做食材差集（需求 §7-5 各自独立展示）
+   「补铁」推荐的猪肝与「低嘌呤」避免的动物内脏允许同时出现在各自卡片里，
+   表面矛盾由来源标注解释，产品已确认接受
 
-② 差集用宽松匹配，不用 displayName 精确相等
-   命中判据：适宜多吃里的食材【包含】忌吃少吃侧任意一个 matchWord
-   过敏原「虾蟹类」的 matchWord 含「虾」→「虾仁」「基围虾」全部移除
+② 唯一保留的跨维度运算是过敏原红线差集，且必须在生成任何推荐卡片前收齐全部过敏词
+   词源：食入性过敏原全部已审核词条的 matchWord（avoid ∪ hidden 两桶）
+   命中判据：推荐食材【包含】任一过敏 matchWord 即移除，宽松匹配
+   过敏原「牛肉」的 matchWord 含「牛肉」→ 补铁卡片的「瘦牛肉」移除，「猪肝」保留
    误判代价不对称：少推荐一条只是少条信息，把过敏原推给用户是一级红线（§0-6），宁可多减
 
-③ hiddenFoods 必须并进忌吃少吃
-   虾丸、蟹棒、XO 酱：需求 §7-3 要求展示「易忽略的含该过敏原的常见食物」，
-   两个清单形态下它们没有别的地方可去
+③ hiddenFoods 单独进 hiddenFoodList 桶
+   虾丸、蟹棒：需求 §7-3 的「易忽略的含该过敏原的常见食物」在卡片上独立分组展示，
+   不再与 avoidFoodList 平铺合并；非食入性过敏原 foodBorne=false 且两清单为空，
+   ALLERGEN OTHER 的 foodBorne 为 null（Java 不猜）
 ```
 
-**`OTHER` 与被安全闸抑制的条目不产生任何食材**，因此在本形态下不可见
-——它们仍在结果对象里下发（带 `quote` / `section`），前端当前不渲染。
-**`OTHER` 条数进埋点**，占比异常时重新评估本形态。
-
-**空态**（两个清单各自独立）：
+**空态**（三个分区各自独立；主语是「未提取到」，不得说成「报告未涉及」）：
 
 
-| 清单 | 文案 |
+| 分区 | 文案 |
 |---|---|
-| 适宜多吃 | 本次报告未提取到明确的饮食推荐内容 |
-| 忌吃少吃 | 本次报告未提取到需要避免的食材 |
+| 过敏提醒 | 本次报告未提取到过敏原相关内容 |
+| 营养补充 | 本次报告未提取到明确的营养补充建议 |
+| 饮食注意 | 本次报告未提取到明确的饮食注意要求 |
 
-**「适宜多吃」被差集减空与「本来就没有推荐」走同一句文案**，不解释原因。
+**推荐食材被过敏红线差集减空是一种正常结果**：卡片照常展示，只是 `recommendFoodList`
+为空，不解释原因。
 
 > **主语必须是「我们没提取到」，不是「报告未涉及」**——后者是在陈述报告的内容，而我们只知道自己没提取到。过敏这一条尤其不能反过来说。
 
@@ -1920,7 +1956,7 @@ diff 会认为标签已存在，永远不会重算——**而且这个 bug 是�
 
 ```
 普通应用 logger 绝不记录：报告原文、页面图、证据文本、姓名、原始过敏或医嘱文本、
-                           健康数据、模型完整请求响应、`origin_name` 原始文件名
+                           健康数据、模型完整请求响应、上传原始文件名（2026-09-04 起不再落任何存储，日志自然不可能出现）
 唯一例外：上述体检隐私内容可进入 HEALTH_REPORT_SENSITIVE 独立 logger 的 DEBUG 事件；
          该 logger 默认 OFF，仅限排障期临时开启，且不得在同一事件携带 taskId / userId
 永久禁止：凭证、Authorization 头、图片字节在任何 logger、任何级别都不得记录
@@ -2312,6 +2348,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 | **R33** | 推荐/不推荐列表各有 5 道候选 | 先全维度裁决再截断到 3；**不是先取 3 再判过敏** |
 | **R33a** | 任务处于 `QUEUED` | task 接口返回 `stage=UPLOADING`、`progress=0`，**不是 404 也不是 PARSING** |
 | **R33b** | `stage` 全部取值 | 只有 `UPLOADING` / `PARSING` / `ASSEMBLING` 三个；`EXTRACTING` **不作为 stage 出现** |
+| **R-ORD** | 多文件任务的模块一~三条目顺序 | 一律等于 Schema 数组顺序（无 page 重排）；模块一/二来源带「报告N-」前缀、模块三不带；结构守护 = `DisplayArchitectureTest.comparatorsShouldExistOnlyInDishNameSorter` |
 
 #### 任务与状态机
 
@@ -2337,9 +2374,9 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 | **R43a** | 精确 `totalPages` = 30 | 全部 30 页进入同一图序列，`processedPages=totalPages=30`，不标记页数降级 |
 | **R43b** | 上传文件的 `precheck_pages` 累计为 31 | analyze 直接拒绝 `PAGE_LIMIT_EXCEEDED`，**不建任务行、不绑文件** |
 | **R43b1** | 分别上传 PDF / 图片 | `precheck_pages` 分别为真实页数 / 1 |
-| **R43b12** | 分别上传 DOC 与 DOCX | 均返回 `UNSUPPORTED_FORMAT`，不落 file 行、不存对象；**DOCX 不得误判为损坏的 OFD**，OFD 正常通过（两者同为 ZIP 容器，§5.1） |
+| **R43b12** | 分别上传 DOC、合法 DOCX 与残缺 DOCX 容器（2026-09-05 改版） | DOC 返回 `UNSUPPORTED_FORMAT` 不落行；合法 DOCX 识别为 DOCX 并正常预检；残缺 DOCX 容器识别为 DOCX 后按 `FILE_UNREADABLE` 拒；**DOCX/OFD 同为 ZIP 容器互不误判**（§5.1） |
 | **R43b13** | Worker 读回对象存储原文件 | 非空、长度、SHA-256、重新识别的真实格式、格式安全检查、可读性和精确页数必须逐项通过并与 file 行一致；任务快照仍满足文件数、连续 `file_index`、总字节数与总页数上限。任一漂移均 `FAILED/SERVER_ERROR`，三次体检报告分析调用数为 0 |
-| ~~**R43b2~R43b7**~~ | **已撤销**（2026-09-03，含 R43b6/b6a/b6b） | Word 第一期不支持（§5.4），全部 Word 预筛/渲染/容量用例随之移除 |
+| ~~**R43b2~R43b7**~~ | **已撤销**（2026-09-03，含 R43b6/b6a/b6b） | 原 Word 预筛/等效页折算/二次容量用例随机制移除；2026-09-05 DOCX 恢复后仍不恢复——DOCX 页数为精确值，新用例见 R43b12/R66d（§5.4） |
 | **R43b10** | 任一页无法解码或渲染 | 整任务 `FAILED/UNREADABLE`，三次体检报告分析调用数均为 0，不用其他页生成部分结果 |
 | **R43b11** | 纯图片上传 / 扫描版 PDF 可正常渲染 | 不调 OCR，页面图直接进入三次体检报告分析调用 |
 | **R43b8** | 多文件 `precheck_pages` 累计**恰好 30** | analyze **通过**，正常建任务；31 才拒（R43b） |
@@ -2356,7 +2393,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 
 | # | 用例 | 断言 |
 |---|---|---|
-| **R48** | 任务成功后检查 Redis `result:{taskId}` | **不含**姓名、性别、页面图、三次模型原始响应；只含四模块展示所需字段 |
+| **R48** | 任务成功后检查 Redis `result:v2:{taskId}` | **不含**姓名、性别、页面图、三次模型原始响应；只含四模块展示所需字段 |
 | **R49** | 全流程日志捕获 | 不含报告原文、姓名、页面图、模型请求/响应正文、健康数据；`taskId` 不与上述内容同事件 |
 | **R50** | `SUCCEEDED` 后跑清理 | 原文件与 file 行立即删；task 行保留至顺延后的 `expire_at` |
 | **R51** | `FAILED` 且 `reanalyzable=1` 后跑清理 | 原文件**保留**至 `expire_at`（否则「重新解析」形同虚设） |
@@ -2368,7 +2405,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 | # | 用例 | 断言 |
 |---|---|---|
 | **R57** | ArchUnit 扫 `llm.extraction`、`llm.dishtag` 与 `infra` 包 | 两条模型链路各自只依赖自己的客户端接口：`llm.extraction` 不依赖 `DishTagModelClient`，`llm.dishtag` 不依赖 `HealthReportAnalysisModelClient`。`DifyClient` 已删除 |
-| **R58** | 捕获三次体检报告分析请求体 | **不含** `taskId` / `userId` / `origin_name`；只含 §6.3 定义的字段，且 `chat_template_kwargs.enable_thinking=false` |
+| **R58** | 捕获三次体检报告分析请求体 | **不含** `taskId` / `userId` / 任何文件名（原始文件名不落存储，`display_name` 亦不进请求）；只含 §6.3 定义的字段，且 `chat_template_kwargs.enable_thinking=false` |
 | **R59** | 全流程监控文件系统与对象存储调用 | 图像**只从 `byte[]` 内联**；**不创建临时文件、不调用 `S3FileStorage`** |
 | **R60** | 构造全局页码 2、5、9 的 `PageImageSequence` | 消息序列严格「页码文本→图」成对；每对来自同一 `PageImage`，无漏图、无重复页 |
 | **R61** | 打乱输入页序 / 缺一张图 / 重复一页 | 三种都**在组装前失败**，不得静默发出错配的请求（§6.2、§6.3） |
@@ -2390,7 +2427,9 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 | **R66k** | 启动时把 `llm.extraction.max-request-body-bytes` 配成 0 / 负数 / 小于协议开销 | **启动直接失败**，不得跑到第一次调用才报错 |
 | **R66i** | PDF 页走 `ExtractionImageCompressor` | 输出符合长边、JPEG 质量和 1MiB 上限，与其他格式使用同一页图契约 |
 | **R66c** | 档 2 回退后检查输出 | 实际长边为 1600px、JPEG q0.80、不超 1MiB，且三次请求复用同一字节 |
-| ~~**R66d**~~ | **已撤销**（2026-09-03） | Word 第一期不支持（§5.4），渲染层收不到 Word |
+| **R66d** | DOCX 任务的页面图（2026-09-05 恢复改版） | 丢弃图片、仅排版文字与表格，经 docx4j 转 PDF 后走与 PDF 相同的渲染压缩契约；上传预检、Worker 复核与渲染页数一致；中文字形不得渲染为 #（字体环境缺失应在转换阶段即 `SERVER_ERROR`，§5.4） |
+| **R66d1** | DOCX 正文、表格、页眉、页脚分别放置内嵌图片（含带文字截图，覆盖 DrawingML/VML） | 转换产物不包含这些图片，周围文字与表格保留；监控包含尺寸预计算在内的全部转换阶段，内嵌图片不得写为临时文件，不能只检查转换结束后的目录；图片丢弃符合预期，不作为保真缺陷（§5.4） |
+| **R66d2** | DOCX 正文、表格、页眉、页脚分别放置外链图片（覆盖 DrawingML/VML、HTTP/HTTPS、目标可用与不可用） | 全部转换阶段均不向外链目标发请求；外链图片不进入产物，目标不可用不影响图片丢弃；必须覆盖页眉、页脚尺寸预计算，不得只验证主转换处理器（§5.4） |
 | **R66e** | PDF 某页渲染失败（构造损坏页） | 整任务 `FAILED / UNREADABLE`；**不抛 `IllegalStateException`**，即不落到 `assertPageListValid`（§5.6.5） |
 | **R65c** | WireMock 返回 200 + 畸形 JSON，正文含「甘油三酯 2.8 阳性」等敏感串 | 抛 `HealthReportAnalysisCallException`；**捕获全部日志断言不含该敏感串**——Jackson 解析异常消息会带出错位置附近的原文片段，`extractContent` 必须就地脱敏 |
 
@@ -2482,8 +2521,8 @@ IdCanonicalizer / TaskOwnershipGuard / SystemActor（§3.1.3）
 
 ```
 格式判定与路由、逐格式可读性校验、解压炸弹防御（§5.1）
-    —— DOC/DOCX 识别即拒（UNSUPPORTED_FORMAT，§5.4）；DOCX 与 OFD 同为 ZIP 容器，
-       两者的区分是本批的重点负例
+    —— DOC 识别即拒（UNSUPPORTED_FORMAT，§5.4）；DOCX 与 OFD 同为 ZIP 容器，
+       两者的区分与残缺 DOCX 容器的不可读拒绝是本批的重点负例
 CapacityPrecheckService / `precheck_pages` 全格式实现（§4.1.1）
 POST /file 上传接口（§4.1）+ 对象存储占位符对接
 ```

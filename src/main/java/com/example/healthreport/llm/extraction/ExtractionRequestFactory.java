@@ -5,7 +5,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 组装单次调用输入：System 取生产提示词正文，User 只含页数与通用任务说明。
- * <p>{@code taskId / userId / companyId / origin_name}、菜品数据与前序阶段结果
+ * <p>{@code taskId / userId / companyId / display_name}、菜品数据与前序阶段结果
  * 全部不进模型请求（设计方案 §4.2.1）。</p>
  */
 @Component

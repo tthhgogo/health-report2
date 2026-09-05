@@ -1,5 +1,6 @@
 package com.example.healthreport.cache;
 
+import com.example.healthreport.constants.ResultSchemaVersion;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -50,12 +51,25 @@ public class TaskResultCache {
         }
     }
 
-    /** 删除结果；删除操作幂等。 */
+    /**
+     * 删除结果；删除操作幂等。
+     * <p>必须覆盖历史版本键：滚动发布窗口内旧 Pod 写的是旧版本 key，只删当前版本会让
+     * 健康数据在用户删除后继续留到 TTL 到期，违反「删除即清理」契约。
+     * bump {@link ResultSchemaVersion} 时要把上一版键格式追加进 {@link #legacyKeys}。</p>
+     */
     public boolean delete(String taskId) {
-        return Boolean.TRUE.equals(redisTemplate.delete(key(taskId)));
+        java.util.List<String> keyList = new java.util.ArrayList<String>(legacyKeys(taskId));
+        keyList.add(key(taskId));
+        Long deletedCount = redisTemplate.delete(keyList);
+        return deletedCount != null && deletedCount > 0;
+    }
+
+    /** 历史版本键，当前只有 v1（无版本段的 {@code result:{taskId}}）。 */
+    private java.util.List<String> legacyKeys(String taskId) {
+        return java.util.Collections.singletonList(RESULT_KEY_PREFIX + taskId);
     }
 
     private String key(String taskId) {
-        return RESULT_KEY_PREFIX + taskId;
+        return RESULT_KEY_PREFIX + ResultSchemaVersion.VALUE + ":" + taskId;
     }
 }

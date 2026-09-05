@@ -12,7 +12,8 @@ import java.time.LocalDateTime;
 /**
  * {@code ct_health_report_file} 上传文件元数据实体。
  * <p>
- * 原始文件名是已登记的敏感元数据，只允许前端回显，不得进入日志或外部系统。
+ * 展示名由服务端安全生成（体检报告-{fileId前8位}.{ext}），不含任何用户输入；
+ * 原始文件名（常含姓名与体检属性）从不落任何存储（2026-09-04 消除敏感例外）。
  * </p>
  */
 @Data
@@ -32,7 +33,7 @@ public class CtHealthReportFileEntity {
 
 	private String status;
 
-	private String originName;
+	private String displayName;
 
 	private String contentType;
 

@@ -22,6 +22,8 @@ import java.util.List;
 public final class DietRequirementRule {
 
     private final DietRequirementKey key;
+    /** 卡片展示名，如「低脂饮食」。 */
+    private final String displayName;
     /** 正向食材，仅展示，不产生 RECOMMEND。 */
     private final List<String> displayOnlyFoodList;
     /** 需避免的食材，产生 REJECT。 */
@@ -41,7 +43,7 @@ public final class DietRequirementRule {
     /** 正向规则的独立审核状态：负向已审核不等于正面健康承诺已审核。 */
     private final ReviewStatus positiveReviewStatus;
 
-    DietRequirementRule(DietRequirementKey key, List<String> displayOnlyFoodList,
+    DietRequirementRule(DietRequirementKey key, String displayName, List<String> displayOnlyFoodList,
                         List<String> avoidFoodList, List<String> avoidDishPatternList,
                         List<String> cookingTipList, List<String> behaviorTipList,
                         String contraindication, ReviewStatus reviewStatus,
@@ -58,6 +60,7 @@ public final class DietRequirementRule {
             throw new IllegalArgumentException("开放推荐的维度必须有推荐食材和标签文案：" + key);
         }
         this.key = key;
+        this.displayName = displayName;
         this.displayOnlyFoodList = Collections.unmodifiableList(displayOnlyFoodList);
         this.avoidFoodList = Collections.unmodifiableList(avoidFoodList);
         this.avoidDishPatternList = Collections.unmodifiableList(avoidDishPatternList);

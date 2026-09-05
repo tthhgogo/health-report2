@@ -1,5 +1,6 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -14,10 +15,12 @@ import java.io.IOException;
  *
  * <p>合并的理由是重复解析：可读性与页数分开做时，一次 PDF 上传要开两次 {@code PDDocument}、
  * 一次 OFD 上传要开两次 {@code OFDReader} 外加多次全量 ZIP 扫描——对接近解压上限的
- * OFD 是白花的 CPU 与内存带宽。全部支持格式的页数都是精确值（设计方案 §3.4.1）。</p>
+ * OFD 是白花的 CPU 与内存带宽。全部支持格式的页数都是精确值（设计方案 §3.4.1）：
+ * DOCX 没有固有分页，其精确页数 = docx4j 确定性排版转 PDF 后的页数，
+ * 上传预检与 Worker 复核各转一次结果必然一致。</p>
  *
- * <p><b>调用前置条件：{@link FormatDetector#detect} 已执行。</b> OFD 的解压炸弹扫描
- * （{@link ZipBombGuard}）在格式识别区分 DOCX/OFD 时已对同一份字节完成，
+ * <p><b>调用前置条件：{@link FormatDetector#detect} 已执行。</b> ZIP 容器（OFD/DOCX）的
+ * 解压炸弹扫描（{@link ZipBombGuard}）在格式识别时已对同一份字节完成，
  * 本类不再重复扫描；脱离 detect 单独调用本类等于绕开炸弹防御。</p>
  */
 @Service
@@ -28,8 +31,12 @@ public class CapacityPrecheckService {
 
     private final ImageContentInspector imageContentInspector;
 
-    public CapacityPrecheckService(ImageContentInspector imageContentInspector) {
+    private final DocxToPdfConverter docxToPdfConverter;
+
+    public CapacityPrecheckService(ImageContentInspector imageContentInspector,
+            DocxToPdfConverter docxToPdfConverter) {
         this.imageContentInspector = imageContentInspector;
+        this.docxToPdfConverter = docxToPdfConverter;
     }
 
     /**
@@ -44,6 +51,9 @@ public class CapacityPrecheckService {
                     return pdfPages(contentBytes);
                 case OFD:
                     return ofdPages(contentBytes);
+                case DOCX:
+                    // 排版转换本身就是可读性校验；产出 PDF 的页数即 DOCX 的精确页数。
+                    return pdfPages(docxToPdfConverter.toPdf(contentBytes));
                 case JPG:
                 case PNG:
                     checkImage(contentBytes);

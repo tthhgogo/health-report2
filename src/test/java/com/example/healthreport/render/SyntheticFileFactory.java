@@ -58,7 +58,18 @@ final class SyntheticFileFactory {
         }
     }
 
-    /** 最小 DOCX 容器：只含 word/document.xml 条目，供「识别即拒」用例使用（POI 已随 Word 移除）。 */
+    /** 结构可被 docx4j 排版的合法 DOCX，POI 生成；供 DOCX 支持链路的正向用例使用。 */
+    static byte[] validDocx(String bodyText) throws IOException {
+        try (org.apache.poi.xwpf.usermodel.XWPFDocument document =
+                     new org.apache.poi.xwpf.usermodel.XWPFDocument();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            document.createParagraph().createRun().setText(bodyText);
+            document.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    /** 残缺的最小 DOCX 容器：能被识别为 DOCX，但排版转换必须失败（可读性负例）。 */
     static byte[] docx(int paragraphCount, int imageCount) throws IOException {
         try (ByteArrayOutputStream output = new ByteArrayOutputStream();
              ZipOutputStream zip = new ZipOutputStream(output)) {

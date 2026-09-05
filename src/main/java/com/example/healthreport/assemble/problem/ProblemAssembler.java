@@ -5,6 +5,10 @@ import com.example.healthreport.constants.DisclaimerConstants;
 import com.example.healthreport.constants.EmptyStateConstants;
 import com.example.healthreport.llm.extraction.ProblemsResult;
 import com.example.healthreport.render.PageImageSequence;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import org.springframework.stereotype.Service;
 
@@ -93,13 +97,24 @@ public class ProblemAssembler {
     }
 
     /** 模块二完整返回结构。 */
+    @ApiModel(value = "ProblemResult", description = "模块二（健康问题）完整返回结构")
     @Getter
     public static final class Result {
+
+        @ApiModelProperty(value = "健康问题列表；数组顺序即展示顺序", required = true)
         private final List<Item> itemList;
+
+        @ApiModelProperty(value = "列表为空时的空态文案；有内容时为 null",
+                example = "本次报告未提取到明确的异常结论或健康提示。")
         private final String emptyState;
+
+        @ApiModelProperty(value = "模块底部声明", required = true)
         private final String disclaimer;
 
-        Result(List<Item> itemList, String emptyState, String disclaimer) {
+        @JsonCreator
+        Result(@JsonProperty("itemList") List<Item> itemList,
+               @JsonProperty("emptyState") String emptyState,
+               @JsonProperty("disclaimer") String disclaimer) {
             this.itemList = Collections.unmodifiableList(new ArrayList<Item>(itemList));
             this.emptyState = emptyState;
             this.disclaimer = disclaimer;
@@ -107,16 +122,35 @@ public class ProblemAssembler {
     }
 
     /** 一条仅引用报告原文的健康问题。 */
+    @ApiModel(value = "ProblemItem", description = "一条仅引用报告原文的健康问题")
     @Getter
     public static final class Item {
+
+        @ApiModelProperty(value = "问题来源类型：INDICATOR（指标被报告明确标注异常）或 SUMMARY（总检结论/医生建议）",
+                required = true, allowableValues = "INDICATOR,SUMMARY", example = "INDICATOR")
         private final String sourceType;
+
+        @ApiModelProperty(value = "问题展示名，模型归一化结论", required = true, example = "甘油三酯 偏高")
         private final String displayName;
+
+        @ApiModelProperty(value = "来源标注；多文件时带「报告N-」前缀", required = true,
+                example = "血脂检查–甘油三酯")
         private final String sourceLabel;
+
+        @ApiModelProperty(value = "承载该问题的报告原文", required = true,
+                example = "甘油三酯 2.8 mmol/L 0.56~1.70 偏高")
         private final String rawText;
+
+        @ApiModelProperty(value = "可跳转的模块一指标卡片 ID；匹配不到或同名不唯一时为 null，前端不显示跳转按钮",
+                example = "ind-1")
         private final String indicatorId;
 
-        Item(String sourceType, String displayName, String sourceLabel, String rawText,
-             String indicatorId) {
+        @JsonCreator
+        Item(@JsonProperty("sourceType") String sourceType,
+             @JsonProperty("displayName") String displayName,
+             @JsonProperty("sourceLabel") String sourceLabel,
+             @JsonProperty("rawText") String rawText,
+             @JsonProperty("indicatorId") String indicatorId) {
             this.sourceType = sourceType;
             this.displayName = displayName;
             this.sourceLabel = sourceLabel;

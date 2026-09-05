@@ -13,6 +13,7 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
@@ -221,6 +222,43 @@ class ContentConstantsReviewTest {
 		assertThat(NutritionContents.POTASSIUM.getRecommendableFoodList()).isEmpty();
 		assertThat(NutritionContents.POTASSIUM.getReviewStatus()).isEqualTo(ReviewStatus.REVIEWED);
 		assertThat(DietRequirementContents.HIGH_FIBER.getAvoidDishPatternList()).isEmpty();
+	}
+
+	/** 营养卡片展示的食材并集必须落在需求 §7 的 3~8 种，口径与组装器一致（recommendable ∪ displayOnly）。 */
+	@Test
+	void nutritionFoodUnionShouldStayWithinThreeToEight() {
+		for (Map.Entry<NutritionKey, NutritionRule> entry : NutritionContents.ALL.entrySet()) {
+			NutritionRule rule = entry.getValue();
+			if (rule.getReviewStatus() != ReviewStatus.REVIEWED) {
+				continue;
+			}
+			Set<String> unionSet = new LinkedHashSet<String>();
+			unionSet.addAll(rule.getRecommendableFoodList());
+			unionSet.addAll(rule.getDisplayOnlyFoodList());
+			assertThat(unionSet).as("营养维度 %s 的展示食材并集", entry.getKey())
+				.hasSizeBetween(3, 8);
+		}
+	}
+
+	/** 饮食注意卡片同样受 3~8 上限约束；限制类维度无正向食材属刻意设计，允许并集为 0 但必须在此登记。 */
+	@Test
+	void dietRequirementFoodUnionShouldStayWithinThreeToEightOrDeliberatelyEmpty() {
+		Set<DietRequirementKey> deliberatelyEmptyKeySet = EnumSet.of(DietRequirementKey.LOW_ADDED_SUGAR,
+				DietRequirementKey.LIMIT_ALCOHOL);
+		for (Map.Entry<DietRequirementKey, DietRequirementRule> entry : DietRequirementContents.ALL.entrySet()) {
+			DietRequirementRule rule = entry.getValue();
+			Set<String> unionSet = new LinkedHashSet<String>();
+			unionSet.addAll(rule.getRecommendableFoodList());
+			unionSet.addAll(rule.getDisplayOnlyFoodList());
+			if (unionSet.isEmpty()) {
+				assertThat(deliberatelyEmptyKeySet).as("并集为 0 的饮食注意维度必须显式登记为刻意设计")
+					.contains(entry.getKey());
+			}
+			else {
+				assertThat(unionSet).as("饮食注意维度 %s 的展示食材并集", entry.getKey())
+					.hasSizeBetween(3, 8);
+			}
+		}
 	}
 
 	private Set<String> reviewedHardWordSet(AllergenKey key) {

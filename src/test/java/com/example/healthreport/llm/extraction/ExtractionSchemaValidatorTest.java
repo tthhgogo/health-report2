@@ -1,10 +1,15 @@
 package com.example.healthreport.llm.extraction;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
 import com.example.healthreport.support.HealthReportException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -103,10 +108,25 @@ class ExtractionSchemaValidatorTest {
                 + dietTag("FISH") + "," + badTag + "," + dietTag("MILK")
                 + "," + dietTag("EGG") + "," + dietTag("SOY") + "]}";
 
-        SchemaValidationOutcome outcome = validator.validate(ExtractionCall.DIET_TAGS, content);
+        Logger logger = (Logger) LoggerFactory.getLogger(ExtractionSchemaValidator.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            SchemaValidationOutcome outcome = validator.validate(ExtractionCall.DIET_TAGS, content);
 
-        assertThat(outcome.getValidatedNode().path("reject").size()).isEqualTo(4);
-        assertThat(outcome.getDroppedItemCount()).isEqualTo(1);
+            assertThat(outcome.getValidatedNode().path("reject").size()).isEqualTo(4);
+            assertThat(outcome.getDroppedItemCount()).isEqualTo(1);
+            assertThat(renderedLog(appender))
+                    .contains("模型输出 Schema 条目不合格", "路径=$.reject[1]", "关键字=required")
+                    .doesNotContain("SHRIMP_CRAB", "虾蟹类 阳性");
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
     }
 
     private String section(String name, int page, int indicatorCount) {
@@ -129,5 +149,13 @@ class ExtractionSchemaValidatorTest {
         return "{\"dimension\":\"ALLERGEN\",\"enumKey\":\"" + enumKey + "\",\"page\":1,"
                 + "\"section\":\"过敏原筛查\",\"itemNo\":null,\"quote\":\"" + enumKey + " 阳性\","
                 + "\"rawText\":\"" + enumKey + " 阳性 参考值：阴性\"}";
+    }
+
+    private String renderedLog(ListAppender<ILoggingEvent> appender) {
+        StringBuilder renderedLog = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            renderedLog.append(event.getFormattedMessage()).append('\n');
+        }
+        return renderedLog.toString();
     }
 }

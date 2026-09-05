@@ -88,6 +88,19 @@ class SqlSchemaMigrationTest {
 						+ "\\s+dish_id\\s+dishes_id\\s+BIGINT\\s+NOT\\s+NULL",
 				"ALTER TABLE ct_dish_tag ALTER COLUMN dish_id RENAME TO dishes_id");
 		sql = sql.replaceAll(
+				"(?i)ALTER\\s+TABLE\\s+ct_health_report_file\\s+CHANGE\\s+COLUMN"
+						+ "\\s+origin_name\\s+display_name\\s+VARCHAR\\(255\\)\\s+NOT\\s+NULL",
+				"ALTER TABLE ct_health_report_file ALTER COLUMN origin_name RENAME TO display_name");
+		sql = sql.replaceAll(
+				"(?i)ALTER\\s+TABLE\\s+ct_health_report_file\\s+MODIFY\\s+COLUMN"
+						+ "\\s+display_name\\s+VARCHAR\\(64\\)\\s+NOT\\s+NULL",
+				"ALTER TABLE ct_health_report_file ALTER COLUMN display_name SET DATA TYPE VARCHAR(64)");
+		// 20260905 DOCX 支持：注释更新型 MODIFY，结构不变，H2 侧等价为空操作。
+		sql = sql.replaceAll(
+				"(?i)ALTER\\s+TABLE\\s+ct_health_report_file\\s+MODIFY\\s+COLUMN"
+						+ "\\s+content_type\\s+VARCHAR\\(64\\)\\s+NOT\\s+NULL",
+				"ALTER TABLE ct_health_report_file ALTER COLUMN content_type SET NOT NULL");
+		sql = sql.replaceAll(
 				"(?i)ALTER\\s+TABLE\\s+(\\w+)\\s+MODIFY\\s+COLUMN" + "\\s+company_id\\s+VARCHAR\\(64\\)\\s+NOT\\s+NULL",
 				"ALTER TABLE $1 ALTER COLUMN company_id SET NOT NULL");
 		sql = sql.replaceAll("(?im)^\\s*(?:UNIQUE\\s+)?KEY\\s+[^\\r\\n]+(?:\\r?\\n|$)", "");
@@ -98,6 +111,9 @@ class SqlSchemaMigrationTest {
 	/** 从当前全量 DDL 确定性还原本迁移前结构，验证升级路径与新建路径等价。 */
 	private static String toLegacySchemaSql(String currentSchemaSql) {
 		String sql = currentSchemaSql.replaceAll("(?m)^\\s*company_id\\s+[^\\r\\n]+(?:\\r?\\n|$)", "");
+		// 还原 20260904 展示名迁移前的原始文件名列。
+		sql = sql.replaceAll("(?m)^\\s*display_name\\s+[^\\r\\n]+$",
+				"  origin_name    VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '迁移前的原始文件名列',");
 		sql = sql.replace("KEY idx_company_user (company_id, user_id)", "KEY idx_user (user_id)");
 		sql = sql.replace("dishes_id", "dish_id");
 		sql = sql.replace("UNIQUE KEY uk_company_dish_hash_enum (company_id, dish_id, tag_hash, enum_key)",

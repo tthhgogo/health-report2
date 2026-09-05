@@ -1,5 +1,6 @@
 package com.example.healthreport.task;
 
+import com.example.healthreport.assemble.TestAnalysisModulesFactory;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.AnalysisResult;
 import com.example.healthreport.support.PartialReason;
@@ -22,7 +23,7 @@ class DegradeAccumulatorTest {
         // 单值列：两类同时发生时取 DIET_TAG_DROPPED——它携带模块四已抑制的行为后果。
         assertThat(result.getPartialReason()).isEqualTo(PartialReason.DIET_TAG_DROPPED);
         assertThat(result.isSuppressDishRecommend()).isTrue();
-        assertThat(result.getModules().getDietAdvice()).isEqualTo("advice");
+        assertThat(result.getModules().getDietAdvice()).isNotNull();
         assertThat(result.getModules().getDishRecommendations()).isNull();
     }
 
@@ -36,8 +37,8 @@ class DegradeAccumulatorTest {
         assertThat(result.isPartial()).isTrue();
         assertThat(result.getPartialReason()).isEqualTo(PartialReason.SCHEMA_ITEM_DROPPED);
         assertThat(result.isSuppressDishRecommend()).isFalse();
-        assertThat(result.getModules().getDietAdvice()).isEqualTo("advice");
-        assertThat(result.getModules().getDishRecommendations()).isEqualTo("dish");
+        assertThat(result.getModules().getDietAdvice()).isNotNull();
+        assertThat(result.getModules().getDishRecommendations()).isNotNull();
     }
 
     @Test
@@ -51,6 +52,6 @@ class DegradeAccumulatorTest {
 
     /** 只需四个模块非空即可验证降级清空逻辑；模块内容正确性由各自的装配用例覆盖。 */
     private AnalysisModules populatedModules() {
-        return new AnalysisModules("indicator", "problem", "advice", "dish");
+        return TestAnalysisModulesFactory.populated();
     }
 }

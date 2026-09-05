@@ -158,6 +158,9 @@ public class ExtractionSchemaValidator {
                         call, violation.getType(), violation.getPath(), violationSet.size());
                 return null;
             }
+            // ValidationMessage 正文可能包含患者姓名、指标值或原文，只记录稳定关键字和数组路径。
+            log.warn("模型输出 Schema 条目不合格，call={}，路径={}，关键字={}，处理=剔除",
+                    call, violation.getPath(), violation.getType());
             String containerPath = matcher.group(1);
             Set<Integer> indexSet = resultMap.get(containerPath);
             if (indexSet == null) {

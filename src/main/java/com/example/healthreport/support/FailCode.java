@@ -1,9 +1,12 @@
 package com.example.healthreport.support;
 
+import io.swagger.annotations.ApiModel;
+
 /**
  * 体检报告分析失败码。
  * <p>只定义失败原因，不在此层绑定页面文案。</p>
  */
+@ApiModel(value = "FailCode", description = "体检报告分析失败码；只定义失败原因，不绑定页面文案")
 public enum FailCode {
 
     /** 上传文件的真实格式不在支持范围内。 */

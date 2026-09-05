@@ -1,7 +1,13 @@
 package com.example.healthreport.cache;
 
+import com.example.healthreport.assemble.dietadvice.DietAdviceAssembler;
+import com.example.healthreport.assemble.dishrecommend.DishRecommendAssembler;
+import com.example.healthreport.assemble.indicator.IndicatorAssembler;
+import com.example.healthreport.assemble.problem.ProblemAssembler;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 
 /**
@@ -12,30 +18,34 @@ import lombok.Getter;
  * 也不会有任何东西拦住。模块被抑制或未产出时字段为 {@code null}，
  * 与 {@code AnalysisResult} 上的 {@code suppressDishRecommend} 布尔位对齐。</p>
  *
- * <p><b>已知缺口</b>：字段类型仍是 {@code Object}，类型系统对「模块 DTO 里混进姓名、性别或
- * 完整报告原文」提供不了任何约束，R48 目前的唯一防线是
- * {@code TaskResultCacheTest#serializedAssembledModulesShouldExcludeIdentityAndCompleteSourcePayloadFields}
- * ——它用四个组装器的真实产物序列化后做哨兵串断言，是有效的，但属于测试级而非结构级保障。</p>
- *
- * <p>换成各模块正式 {@code Result} 类型是正确方向，但四个 Result 及其十余个嵌套 DTO
- * 都是私有构造器且没有 Jackson creator：<b>改成强类型后能写不能读</b>，结果接口会在
- * 反序列化时抛 {@code InvalidDefinitionException}。补齐 creator 是一次跨四个模块的
- * 改动，需要单独排期与评审，不能顺手改一半——半途而废比现状更糟。</p>
+ * <p><b>强类型契约</b>：四个字段即各组装器的 {@code Result}，Jackson 往返由
+ * {@code AnalysisResultJacksonContractTest} 守护。读侧保持严格反序列化——同一
+ * {@code ResultSchemaVersion} 的 key 内出现未知字段说明有人改了结构忘 bump，
+ * 必须报错显形而不是静默丢字段。改任何模块 Result 的结构必须 bump
+ * {@code ResultSchemaVersion}。cache 与 assemble 的包互依是本裁决接受的代价。</p>
  */
+@ApiModel(value = "AnalysisModules", description = "四个展示模块的结果容器；每个模块是一个对象，被抑制或未产出时为 null")
 @Getter
 public class AnalysisModules {
 
-    private final Object healthIndicators;
-    private final Object healthProblems;
-    private final Object dietAdvice;
-    private final Object dishRecommendations;
+    @ApiModelProperty(value = "模块一：健康指标")
+    private final IndicatorAssembler.Result healthIndicators;
+
+    @ApiModelProperty(value = "模块二：健康问题")
+    private final ProblemAssembler.Result healthProblems;
+
+    @ApiModelProperty(value = "模块三：饮食建议")
+    private final DietAdviceAssembler.Result dietAdvice;
+
+    @ApiModelProperty(value = "模块四：食堂菜品推荐；被抑制时为 null")
+    private final DishRecommendAssembler.Result dishRecommendations;
 
     /** 创建可由 Jackson 反序列化的四模块容器。 */
     @JsonCreator
-    public AnalysisModules(@JsonProperty("healthIndicators") Object healthIndicators,
-                           @JsonProperty("healthProblems") Object healthProblems,
-                           @JsonProperty("dietAdvice") Object dietAdvice,
-                           @JsonProperty("dishRecommendations") Object dishRecommendations) {
+    public AnalysisModules(@JsonProperty("healthIndicators") IndicatorAssembler.Result healthIndicators,
+                           @JsonProperty("healthProblems") ProblemAssembler.Result healthProblems,
+                           @JsonProperty("dietAdvice") DietAdviceAssembler.Result dietAdvice,
+                           @JsonProperty("dishRecommendations") DishRecommendAssembler.Result dishRecommendations) {
         this.healthIndicators = healthIndicators;
         this.healthProblems = healthProblems;
         this.dietAdvice = dietAdvice;
