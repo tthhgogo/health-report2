@@ -1,5 +1,6 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.render.doc.DocToPdfConverter;
 import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.render.image.UploadedImageAdapter;
 import com.example.healthreport.render.ofd.OfdPageRenderer;
@@ -36,19 +37,22 @@ public class FileToImageService {
     private final UploadedImageAdapter uploadedImageAdapter;
     private final ExtractionImageCompressor extractionImageCompressor;
     private final DocxToPdfConverter docxToPdfConverter;
+    private final DocToPdfConverter docToPdfConverter;
 
     public FileToImageService(PdfPageRenderer pdfPageRenderer,
                               PdfImageStripper pdfImageStripper,
                               OfdPageRenderer ofdPageRenderer,
                               UploadedImageAdapter uploadedImageAdapter,
                               ExtractionImageCompressor extractionImageCompressor,
-                              DocxToPdfConverter docxToPdfConverter) {
+                              DocxToPdfConverter docxToPdfConverter,
+                              DocToPdfConverter docToPdfConverter) {
         this.pdfPageRenderer = pdfPageRenderer;
         this.pdfImageStripper = pdfImageStripper;
         this.ofdPageRenderer = ofdPageRenderer;
         this.uploadedImageAdapter = uploadedImageAdapter;
         this.extractionImageCompressor = extractionImageCompressor;
         this.docxToPdfConverter = docxToPdfConverter;
+        this.docToPdfConverter = docToPdfConverter;
     }
 
     /**
@@ -87,6 +91,9 @@ public class FileToImageService {
                 // 排版转 PDF 后完全复用 PDF 渲染路径（逐页渲染、逐页压缩、逐页释放）。
                 renderPdf(file.getFileIndex(), docxToPdf(contentBytes), builder);
                 return;
+            case DOC:
+                renderPdf(file.getFileIndex(), docToPdf(contentBytes), builder);
+                return;
             case JPG:
             case PNG:
                 CompressedPageImage adapted =
@@ -94,7 +101,7 @@ public class FileToImageService {
                 builder.addPage(file.getFileIndex(), 1, adapted.getJpegBytes());
                 return;
             default:
-                // 旧版 DOC 在上传口已被拒（§5.4），走到这里说明数据被改过。
+                // 非 Word 的 OLE2 等在上传口已被拒（§5.4），走到这里说明数据被改过。
                 throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
         }
     }
@@ -103,6 +110,15 @@ public class FileToImageService {
     private byte[] docxToPdf(byte[] contentBytes) {
         try {
             return docxToPdfConverter.toPdf(contentBytes);
+        } catch (IOException exception) {
+            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+        }
+    }
+
+    /** 口径同 {@link #docxToPdf}：排版失败即不可读，环境问题由转换器自抛 SERVER_ERROR。 */
+    private byte[] docToPdf(byte[] contentBytes) {
+        try {
+            return docToPdfConverter.toPdf(contentBytes);
         } catch (IOException exception) {
             throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
         }

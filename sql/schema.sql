@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS ct_health_report_file (
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始，即用户提交fileIds的顺序',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件状态：UPLOADED已上传，当前仅此一个取值',
   display_name   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '安全生成的展示名：体检报告-{fileId前8位}.{ext}，ext由内容判定的真实格式映射；不含任何用户输入，原始文件名从不落任何存储，2026-09-04起消除敏感元数据例外',
-  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD/DOCX，不信任扩展名；旧版DOC识别即拒不落行（DOCX于2026-09-05恢复支持）',
+  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD/DOCX/DOC，不信任扩展名；非Word的OLE2识别即拒不落行（DOCX与DOC均于2026-09-05恢复支持）',
   size_bytes     BIGINT       NOT NULL COMMENT '文件大小，单位字节',
   precheck_pages INT          NOT NULL COMMENT '创建任务容量预检页数：PDF与OFD为真实页数，图片恒为1，全部为精确值',
   content_hash   CHAR(64)     CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件内容SHA-256哈希，小写十六进制',

@@ -36,7 +36,8 @@ AGENTS.md 与设计方案冲突 → 以设计方案为准，在交付报告里�
 ### 0.2 已登记的冲突
 
 **本文与设计方案当前无冲突。** 曾登记的 Word 过渡方案冲突已于 2026-09-03 随裁决消除；
-2026-09-05 改裁为 **DOCX 恢复支持（docx4j 转图）、DOC 仍识别即拒**（设计方案 §3.2.1、§12-16，本文 §5.4）。
+2026-09-05 改裁为 **DOCX 与 DOC 均恢复支持**（DOCX 走 docx4j、DOC 走 POI HWPF+FOP 转图；
+非 Word 的 OLE2 识别即拒。设计方案 §3.2.1、§12-16，本文 §5.4）。
 设计方案相对产品需求的偏离统一登记在设计方案 §12；其中
 §12-12 明确覆盖所有进入 `rejectSet` 的菜，包括过敏原 `REJECT` 和饮食注意 `REJECT`，不能缩写成
 只有过敏冲突。
@@ -309,7 +310,7 @@ CREATE TABLE ct_health_report_file (
   file_index     INT          NULL COMMENT '文件在任务内的顺序，从0开始，即用户提交fileIds的顺序',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件状态：UPLOADED已上传，当前仅此一个取值',
   display_name   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '安全生成的展示名：体检报告-{fileId前8位}.{ext}，ext由内容判定的真实格式映射；不含任何用户输入，原始文件名从不落任何存储，2026-09-04起消除敏感元数据例外',
-  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD/DOCX，不信任扩展名；旧版DOC识别即拒不落行（DOCX于2026-09-05恢复支持）',
+  content_type   VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '按内容判定的真实格式：PDF/JPG/PNG/OFD/DOCX/DOC，不信任扩展名；非Word的OLE2识别即拒不落行（DOCX与DOC均于2026-09-05恢复支持）',
   size_bytes     BIGINT       NOT NULL COMMENT '文件大小，单位字节',
   precheck_pages INT          NOT NULL COMMENT '创建任务容量预检页数：PDF与OFD为真实页数，图片恒为1，全部为精确值',
   content_hash   CHAR(64)     CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '文件内容SHA-256哈希，小写十六进制',
@@ -946,10 +947,12 @@ expire_at 顺延         否则第 30 分钟任务行被删，归属校验失去
 | JPG/PNG | magic number + **实际解码** | 解码成功、宽高 ≥ 100px、总像素 ≤ 8000 万 |
 | DOCX | ZIP 容器 + 内含 `word/document.xml` | docx4j 排版转 PDF 成功、页数 ≥ 1（§5.4，2026-09-05 恢复） |
 | OFD | ZIP 容器 + 内含 `OFD.xml` | ofdrw 能打开、页数 ≥ 1 |
-| DOC | OLE2 头 `D0CF11E0` | 不适用——**识别即拒**（§5.4） |
+| DOC | OLE2 头 `D0CF11E0` + POIFS 根目录含 `WordDocument` 流 | POI HWPF 排版转 PDF 成功、页数 ≥ 1（§5.4，2026-09-05 恢复） |
 
 `.zip` 不是支持格式，直接拒。但 DOCX 与 OFD 自身就是 ZIP，magic number 相同，
 必须解开查内部结构、按标志性条目区分；两种都像或都不像的 ZIP 一律拒绝。
+OLE2 同理：XLS/PPT 与 DOC 同头，必须查 `WordDocument` 流；非 Word 的 OLE2 与
+解析失败的残缺容器一律拒绝。
 识别只读 ZIP 条目名与目标条目，不做全量内容解压。
 
 **PDF 不再判断「有没有文本层」。** 一律转图，字形密度闸随之删除。
@@ -1065,7 +1068,7 @@ public final class PageImageSequence {
 **`locate` 是查数组，不是推断**（设计方案 §0-2）。模型只报全局 `page`，
 「它属于哪个文件的第几页」由这张表回答。越界的 `page` 由调用方按「引用了不存在的页」丢弃条目。
 
-### 5.4 Word 支持口径（2026-09-05 改裁：DOCX 恢复，DOC 仍不支持）
+### 5.4 Word 支持口径（2026-09-05 改裁并同日闭环：DOCX 与 DOC 均恢复）
 
 2026-09-03 曾裁决 DOC/DOCX 均拒收，理由「docx4j+FOP 对重表格医疗文档保真度不合格」
 已被真实样本评估证伪（设计方案 §3.2.1）。现行口径：
@@ -1077,8 +1080,9 @@ public final class PageImageSequence {
 
 **图片处理契约（设计方案 §3.2.1，2026-09-05 确认）：**
 
-- DOCX 内全部图片一律丢弃：内嵌、外链，正文、表格、页眉、页脚均无例外；
-  DrawingML 与 VML 两种表示都须覆盖。医学影像、带文字的截图与扫描图片均不参与分析，
+- Word 文档（DOCX 与 DOC）内全部图片一律丢弃：内嵌、外链，正文、表格、页眉、页脚均无例外；
+  DOCX 的 DrawingML 与 VML 两种表示都须覆盖；DOC 靠不设 PicturesManager 在源头阻断，
+  FO 级图形元素移除作纵深防线。医学影像、带文字的截图与扫描图片均不参与分析，
   不分类、不另做 OCR，也不以丢弃图片作为保真缺陷。
 - 文字与表格仍走排版 → PDF → 页面图；不抽取文本替代视觉链路。
   独立 JPG/PNG、扫描版 PDF、OFD 的转图行为不变。
@@ -1086,24 +1090,34 @@ public final class PageImageSequence {
   必须覆盖全部转换阶段，含页眉、页脚尺寸预计算；不能只检查最终 PDF 是否含图片。
 - 上传预检、Worker 复核和 Worker 渲染共用相同的图片丢弃与字体规则，保持页数一致。
 
-**待修复安全缺口（2026-09-05 复核）：** 当前主转换通过 `FOSettings.setImageHandler(DROP_ALL_IMAGES)`
-跳过图片，但 docx4j 的 `FOPAreaTreeHelper` 在页眉、页脚尺寸预计算时另建转换配置，
-未继承该处理器；已复现页眉、页脚外链图片触发 HTTP 读取，以及内嵌图片留下临时 PNG。
-**TODO：补齐该子转换路径的阻断，并通过 R66d1/R66d2；正文用例通过不能代表全链路安全。**
-本次图片处理口径确认不代表上述缺口已经修复。
+**安全缺口已闭环（2026-09-05）：** 页眉、页脚尺寸预计算另建转换配置绕过图片处理器的缺口，
+已改为**元素级连根移除**（`DocxToPdfConverter.stripAllImages`，覆盖正文/页眉/页脚/脚注/尾注/批注的
+DrawingML、VML 与 OLE 预览），docx4j 任何内部配置都无图可取；`DROP_ALL_IMAGES` 处理器降为纵深防线。
+回归：正文与页眉页脚的内嵌图片零落盘、外链图片零 HTTP（WireMock 断言），见 `DocxToPdfConverterTest`。
 
 失败映射：文档损坏/排版失败 = 不可读（上传 `FILE_UNREADABLE`、Worker `UNREADABLE`）；
 **字体环境不可用 = `SERVER_ERROR`**——环境问题不得归因为用户文件，
 更不能把中文渲染成 # 后静默送给模型。字体环境：思源黑体
 （`resources/fonts/SourceHanSansCN-Regular.otf`，SIL OFL 1.1，许可证同目录随包分发）
 内置并**优先于系统字体**——跨机器分页一致，部署零字体依赖；文件 SHA-256 由
-`DocxToPdfConverterTest` 钉死（换字体 = 换排版结果，必须显式过评审）；
+`DocxToPdfConverterTest` 钉死（换字体 = 换排版结果，必须显式过评审；DOC 链路共用同一字体文件）；
 物理字体扫描范围与声明字体映射表均钉死在 `DocxToPdfConverter`。
-已知成本：一次 DOCX 任务共三次排版转换（上传预检、Worker 复核、Worker 渲染），单次秒级。
+已知成本：一次 DOCX / DOC 任务共三次排版转换（上传预检、Worker 复核、Worker 渲染），单次秒级。
 
-**DOC**：仍上传即拒 `UNSUPPORTED_FORMAT`，不落 file 行、不存对象。
+**DOC（2026-09-05 恢复）**：`render/doc/DocToPdfConverter`（POI HWPF → `WordToFoConverter` → XSL-FO → FOP → PDF，
+poi-scratchpad 已进生产作用域），产出 PDF 同样复用既有渲染路径与页数口径。四项 FO 后处理缺一不可：
+字体统一替换内置思源黑体（DOC 链路**无系统字体兜底**，FOP 注册 .ttc 不可靠，内置字体经 fontbox
+实际解析验证 + FOP 预热渲染，损坏即 `SERVER_ERROR`）；白色文字改正文深色（WordToFoConverter 丢单元格
+底纹留字色，深色底纹表头会白字白底隐形）；私用区字符（U+E000–U+F8FF）替换「•」（Symbol 列表符号
+无字形会渲染成 #）；图形元素移除。页眉页脚由转换器经 `HeaderStories` 按首页/奇数页/偶数页三档提取并注入 `fo:static-content`，
+以条件页面主控按页型选择逐页渲染（「首页不同」的封面页眉不得被普通页眉覆盖），PAGE 域转
+`fo:page-number`（WordToFoConverter 只排正文，不补齐即静默丢失医院名、报告标题）。
+合成夹具 synthetic-readable/-header/-header-variants.doc 已入库（.gitignore 对
+src/test/resources/fixtures/ 下的 Word 夹具设例外），新检出环境可直接跑回归。
+**POI 转换器日志整包关断**（`org.apache.poi.hwpf.converter` = OFF）：其 WARN 会把域代码与域内文字
+原样输出，违反报告内容日志白名单。
 旧版裁决移除的等效页折算 / `WordCapacityGuard` / Worker 二次容量裁决**不恢复**：
-DOCX 页数已是精确值，不需要那套机制（§4.1.2）。POI 依赖仅测试作用域（合成夹具用）。
+DOCX/DOC 页数已是精确值，不需要那套机制（§4.1.2）。
 
 ### 5.5 容量限制
 
@@ -2374,7 +2388,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 | **R43a** | 精确 `totalPages` = 30 | 全部 30 页进入同一图序列，`processedPages=totalPages=30`，不标记页数降级 |
 | **R43b** | 上传文件的 `precheck_pages` 累计为 31 | analyze 直接拒绝 `PAGE_LIMIT_EXCEEDED`，**不建任务行、不绑文件** |
 | **R43b1** | 分别上传 PDF / 图片 | `precheck_pages` 分别为真实页数 / 1 |
-| **R43b12** | 分别上传 DOC、合法 DOCX 与残缺 DOCX 容器（2026-09-05 改版） | DOC 返回 `UNSUPPORTED_FORMAT` 不落行；合法 DOCX 识别为 DOCX 并正常预检；残缺 DOCX 容器识别为 DOCX 后按 `FILE_UNREADABLE` 拒；**DOCX/OFD 同为 ZIP 容器互不误判**（§5.1） |
+| **R43b12** | 分别上传合法 DOC、非 Word 的 OLE2、合法 DOCX 与残缺 DOCX 容器（2026-09-05 二次改版） | 合法 DOC 识别为 DOC 并正常预检；非 Word 的 OLE2（形似 XLS）返回 `UNSUPPORTED_FORMAT` 不落行；合法 DOCX 识别为 DOCX 并正常预检；残缺 DOCX 容器识别为 DOCX 后按 `FILE_UNREADABLE` 拒；**DOCX/OFD 同为 ZIP 容器、DOC/XLS 同为 OLE2 容器，均互不误判**（§5.1） |
 | **R43b13** | Worker 读回对象存储原文件 | 非空、长度、SHA-256、重新识别的真实格式、格式安全检查、可读性和精确页数必须逐项通过并与 file 行一致；任务快照仍满足文件数、连续 `file_index`、总字节数与总页数上限。任一漂移均 `FAILED/SERVER_ERROR`，三次体检报告分析调用数为 0 |
 | ~~**R43b2~R43b7**~~ | **已撤销**（2026-09-03，含 R43b6/b6a/b6b） | 原 Word 预筛/等效页折算/二次容量用例随机制移除；2026-09-05 DOCX 恢复后仍不恢复——DOCX 页数为精确值，新用例见 R43b12/R66d（§5.4） |
 | **R43b10** | 任一页无法解码或渲染 | 整任务 `FAILED/UNREADABLE`，三次体检报告分析调用数均为 0，不用其他页生成部分结果 |
@@ -2521,13 +2535,13 @@ IdCanonicalizer / TaskOwnershipGuard / SystemActor（§3.1.3）
 
 ```
 格式判定与路由、逐格式可读性校验、解压炸弹防御（§5.1）
-    —— DOC 识别即拒（UNSUPPORTED_FORMAT，§5.4）；DOCX 与 OFD 同为 ZIP 容器，
-       两者的区分与残缺 DOCX 容器的不可读拒绝是本批的重点负例
+    —— 非 Word 的 OLE2 识别即拒（UNSUPPORTED_FORMAT，§5.4）；DOCX 与 OFD 同为 ZIP 容器、
+       DOC 与 XLS/PPT 同为 OLE2 容器，容器区分与残缺 DOCX 容器的不可读拒绝是本批的重点负例
 CapacityPrecheckService / `precheck_pages` 全格式实现（§4.1.1）
 POST /file 上传接口（§4.1）+ 对象存储占位符对接
 ```
 
-**验收**：R43b1、**R43b12**（DOC/DOCX 拒收与 ZIP 容器区分）、R47，
+**验收**：R43b1、**R43b12**（Word 格式识别与容器区分、非 Word OLE2 拒收）、R47，
 以及上传接口对每种格式的正例与负例。
 **不依赖任何任务或解析逻辑**，可独立跑通。
 

@@ -146,13 +146,14 @@
             <version>${poi.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- 老版二进制 DOC 转图路线评估实验（POI HWPF → WordToFoConverter → FOP）；
-             仅测试作用域。FOP 由 docx4j-export-fo 传递提供，评估结论落定前不进生产依赖。 -->
+        <!-- 老版二进制 DOC 排版转 PDF（设计方案 §3.2.1，2026-09-05 恢复 DOC 支持）：
+             POI HWPF → WordToFoConverter → XSL-FO，FOP 由 docx4j-export-fo 传递提供，
+             产出 PDF 复用既有 pdfbox 渲染路径；真实样本评估通过后由 test 转为生产作用域。
+             传递引入的 poi 核心同时供 FormatDetector 查 OLE2 容器的 WordDocument 流。 -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-scratchpad</artifactId>
             <version>${poi.version}</version>
-            <scope>test</scope>
         </dependency>
         <!-- DOCX 排版转 PDF（设计方案 §3.2.1，2026-09-05 恢复 DOCX 支持）：
              docx4j → XSL-FO/FOP 是唯一不依赖 LibreOffice/商业库/Office 本体的纯 Java 转图路线，

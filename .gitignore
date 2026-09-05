@@ -61,4 +61,8 @@ samples/
 *.png
 *.doc
 *.docx
+# 例外：合成测试夹具（无任何真实健康数据，由 docx4j/Word 人工合成），必须随仓库分发，
+# 否则新检出环境的 DOC 转换回归直接失败。
+!src/test/resources/fixtures/*.doc
+!src/test/resources/fixtures/*.docx
 .idea/vcs.xml

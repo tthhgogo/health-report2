@@ -1,5 +1,6 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.render.doc.DocToPdfConverter;
 import com.example.healthreport.render.docx.DocxToPdfConverter;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * R43b1：容量预检对全部支持格式都是精确值（PDF/OFD 真实页数、图片恒为 1、
- * DOCX 为确定性排版转换后的页数）。旧版 DOC 在格式判定阶段识别即拒（§5.4）。
+ * DOCX/DOC 为确定性排版转换后的页数）。非 Word 的 OLE2 在格式判定阶段识别即拒（§5.4）。
  */
 class CapacityPrecheckServiceTest {
 
@@ -17,7 +18,8 @@ class CapacityPrecheckServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CapacityPrecheckService(new ImageContentInspector(), new DocxToPdfConverter());
+        service = new CapacityPrecheckService(new ImageContentInspector(),
+                new DocxToPdfConverter(), new DocToPdfConverter());
     }
 
     @Test
@@ -38,5 +40,15 @@ class CapacityPrecheckServiceTest {
         assertThat(firstPassPages).isGreaterThanOrEqualTo(1);
         // Worker 复核会用同一份字节再转一次：页数必须与上传预检一致，这是 R43b13 等值校验的前提。
         assertThat(service.precheckPages(docxBytes, ContentType.DOCX)).isEqualTo(firstPassPages);
+    }
+
+    @Test
+    void docPagesShouldComeFromDeterministicLayoutConversion() throws Exception {
+        Assumptions.assumeTrue(DocToPdfConverter.fontEnvironmentAvailable(), "内置字体不可用，跳过");
+        byte[] docBytes = SyntheticFileFactory.doc();
+        int firstPassPages = service.precheckPages(docBytes, ContentType.DOC);
+        assertThat(firstPassPages).isGreaterThanOrEqualTo(1);
+        // 与 DOCX 同口径：预检与 Worker 复核各转一次，页数必须一致。
+        assertThat(service.precheckPages(docBytes, ContentType.DOC)).isEqualTo(firstPassPages);
     }
 }

@@ -119,7 +119,7 @@ final class SyntheticFileFactory {
         }
     }
 
-    static byte[] oldDoc() throws IOException {
+    static byte[] doc() throws IOException {
         InputStream input = SyntheticFileFactory.class.getResourceAsStream(
                 "/fixtures/synthetic-readable.doc");
         if (input == null) {
@@ -135,6 +135,19 @@ final class SyntheticFileFactory {
             return output.toByteArray();
         } finally {
             input.close();
+        }
+    }
+
+    /** 非 Word 的 OLE2 复合文档（根目录只有 Workbook 流，形似 XLS）：必须被识别拒绝。 */
+    static byte[] nonWordOle2() throws IOException {
+        try (org.apache.poi.poifs.filesystem.POIFSFileSystem poifs =
+                     new org.apache.poi.poifs.filesystem.POIFSFileSystem();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            poifs.createDocument(new java.io.ByteArrayInputStream(
+                    "synthetic workbook".getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
+                    "Workbook");
+            poifs.writeFilesystem(output);
+            return output.toByteArray();
         }
     }
 
