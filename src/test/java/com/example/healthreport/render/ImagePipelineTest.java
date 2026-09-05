@@ -1,5 +1,6 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.FailCode;
 import org.junit.jupiter.api.Test;
 
@@ -48,7 +49,7 @@ class ImagePipelineTest {
         BufferedImage noisySource = patternedImage(3000, 4000, 2);
         try {
             assertThatThrownBy(() -> new ExtractionImageCompressor().compressForExtraction(noisySource))
-                    .isInstanceOfSatisfying(ImageTooLargeException.class,
+                    .isInstanceOfSatisfying(BusinessException.class,
                             exception -> assertThat(exception.getFailCode())
                                     .isEqualTo(FailCode.IMAGE_TOO_LARGE));
         } finally {

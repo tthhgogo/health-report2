@@ -2,8 +2,9 @@ package com.example.healthreport.task;
 
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
+import com.example.healthreport.support.BusinessException;
+import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.IdCanonicalizer;
-import com.example.healthreport.support.OwnershipException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -57,7 +58,7 @@ public class TaskOwnershipGuard {
 				|| !currentUserId.equals(taskEntity.getUserId()) || currentCompanyId == null
 				|| !currentCompanyId.equals(taskEntity.getCompanyId()) || taskEntity.getDeletedAt() != null
 				|| taskEntity.getExpireAt() == null || !taskEntity.getExpireAt().isAfter(currentTime)) {
-			throw new OwnershipException();
+			throw new BusinessException(FailCode.RESULT_EXPIRED);
 		}
 		return taskEntity;
 	}

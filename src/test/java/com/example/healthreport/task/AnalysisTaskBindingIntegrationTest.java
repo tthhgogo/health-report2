@@ -2,7 +2,7 @@ package com.example.healthreport.task;
 
 import com.example.healthreport.HealthReportApplication;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,7 +72,7 @@ class AnalysisTaskBindingIntegrationTest {
 
 		assertThatThrownBy(
 				() -> taskCreateService.createInTransaction(Collections.singletonList(FILE_ID), USER_ID, COMPANY_ID))
-			.isInstanceOfSatisfying(HealthReportException.class,
+			.isInstanceOfSatisfying(BusinessException.class,
 					exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_EXPIRED));
 		assertThat(count("ct_health_report_task")).isZero();
 		assertThat(jdbcTemplate.queryForObject("SELECT task_id FROM ct_health_report_file WHERE file_id=?",
@@ -85,7 +85,7 @@ class AnalysisTaskBindingIntegrationTest {
 		insertFile(LocalDateTime.now().plusMinutes(10), 31);
 
 		assertThatThrownBy(() -> taskCreateService.precheck(Collections.singletonList(FILE_ID), USER_ID, COMPANY_ID))
-			.isInstanceOfSatisfying(HealthReportException.class,
+			.isInstanceOfSatisfying(BusinessException.class,
 					exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.PAGE_LIMIT_EXCEEDED));
 		assertThat(count("ct_health_report_task")).isZero();
 		assertThat(jdbcTemplate.queryForObject("SELECT task_id FROM ct_health_report_file WHERE file_id=?",
@@ -127,7 +127,7 @@ class AnalysisTaskBindingIntegrationTest {
 			return AttemptResult.success(
 					taskCreateService.createInTransaction(Collections.singletonList(FILE_ID), USER_ID, COMPANY_ID));
 		}
-		catch (HealthReportException exception) {
+		catch (BusinessException exception) {
 			return AttemptResult.failure(exception.getFailCode(), exception.getTaskId());
 		}
 	}

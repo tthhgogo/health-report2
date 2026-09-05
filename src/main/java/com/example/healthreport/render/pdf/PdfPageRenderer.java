@@ -1,7 +1,7 @@
 package com.example.healthreport.render.pdf;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -38,7 +38,7 @@ public class PdfPageRenderer {
             float scale = renderScale(page);
             return new PDFRenderer(document).renderImage(pageIndex, scale, ImageType.RGB);
         } catch (IOException | RuntimeException exception) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.UNREADABLE, exception);
         }
     }
 

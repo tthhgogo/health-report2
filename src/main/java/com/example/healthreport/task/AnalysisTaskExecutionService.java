@@ -1,7 +1,7 @@
 package com.example.healthreport.task;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -57,7 +57,7 @@ public class AnalysisTaskExecutionService {
                 sanitizedException.setStackTrace(ignoredException.getStackTrace());
                 log.error("线程池拒绝后的失败状态写入异常", sanitizedException);
             }
-            throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+            throw new BusinessException(FailCode.SERVER_ERROR);
         }
     }
 }

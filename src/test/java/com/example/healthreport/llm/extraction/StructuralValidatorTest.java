@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -76,7 +77,7 @@ class StructuralValidatorTest {
         try {
             org.assertj.core.api.Assertions.assertThatThrownBy(
                     () -> validator.validateDietTags(result, 5, 0))
-                    .isInstanceOf(com.example.healthreport.support.HealthReportException.class);
+                    .isInstanceOf(com.example.healthreport.support.BusinessException.class);
 
             String renderedLog = renderedLog(appender);
             assertThat(renderedLog)
@@ -116,7 +117,7 @@ class StructuralValidatorTest {
 
         org.assertj.core.api.Assertions.assertThatThrownBy(
                 () -> validator.validateDietTags(result, 5, 1))
-                .isInstanceOf(com.example.healthreport.support.HealthReportException.class);
+                .isInstanceOf(com.example.healthreport.support.BusinessException.class);
     }
 
     private DietAdviceResult.DietTag tag(String dimension, String enumKey) {

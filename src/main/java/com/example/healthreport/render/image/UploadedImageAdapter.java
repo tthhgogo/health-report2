@@ -6,7 +6,7 @@ import com.example.healthreport.render.ExifOrientationTransform;
 import com.example.healthreport.render.ExtractionImageCompressor;
 import com.example.healthreport.render.ImageContentInspector;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.springframework.stereotype.Component;
 
 import java.awt.image.BufferedImage;
@@ -42,7 +42,7 @@ public class UploadedImageAdapter {
         try {
             decodedImage = imageContentInspector.decodeSubsampled(contentBytes, DECODE_LONG_EDGE);
         } catch (IOException | RuntimeException exception) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.UNREADABLE, exception);
         }
         BufferedImage normalizedImage = null;
         try {

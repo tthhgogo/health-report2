@@ -3,8 +3,9 @@ package com.example.healthreport.task;
 import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.persistence.FileBindingRecord;
+import com.example.healthreport.support.BusinessException;
+import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.IdCanonicalizer;
-import com.example.healthreport.support.OwnershipException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -48,7 +49,7 @@ public class FileOwnershipGuard {
 		if (fileEntity == null || !fileId.equals(fileEntity.getFileId()) || currentUserId == null
 				|| !currentUserId.equals(fileEntity.getUserId()) || currentCompanyId == null
 				|| !currentCompanyId.equals(fileEntity.getCompanyId())) {
-			throw new OwnershipException();
+			throw new BusinessException(FailCode.RESULT_EXPIRED);
 		}
 		return fileEntity;
 	}
@@ -60,7 +61,7 @@ public class FileOwnershipGuard {
 	public List<CtHealthReportFileEntity> assertOwned(List<String> fileIdList, String currentUserId,
 			String currentCompanyId) {
 		if (fileIdList == null) {
-			throw new OwnershipException();
+			throw new BusinessException(FailCode.RESULT_EXPIRED);
 		}
 		List<CtHealthReportFileEntity> resultList = new ArrayList<>(fileIdList.size());
 		for (String fileId : fileIdList) {
@@ -78,7 +79,7 @@ public class FileOwnershipGuard {
 	public List<FileBindingRecord> assertOwnedRecords(List<String> fileIdList, List<FileBindingRecord> recordList,
 			String currentUserId, String currentCompanyId) {
 		if (fileIdList == null || recordList == null || currentUserId == null || currentCompanyId == null) {
-			throw new OwnershipException();
+			throw new BusinessException(FailCode.RESULT_EXPIRED);
 		}
 		Map<String, FileBindingRecord> recordMap = new HashMap<String, FileBindingRecord>(recordList.size());
 		for (FileBindingRecord record : recordList) {
@@ -92,7 +93,7 @@ public class FileOwnershipGuard {
 			FileBindingRecord record = recordMap.get(fileId);
 			if (record == null || !fileId.equals(record.getFileId()) || !currentUserId.equals(record.getUserId())
 					|| !currentCompanyId.equals(record.getCompanyId())) {
-				throw new OwnershipException();
+				throw new BusinessException(FailCode.RESULT_EXPIRED);
 			}
 			orderedRecordList.add(record);
 		}

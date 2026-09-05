@@ -5,6 +5,7 @@ import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaField;
+import com.tngtech.archunit.core.domain.JavaTypeVariable;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -139,8 +140,12 @@ class ProductionSafetyArchitectureTest {
             @Override
             public void check(JavaClass item, ConditionEvents events) {
                 for (JavaField field : item.getFields()) {
+                    // 泛型信封（CommonResponse<T> 的 data）擦除后原始类型也是 Object，但它不是逃逸：
+                    // 具体类型由 Controller 返回值签名 CommonResponse<XxxResponse> 给出，Jackson 也按该类型读回。
+                    // 这里只放行类型变量，直接声明成 Object 的字段仍然违规。
                     if (field.isAnnotatedWith("io.swagger.annotations.ApiModelProperty")
-                            && "java.lang.Object".equals(field.getRawType().getFullName())) {
+                            && "java.lang.Object".equals(field.getRawType().getFullName())
+                            && !(field.getType() instanceof JavaTypeVariable)) {
                         // Object 会切断 Swagger 的嵌套结构展开，也让 Jackson 读回 LinkedHashMap 而非强类型。
                         events.add(SimpleConditionEvent.violated(field,
                                 "@ApiModelProperty 字段逃逸类型系统: " + field.getFullName()));

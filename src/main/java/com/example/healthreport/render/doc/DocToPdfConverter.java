@@ -1,7 +1,7 @@
 package com.example.healthreport.render.doc;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.fop.apps.FOUserAgent;
 import org.apache.fop.apps.Fop;
@@ -111,7 +111,7 @@ public class DocToPdfConverter {
 	 *
 	 * @throws IOException 文档损坏、加密、Word 95 等 HWPF 无法解析的变体，或排版失败；
 	 *             调用方按各自阶段映射为 FILE_UNREADABLE（上传）或 UNREADABLE（Worker）
-	 * @throws HealthReportException SERVER_ERROR：内置字体资源加载失败（构建或部署损坏）
+	 * @throws BusinessException SERVER_ERROR：内置字体资源加载失败（构建或部署损坏）
 	 */
 	public byte[] toPdf(byte[] docBytes) throws IOException {
 		if (docBytes == null || docBytes.length == 0) {
@@ -162,7 +162,7 @@ public class DocToPdfConverter {
 		catch (IOException exception) {
 			throw exception;
 		}
-		catch (HealthReportException exception) {
+		catch (BusinessException exception) {
 			throw exception;
 		}
 		catch (Exception exception) {
@@ -177,7 +177,7 @@ public class DocToPdfConverter {
 			resolveFopFactory();
 			return true;
 		}
-		catch (HealthReportException exception) {
+		catch (BusinessException exception) {
 			return false;
 		}
 	}
@@ -597,7 +597,7 @@ public class DocToPdfConverter {
 			}
 			catch (Exception exception) {
 				// 字体损坏/缺失是构建或部署问题：SERVER_ERROR，绝不能流向「文件无法读取」。
-				throw new HealthReportException(FailCode.SERVER_ERROR, 500, exception);
+				throw new BusinessException(FailCode.SERVER_ERROR, exception);
 			}
 		}
 	}

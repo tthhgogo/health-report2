@@ -3,7 +3,7 @@ package com.example.healthreport.task;
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.IdCanonicalizer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -76,7 +76,7 @@ public class AnalysisTaskCreateService {
 		taskEntity.setVersion(0);
 		int insertedRows = taskService.insertFromApi(taskEntity);
 		if (insertedRows != 1) {
-			throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+			throw new BusinessException(FailCode.SERVER_ERROR);
 		}
 		fileBindingService.bindFiles(fileIdList, taskId, userId, companyId);
 		return taskId;

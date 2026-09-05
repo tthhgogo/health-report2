@@ -11,7 +11,7 @@ import com.example.healthreport.render.FormatDetector;
 import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.IdCanonicalizer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -117,7 +117,7 @@ class FileUploadServiceTest {
 		when(formatDetector.detect(contentBytes)).thenReturn(ContentType.JPG);
 
 		assertThatThrownBy(() -> service.upload(file(contentBytes), USER_ID, COMPANY_ID)).isInstanceOfSatisfying(
-				HealthReportException.class,
+				BusinessException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_TOO_LARGE));
 		assertThat(fileStorage.writeCount).isZero();
 		verify(fileService, never()).insertFromApi(any(CtHealthReportFileEntity.class));
@@ -128,10 +128,10 @@ class FileUploadServiceTest {
 		byte[] contentBytes = new byte[] { 1 };
 		when(formatDetector.detect(contentBytes)).thenReturn(ContentType.PDF);
 		when(capacityPrecheckService.precheckPages(contentBytes, ContentType.PDF))
-			.thenThrow(new HealthReportException(FailCode.PAGE_LIMIT_EXCEEDED, 400));
+			.thenThrow(new BusinessException(FailCode.PAGE_LIMIT_EXCEEDED));
 
 		assertThatThrownBy(() -> service.upload(file(contentBytes), USER_ID, COMPANY_ID)).isInstanceOfSatisfying(
-				HealthReportException.class,
+				BusinessException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.PAGE_LIMIT_EXCEEDED));
 		assertThat(fileStorage.writeCount).isZero();
 		verify(fileService, never()).insertFromApi(any(CtHealthReportFileEntity.class));
@@ -146,7 +146,7 @@ class FileUploadServiceTest {
 			.insertFromApi(any(CtHealthReportFileEntity.class));
 
 		assertThatThrownBy(() -> service.upload(file(contentBytes), USER_ID, COMPANY_ID)).isInstanceOfSatisfying(
-				HealthReportException.class,
+				BusinessException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.SERVER_ERROR));
 		// 行没插进去时对象根本没被写过，不存在需要补偿删除的东西。
 		assertThat(fileStorage.writeCount).isZero();
@@ -174,7 +174,7 @@ class FileUploadServiceTest {
 		fileStorage.failWrite = true;
 
 		assertThatThrownBy(() -> service.upload(file(contentBytes), USER_ID, COMPANY_ID)).isInstanceOfSatisfying(
-				HealthReportException.class,
+				BusinessException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.SERVER_ERROR));
 		// 写对象失败可能是假阴性（超时的 PUT 服务端已成功），删掉行就回到了
 		// 「对象存在但无人指向」的原问题。行必须留着，让孤儿清理无条件删一次对象。
@@ -201,7 +201,7 @@ class FileUploadServiceTest {
 		logger.addAppender(appender);
 		try {
 			assertThatThrownBy(() -> service.upload(file, USER_ID, COMPANY_ID))
-				.isInstanceOf(HealthReportException.class);
+				.isInstanceOf(BusinessException.class);
 
 			assertThat(appender.list).isNotEmpty().allSatisfy(event -> {
 				String throwableText = event.getThrowableProxy() == null ? ""

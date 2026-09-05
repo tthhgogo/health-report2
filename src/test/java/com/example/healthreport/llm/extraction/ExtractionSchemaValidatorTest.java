@@ -5,7 +5,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -82,7 +82,7 @@ class ExtractionSchemaValidatorTest {
         String content = "{\"reportStatus\":\"MAYBE\",\"patients\":[],\"overview\":null,\"sections\":[]}";
 
         assertThatThrownBy(() -> validator.validate(ExtractionCall.INDICATORS, content))
-                .isInstanceOf(HealthReportException.class);
+                .isInstanceOf(BusinessException.class);
     }
 
     /** 剔除超过 20% 预算：整阶段失败而不是残缺放行（R21j）。 */
@@ -96,7 +96,7 @@ class ExtractionSchemaValidatorTest {
                 + "]}";
 
         assertThatThrownBy(() -> validator.validate(ExtractionCall.INDICATORS, content))
-                .isInstanceOf(HealthReportException.class);
+                .isInstanceOf(BusinessException.class);
     }
 
     /**

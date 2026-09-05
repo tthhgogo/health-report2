@@ -2,7 +2,7 @@ package com.example.healthreport.cache;
 
 import com.example.healthreport.constants.ResultSchemaVersion;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -34,7 +34,7 @@ public class TaskResultCache {
             String resultJson = objectMapper.writeValueAsString(result);
             redisTemplate.opsForValue().set(key(taskId), resultJson, RESULT_TTL_HOURS, TimeUnit.HOURS);
         } catch (JsonProcessingException exception) {
-            throw new HealthReportException(FailCode.SERVER_ERROR, 500, exception);
+            throw new BusinessException(FailCode.SERVER_ERROR, exception);
         }
     }
 
@@ -47,7 +47,7 @@ public class TaskResultCache {
         try {
             return objectMapper.readValue(resultJson, AnalysisResult.class);
         } catch (JsonProcessingException exception) {
-            throw new HealthReportException(FailCode.SERVER_ERROR, 500, exception);
+            throw new BusinessException(FailCode.SERVER_ERROR, exception);
         }
     }
 

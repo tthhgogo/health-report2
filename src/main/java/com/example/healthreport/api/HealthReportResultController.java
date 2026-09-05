@@ -1,5 +1,6 @@
 package com.example.healthreport.api;
 
+import com.example.healthreport.api.dto.CommonResponse;
 import com.example.healthreport.cache.AnalysisResult;
 import com.example.healthreport.infra.CurrentUserProvider;
 import com.example.healthreport.task.TaskQueryService;
@@ -29,16 +30,17 @@ public class HealthReportResultController {
 
 	/** MySQL 判定任务成功后才读取 Redis 结果。 */
 	@ApiOperation(value = "读取四模块分析结果", notes = "MySQL 判定任务成功后才读取 Redis 结果；"
-			+ "任务未成功时返回统一错误响应（TASK_NOT_FINISHED 等），结果缓存 TTL 为 2 小时。",
-			httpMethod = "GET", response = AnalysisResult.class,
+			+ "任务未成功时 retMsg 为 TASK_NOT_FINISHED 等原错误码，结果缓存 TTL 为 2 小时。"
+			+ "响应统一为 CommonResponse，data 为 AnalysisResult，失败时 data 为 null。",
+			httpMethod = "GET", response = CommonResponse.class,
 			produces = MediaType.APPLICATION_JSON_VALUE)
 	@GetMapping("/{taskId}")
-	public AnalysisResult getResult(
+	public CommonResponse<AnalysisResult> getResult(
 			@ApiParam(name = "taskId", value = "分析任务 ID，由创建分析任务接口返回", required = true,
 					example = "123e4567-e89b-12d3-a456-426614174000")
 			@PathVariable("taskId") String taskId) {
-		return taskQueryService.getResult(taskId, currentUserProvider.currentUserId(),
-				currentUserProvider.currentCompanyId());
+		return CommonResponse.successWithData(taskQueryService.getResult(taskId,
+				currentUserProvider.currentUserId(), currentUserProvider.currentCompanyId()));
 	}
 
 }

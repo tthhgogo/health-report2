@@ -4,10 +4,10 @@ import com.example.healthreport.api.dto.TaskStatusResponse;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.AnalysisResult;
 import com.example.healthreport.cache.TaskResultCache;
+import com.example.healthreport.constants.ResponseCodes;
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
-import com.example.healthreport.support.OwnershipException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -60,7 +60,7 @@ class TaskQueryServiceTest {
 			.thenReturn(task(TaskStatus.EXTRACTING, TaskStage.PARSING, 30));
 
 		assertThatThrownBy(() -> queryService.getResult(TASK_ID, USER_ID, COMPANY_ID)).isInstanceOfSatisfying(
-				HealthReportException.class,
+				BusinessException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.TASK_NOT_FINISHED));
 		verify(resultCache, never()).read(TASK_ID);
 	}
@@ -87,8 +87,8 @@ class TaskQueryServiceTest {
 		when(resultCache.read(TASK_ID)).thenReturn(null);
 
 		assertThatThrownBy(() -> queryService.getResult(TASK_ID, USER_ID, COMPANY_ID))
-			.isInstanceOfSatisfying(OwnershipException.class, exception -> {
-				assertThat(exception.getHttpStatus()).isEqualTo(404);
+			.isInstanceOfSatisfying(BusinessException.class, exception -> {
+				assertThat(exception.getExceptionCode()).isEqualTo(ResponseCodes.DEFAULT_ERROR_CODE);
 				assertThat(exception.getFailCode()).isEqualTo(FailCode.RESULT_EXPIRED);
 			});
 		verify(resultCache).read(TASK_ID);

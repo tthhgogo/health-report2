@@ -473,6 +473,37 @@ Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 �
 > 长度仍由 `OwnerContext` 按数据库列宽 64 在入口拒绝。其余四个接口不变，继续走
 > `CurrentUserProvider`。归属校验本身一个字不变——不校验就是越权，与标识从哪里来无关。
 
+#### 统一响应信封（2026-09-05 定）
+
+五个接口的成功与失败**一律返回同一个信封** `CommonResponse`，与接入方
+`com.citiccard.it.canteen.bean.response.base.CommonResponse` 同形：
+
+```
+{ "retCode": "...", "retMsg": "...", "data": { ...业务对象... } }
+
+成功   retCode = SUCCESS_CODE，retMsg = 固定成功文案，data = 该接口的业务对象
+失败   retCode = DEFAULT_ERROR_CODE，retMsg = 原失败码，data = null
+```
+
+```
+⛔ HTTP 状态码一律 200          业务成败只看 retCode，前端不再按状态码分支
+⛔ 失败时 data 恒为 null        FILE_ALREADY_BOUND 的已绑定 taskId 只能随 retMsg 下发，
+                               形如 "FILE_ALREADY_BOUND:<taskId>"，前端按冒号切一次
+⛔ DELETE 不再返回 204          成功也是 200 + 信封，data 为 null
+```
+
+**业务失败一律抛 `support.BusinessException`，不再有任何自定义异常子类**（2026-09-05 定，
+`HealthReportException` / `OwnershipException` / `ImageTooLargeException` 已删除）。该类与接入方
+`com.citiccard.it.canteen.exception.BusinessException` 同形：`exceptionCode` 落 `retCode`、
+消息正文落 `retMsg`。它另有一组 `FailCode` 构造器（与对方的 `SystemStatusEnum` 构造器同一路数）：
+**`retCode` 统一取 `DEFAULT_ERROR_CODE`**，失败码本身写进消息正文，并保留 `failCode` 字段供
+工作线程写 `ct_health_report_task.fail_code`（内部状态，不影响对外形状）；用字符串直接构造时
+`failCode` 为 `null`，工作线程按 `SERVER_ERROR` 记账。
+移植时本仓库的 `HealthReportExceptionHandler` 可整体删除，只留容器在进入 Controller 前抛出的
+multipart 两类需要对方补齐。
+`SUCCESS_CODE` / `DEFAULT_ERROR_CODE` 的字面量在 `constants.ResponseCodes`，**【待接入方确认】**，
+联调前必须与对方 `BaseConstant` 核对一致。
+
 **两个 Guard 都必须对 userId 和 companyId 在 Java 侧分别做精确 `equals`**，不能只靠 SQL
 ——`utf8mb4_general_ci` 大小写不敏感，`Abc` 和 `abc` 会被判成同一人（§3.1.3）。
 
@@ -480,7 +511,7 @@ Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 �
 
 ```
 入参   multipart/form-data，字段名 file
-出参   200 { "fileId": "..." }
+出参   200 { "retCode":"成功码", "retMsg":"成功文案", "data": { "fileId": "..." } }
 ```
 
 | 校验 | 规则 | 失败码 |
@@ -573,8 +604,8 @@ analyze 创建时**同步**发生，不再是异步任务失败码。§4.1.1 的
 ```
 入参   { "fileIds": ["...", "..."],          顺序即 fileIndex（0 起）
         "userId": "...", "companyId": "..." }   归属标识，必填、非空白
-出参   200 { "taskId": "..." }
-      409 { "code": "FILE_ALREADY_BOUND", "taskId": "已绑定的那个" }
+出参   200 { "retCode":"成功码", "retMsg":"成功文案", "data": { "taskId": "..." } }
+      200 { "retCode":"DEFAULT_ERROR_CODE", "retMsg":"FILE_ALREADY_BOUND:已绑定的那个", "data": null }
 ```
 
 **逐文件校验，缺一不可：**
@@ -598,7 +629,7 @@ file.expireAt >  now
 **只返回状态，不返回结果**（结果走下一个接口）。
 
 ```
-出参   { "status":"QUEUED|PARSING|EXTRACTING|ASSEMBLING|SUCCEEDED|FAILED",
+出参   data = { "status":"QUEUED|PARSING|EXTRACTING|ASSEMBLING|SUCCEEDED|FAILED",
         "stage":"UPLOADING|PARSING|ASSEMBLING",
         "progress":0-100,
         "failCode":"..."|null, "reanalyzable":bool }
@@ -610,7 +641,7 @@ file.expireAt >  now
 #### `GET /api/health-report/result/{taskId}` 取四模块结果
 
 ```
-出参   { "partial":bool, "partialReason":"..."|null,
+出参   data = { "partial":bool, "partialReason":"..."|null,
         "processedPages":12, "totalPages":12,
         "suppressDishRecommend":bool,
         "modules": { ... 见 §7 ... } }
@@ -1976,6 +2007,12 @@ diff 会认为标签已存在，永远不会重算——**而且这个 bug 是�
 
 ### 9.1 错误码
 
+> **表里的 code 现在落在 `retMsg`，HTTP 列只保留语义**（2026-09-05 统一信封后）：
+> 响应状态码一律 200，`retCode` 一律 `DEFAULT_ERROR_CODE`，`data` 恒为 `null`；
+> 下表的 HTTP 值仍记录该失败「本来属于哪一类」，供排障与前端文案分档参考，但不再决定响应状态，
+> 代码里也不再有 `httpStatus` 字段（随自定义异常一并删除）。`FILE_ALREADY_BOUND` 的 taskId
+> 随 `retMsg` 一起下发。
+
 | code | HTTP | 触发点 | `reanalyzable` |
 |---|---|---|---|
 | `UNSUPPORTED_FORMAT` | 400 | §5.1 格式判定 | — |
@@ -2468,7 +2505,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 | **R65a** | 构造超过 `maxRequestBodyBytes` 的一批 | 抛 `RequestTooLargeException`，WireMock **收不到任何请求**；且**在写入过程中就抛**，不是等整个请求体生成完再判（断言 `CappedByteArrayOutputStream.size() <= maxBytes` 始终成立） |
 | **R65b** | WireMock 返回超大响应体（**200 与 500 各一次**） | 两次都不把响应完整读进内存：200 走 `BoundedResponseExtractor`；**500 走 `StatusOnlyErrorHandler`，错误处理器不读取也不缓存正文**（框架关闭响应时仍可能对流做清理，这不算读取）——默认的 `DefaultResponseErrorHandler` 会把 body 读满并塞进异常，绕过上限。异常消息里**只有数字，无正文** |
 | **R66** | 一张 3000×4000 的页面图走 `ExtractionImageCompressor` | 输出长边 = 2000px、JPEG、体积 ≤ 1MB；**全程不落盘**（监控文件系统调用） |
-| **R66a** | 一张压缩后仍 > 1MB 的高噪图 | 自动回退档 2（长边 1600px、quality 0.80）；再超限抛 `ImageTooLargeException` → 任务 **`FAILED / IMAGE_TOO_LARGE`**、`reanalyzable = 0`。**断言既不是 `UNREADABLE` 也不是 `SERVER_ERROR`**，前端文案走「图片过大」那条 |
+| **R66a** | 一张压缩后仍 > 1MB 的高噪图 | 自动回退档 2（长边 1600px、quality 0.80）；再超限抛 `BusinessException(IMAGE_TOO_LARGE)` → 任务 **`FAILED / IMAGE_TOO_LARGE`**、`reanalyzable = 0`。**断言既不是 `UNREADABLE` 也不是 `SERVER_ERROR`**，前端文案走「图片过大」那条 |
 | **R66f** | 同一份内容分别以 PDF / OFD / 图片输入 | 都只产生有序 `PageImage`，不产生文本层、OCR 文本或 bbox |
 | **R66b** | 上传一张 8000 万像素的 JPG | ① 请求体内的图 ≤ 1MB，不得直传原图；② Spy/Fake `ImageReader` 断言**读过完整尺寸后调用了 `setSourceSubsampling`**；③ 断言实际解出的 `BufferedImage` 宽×高 **≤ 受控上限**；④ ArchUnit：上传图片路径**禁止直接调 `ImageIO.read`**。**不用"峰值分配量"断言**——`ThreadMXBean` 只能看累计分配，证明不了单个对象大小 |
 | **R66g** | 8000 万像素样本，**独立子进程 + 较小 `-Xmx`**（如 512m） | 不 OOM 且正常产出压缩图。**不进普通单测**，与 R65p 同属资源/性能测试 |

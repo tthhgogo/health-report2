@@ -1,13 +1,14 @@
 package com.example.healthreport.task;
 
+import com.example.healthreport.constants.ResponseCodes;
 import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
 import com.example.healthreport.persistence.FileBindingRecord;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.IdCanonicalizer;
-import com.example.healthreport.support.OwnershipException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -68,7 +69,7 @@ class OwnershipGuardTest {
 	void taskUserIdComparisonShouldBeCaseSensitive() {
 		when(taskService.findByTaskId(RESOURCE_ID)).thenReturn(liveTask("caseuser"));
 
-		assertThrows(OwnershipException.class,
+		assertThrows(BusinessException.class,
 				() -> taskOwnershipGuard.assertOwned(RESOURCE_ID, CURRENT_USER_ID, CURRENT_COMPANY_ID));
 	}
 
@@ -81,7 +82,7 @@ class OwnershipGuardTest {
 		fileEntity.setExpireAt(CURRENT_TIME.plusMinutes(1));
 		when(fileService.findByFileId(RESOURCE_ID)).thenReturn(fileEntity);
 
-		assertThrows(OwnershipException.class,
+		assertThrows(BusinessException.class,
 				() -> fileOwnershipGuard.assertOwned(RESOURCE_ID, CURRENT_USER_ID, CURRENT_COMPANY_ID));
 	}
 
@@ -101,14 +102,14 @@ class OwnershipGuardTest {
 	void batchRecordUserIdComparisonShouldBeCaseSensitive() {
 		FileBindingRecord record = bindingRecord(RESOURCE_ID, "caseuser");
 
-		assertThrows(OwnershipException.class,
+		assertThrows(BusinessException.class,
 				() -> fileOwnershipGuard.assertOwnedRecords(Collections.singletonList(RESOURCE_ID),
 						Collections.singletonList(record), CURRENT_USER_ID, CURRENT_COMPANY_ID));
 	}
 
 	@Test
 	void batchRecordLookupShouldRejectMissingFile() {
-		assertThrows(OwnershipException.class,
+		assertThrows(BusinessException.class,
 				() -> fileOwnershipGuard.assertOwnedRecords(Collections.singletonList(RESOURCE_ID),
 						Collections.<FileBindingRecord>emptyList(), CURRENT_USER_ID, CURRENT_COMPANY_ID));
 	}
@@ -148,14 +149,16 @@ class OwnershipGuardTest {
 		assertEquals(absentShape, ownerMismatchShape);
 		assertEquals(absentShape, deletedShape);
 		assertEquals(absentShape, expiredShape);
-		assertEquals("404|RESULT_EXPIRED|资源不存在或已失效", absentShape);
+		// 异常正文就是对外的 retMsg（2026-09-05 统一信封后）：四种不可见失败一律只吐失败码，不泄露差异。
+		assertEquals(ResponseCodes.DEFAULT_ERROR_CODE + "|RESULT_EXPIRED|RESULT_EXPIRED", absentShape);
 	}
 
 	private String failureShape() {
-		OwnershipException exception = assertThrows(OwnershipException.class,
+		BusinessException exception = assertThrows(BusinessException.class,
 				() -> taskOwnershipGuard.assertOwned(RESOURCE_ID, CURRENT_USER_ID, CURRENT_COMPANY_ID));
 		assertEquals(FailCode.RESULT_EXPIRED, exception.getFailCode());
-		return exception.getHttpStatus() + "|" + exception.getFailCode().name() + "|" + exception.getMessage();
+		// 对外形状就是信封那三段：retCode 恒为默认错误码，retMsg 恒为失败码，data 恒为 null。
+		return exception.getExceptionCode() + "|" + exception.getFailCode().name() + "|" + exception.getMessage();
 	}
 
 	private static CtHealthReportTaskEntity liveTask(String userId) {

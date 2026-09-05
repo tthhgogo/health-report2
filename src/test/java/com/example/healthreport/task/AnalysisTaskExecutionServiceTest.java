@@ -5,7 +5,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -33,7 +33,7 @@ class AnalysisTaskExecutionServiceTest {
                 executor, worker, stateService);
 
         assertThatThrownBy(() -> executionService.submit(taskId))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.SERVER_ERROR));
         verify(stateService).markFailed(taskId, FailCode.SERVER_ERROR);
     }

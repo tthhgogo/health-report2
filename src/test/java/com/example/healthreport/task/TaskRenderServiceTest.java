@@ -10,7 +10,7 @@ import com.example.healthreport.render.FormatDetector;
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.render.RenderableFile;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.Sha256Hex;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -122,7 +122,7 @@ class TaskRenderServiceTest {
     @Test
     void shouldTranslateRuntimeSafetyPrecheckFailureToServerIntegrityFailure() {
         CtHealthReportFileEntity fileEntity = validFile();
-        HealthReportException precheckFailure = new HealthReportException(FailCode.FILE_UNREADABLE, 400);
+        BusinessException precheckFailure = new BusinessException(FailCode.FILE_UNREADABLE);
         when(fileService.findByTaskId(TASK_ID)).thenReturn(Collections.singletonList(fileEntity));
         when(fileStorage.read(fileEntity.getCloudFileKey())).thenReturn(CONTENT_BYTES);
         when(formatDetector.detect(CONTENT_BYTES)).thenThrow(precheckFailure);

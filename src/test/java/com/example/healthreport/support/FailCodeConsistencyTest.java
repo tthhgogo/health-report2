@@ -1,5 +1,6 @@
 package com.example.healthreport.support;
 
+import com.example.healthreport.support.FailCode;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

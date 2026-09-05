@@ -2,7 +2,7 @@ package com.example.healthreport.llm.extraction;
 
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.text.TextNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -56,7 +56,7 @@ public class IdentityGuard {
         }
         if (!known.equals(value)) {
             log.warn("多文件同一性校验发现冲突，字段={}，fileIndex={}", fieldLabel, fileIndex);
-            throw new HealthReportException(FailCode.IDENTITY_MISMATCH, 400);
+            throw new BusinessException(FailCode.IDENTITY_MISMATCH);
         }
     }
 
@@ -69,7 +69,7 @@ public class IdentityGuard {
             }
             if (!reference.equals(entry.getValue())) {
                 log.warn("多文件同一性校验发现跨文件冲突，字段={}", fieldLabel);
-                throw new HealthReportException(FailCode.IDENTITY_MISMATCH, 400);
+                throw new BusinessException(FailCode.IDENTITY_MISMATCH);
             }
         }
     }

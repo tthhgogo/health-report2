@@ -6,6 +6,7 @@ import com.example.healthreport.cache.AnalysisResult;
 import com.example.healthreport.cache.TaskResultCache;
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
+import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.IdCanonicalizer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

@@ -3,7 +3,7 @@ package com.example.healthreport.llm.extraction;
 import com.example.healthreport.llm.schema.ModelOutputSchema;
 import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -77,7 +77,7 @@ public class ExtractionSchemaValidator {
      * 解析并校验模型响应。
      *
      * @return 已通过对应生产 Schema 的输出与剔除统计
-     * @throws HealthReportException 违规无法用条目剔除消除时固定映射 SERVER_ERROR，调用方不得重试
+     * @throws BusinessException 违规无法用条目剔除消除时固定映射 SERVER_ERROR，调用方不得重试
      */
     public SchemaValidationOutcome validate(ExtractionCall call, String rawContent) {
         JsonNode rootNode;
@@ -316,7 +316,7 @@ public class ExtractionSchemaValidator {
         return currentNode;
     }
 
-    private HealthReportException fail() {
-        return new HealthReportException(FailCode.SERVER_ERROR, 500);
+    private BusinessException fail() {
+        return new BusinessException(FailCode.SERVER_ERROR);
     }
 }

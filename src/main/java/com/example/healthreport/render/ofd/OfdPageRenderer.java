@@ -2,7 +2,7 @@ package com.example.healthreport.render.ofd;
 
 import com.example.healthreport.render.pdf.PdfPageRenderer;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.ofdrw.converter.ImageMaker;
 import org.ofdrw.core.basicType.ST_Box;
 import org.ofdrw.reader.OFDReader;
@@ -42,7 +42,7 @@ public class OfdPageRenderer {
         try (OFDReader reader = new OFDReader(new ByteArrayInputStream(contentBytes))) {
             int pageCount = reader.getNumberOfPages();
             if (pageCount < 1) {
-                throw new HealthReportException(FailCode.UNREADABLE, 400);
+                throw new BusinessException(FailCode.UNREADABLE);
             }
             ImageMaker imageMaker = new ImageMaker(reader, cappedPixelsPerMillimeter(reader, pageCount));
             for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
@@ -53,10 +53,10 @@ public class OfdPageRenderer {
                     renderedImage.flush();
                 }
             }
-        } catch (HealthReportException exception) {
+        } catch (BusinessException exception) {
             throw exception;
         } catch (IOException | RuntimeException exception) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.UNREADABLE, exception);
         }
     }
 
@@ -68,7 +68,7 @@ public class OfdPageRenderer {
             if (pageSize == null || pageSize.getWidth() == null || pageSize.getHeight() == null
                     || pageSize.getWidth().doubleValue() <= 0D
                     || pageSize.getHeight().doubleValue() <= 0D) {
-                throw new HealthReportException(FailCode.UNREADABLE, 400);
+                throw new BusinessException(FailCode.UNREADABLE);
             }
             maxLongEdgeMillimeters = Math.max(maxLongEdgeMillimeters,
                     Math.max(pageSize.getWidth().doubleValue(), pageSize.getHeight().doubleValue()));

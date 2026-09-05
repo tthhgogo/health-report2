@@ -4,7 +4,7 @@ import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.persistence.FileBindingRecord;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -133,7 +133,7 @@ class FileBindingServiceTest {
 		when(fileService.findForPrecheck(Collections.singletonList(FILE_1), USER_ID, COMPANY_ID))
 			.thenReturn(Collections.singletonList(bound));
 		assertThatThrownBy(() -> service.precheckFiles(Collections.singletonList(FILE_1), USER_ID, COMPANY_ID))
-			.isInstanceOfSatisfying(HealthReportException.class, exception -> {
+			.isInstanceOfSatisfying(BusinessException.class, exception -> {
 				assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_ALREADY_BOUND);
 				assertThat(exception.getTaskId()).isEqualTo(OLD_TASK);
 			});
@@ -172,7 +172,7 @@ class FileBindingServiceTest {
 		when(fileService.findByFileId(FILE_1)).thenReturn(current);
 
 		assertThatThrownBy(() -> service.bindFiles(Collections.singletonList(FILE_1), NEW_TASK, USER_ID, COMPANY_ID))
-			.isInstanceOfSatisfying(HealthReportException.class, exception -> {
+			.isInstanceOfSatisfying(BusinessException.class, exception -> {
 				assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_ALREADY_BOUND);
 				assertThat(exception.getTaskId()).isEqualTo(OLD_TASK);
 			});
@@ -191,7 +191,7 @@ class FileBindingServiceTest {
 	}
 
 	private void assertFailCode(Runnable runnable, FailCode failCode) {
-		assertThatThrownBy(runnable::run).isInstanceOfSatisfying(HealthReportException.class,
+		assertThatThrownBy(runnable::run).isInstanceOfSatisfying(BusinessException.class,
 				exception -> assertThat(exception.getFailCode()).isEqualTo(failCode));
 	}
 

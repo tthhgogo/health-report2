@@ -10,7 +10,7 @@ import com.example.healthreport.persistence.CtHealthReportTaskService;
 import com.example.healthreport.render.FileLocation;
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -125,8 +125,10 @@ public class AnalysisTaskWorker {
 				log.info("任务成功提交未生效，工作线程结束，taskId={}", taskId);
 			}
 		}
-		catch (HealthReportException exception) {
-			markFailure(taskId, exception.getFailCode());
+		catch (BusinessException exception) {
+			// 用字符串直接构造的 BusinessException 没有 failCode，任务失败原因退化为 SERVER_ERROR，
+			// 绝不能让 fail_code 落成 null——查询接口据此决定 reanalyzable。
+			markFailure(taskId, exception.getFailCode() == null ? FailCode.SERVER_ERROR : exception.getFailCode());
 			logWorkerFailure(taskId, exception);
 		}
 		catch (RuntimeException exception) {

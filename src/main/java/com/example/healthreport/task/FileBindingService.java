@@ -3,7 +3,7 @@ package com.example.healthreport.task;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.persistence.FileBindingRecord;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -75,7 +75,7 @@ public class FileBindingService {
 					record.getTaskId(), newTaskId, fileIndex, boundExpireAt);
 			if (affectedRows != 1) {
 				String boundTaskId = currentBoundTaskId(record.getFileId());
-				throw new HealthReportException(FailCode.FILE_ALREADY_BOUND, 409, boundTaskId);
+				throw new BusinessException(FailCode.FILE_ALREADY_BOUND, boundTaskId);
 			}
 		}
 		// 绑定是 B1 唯一执行点，也是「文件从此归这个任务」的分界；成功一次记一条。
@@ -100,23 +100,23 @@ public class FileBindingService {
 		LocalDateTime currentTime = LocalDateTime.now(clock);
 		for (FileBindingRecord record : orderedRecordList) {
 			if (!FileStatus.UPLOADED.name().equals(record.getStatus())) {
-				throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+				throw new BusinessException(FailCode.SERVER_ERROR);
 			}
 			if (record.getExpireAt() == null || !record.getExpireAt().isAfter(currentTime)) {
-				throw new HealthReportException(FailCode.FILE_EXPIRED, 409);
+				throw new BusinessException(FailCode.FILE_EXPIRED);
 			}
 			assertBindable(record);
 			if (record.getSizeBytes() == null || record.getPrecheckPages() == null || record.getSizeBytes() < 0L
 					|| record.getPrecheckPages() < 0) {
-				throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+				throw new BusinessException(FailCode.SERVER_ERROR);
 			}
 			totalBytes += record.getSizeBytes();
 			totalPages += record.getPrecheckPages();
 			if (totalPages > MAX_PRECHECK_PAGES) {
-				throw new HealthReportException(FailCode.PAGE_LIMIT_EXCEEDED, 400);
+				throw new BusinessException(FailCode.PAGE_LIMIT_EXCEEDED);
 			}
 			if (totalBytes > MAX_TOTAL_BYTES) {
-				throw new HealthReportException(FailCode.FILE_TOO_LARGE, 400);
+				throw new BusinessException(FailCode.FILE_TOO_LARGE);
 			}
 		}
 	}
@@ -128,7 +128,7 @@ public class FileBindingService {
 		boolean reanalyzableFailure = TaskStatus.FAILED.name().equals(record.getBoundTaskStatus())
 				&& Boolean.TRUE.equals(record.getBoundTaskReanalyzable());
 		if (!reanalyzableFailure) {
-			throw new HealthReportException(FailCode.FILE_ALREADY_BOUND, 409, record.getTaskId());
+			throw new BusinessException(FailCode.FILE_ALREADY_BOUND, record.getTaskId());
 		}
 	}
 

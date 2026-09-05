@@ -7,7 +7,7 @@ import com.example.healthreport.render.FormatDetector;
 import com.example.healthreport.persistence.CtHealthReportFileEntity;
 import com.example.healthreport.persistence.CtHealthReportFileService;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.IdCanonicalizer;
 import com.example.healthreport.support.Sha256Hex;
 import lombok.extern.slf4j.Slf4j;
@@ -74,10 +74,10 @@ public class FileUploadService {
 	public String upload(MultipartFile multipartFile, String userId, String companyId) {
 		OwnerContext.assertValid(userId, companyId);
 		if (multipartFile == null || multipartFile.isEmpty()) {
-			throw new HealthReportException(FailCode.FILE_UNREADABLE, 400);
+			throw new BusinessException(FailCode.FILE_UNREADABLE);
 		}
 		if (multipartFile.getSize() > DOCUMENT_MAX_BYTES) {
-			throw new HealthReportException(FailCode.FILE_TOO_LARGE, 400);
+			throw new BusinessException(FailCode.FILE_TOO_LARGE);
 		}
 
 		byte[] contentBytes = readBytes(multipartFile);
@@ -104,16 +104,16 @@ public class FileUploadService {
 		// 指向可能不存在的对象的记录，30 分钟后由现有的孤儿清理统一处理。
 		try {
 			if (fileService.insertFromApi(fileEntity) != 1) {
-				throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+				throw new BusinessException(FailCode.SERVER_ERROR);
 			}
 		}
-		catch (HealthReportException exception) {
+		catch (BusinessException exception) {
 			throw exception;
 		}
 		catch (RuntimeException exception) {
 			// 行都没插进去，没有对象需要清理。
 			log.error("上传文件元数据写入失败，fileId={}", fileId, sanitizedException(exception));
-			throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+			throw new BusinessException(FailCode.SERVER_ERROR);
 		}
 
 		try {
@@ -129,7 +129,7 @@ public class FileUploadService {
 			// 可能已经成功。删掉行就回到了「对象存在但无人指向」的原问题。
 			// 保留行，让孤儿清理无条件去删一次对象，这正是账本存在的意义。
 			log.error("上传文件对象写入失败，保留 file 行交由孤儿清理，fileId={}", fileId, sanitizedException(exception));
-			throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+			throw new BusinessException(FailCode.SERVER_ERROR);
 		}
 	}
 
@@ -138,7 +138,7 @@ public class FileUploadService {
 			return multipartFile.getBytes();
 		}
 		catch (IOException exception) {
-			throw new HealthReportException(FailCode.FILE_UNREADABLE, 400, exception);
+			throw new BusinessException(FailCode.FILE_UNREADABLE, exception);
 		}
 	}
 
@@ -148,7 +148,7 @@ public class FileUploadService {
 		long maxBytes = contentType == ContentType.JPG || contentType == ContentType.PNG
 				? PRODUCT_IMAGE_MAX_BYTES : DOCUMENT_MAX_BYTES;
 		if ((long) contentLength > maxBytes) {
-			throw new HealthReportException(FailCode.FILE_TOO_LARGE, 400);
+			throw new BusinessException(FailCode.FILE_TOO_LARGE);
 		}
 	}
 

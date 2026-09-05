@@ -1,7 +1,7 @@
 package com.example.healthreport.render;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.springframework.stereotype.Component;
 
 import java.util.Set;
@@ -53,7 +53,7 @@ public class FormatDetector {
         if (startsWith(contentBytes, OLE2_MAGIC)) {
             return detectOle2Container(contentBytes);
         }
-        throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
+        throw new BusinessException(FailCode.UNSUPPORTED_FORMAT);
     }
 
     private ContentType detectZipContainer(byte[] contentBytes) {
@@ -68,7 +68,7 @@ public class FormatDetector {
         }
         // 两种都像、两种都不像的 ZIP：统一按不支持的格式拒绝——
         // 用户拿到「暂不支持该文件格式」而不是「文件无法读取」。
-        throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
+        throw new BusinessException(FailCode.UNSUPPORTED_FORMAT);
     }
 
     /**
@@ -86,7 +86,7 @@ public class FormatDetector {
         } catch (java.io.IOException | RuntimeException exception) {
             // 残缺 OLE2 连格式都算不上，与非 Word 容器同按不支持处理（用户视角一致）。
         }
-        throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
+        throw new BusinessException(FailCode.UNSUPPORTED_FORMAT);
     }
 
     private boolean containsIgnoreCase(Set<String> entryNameSet, String expectedName) {

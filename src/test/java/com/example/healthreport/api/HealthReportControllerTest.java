@@ -1,8 +1,9 @@
 package com.example.healthreport.api;
 
+import com.example.healthreport.constants.ResponseCodes;
 import com.example.healthreport.infra.CurrentUserProvider;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.task.AnalysisTaskCreateService;
 import com.example.healthreport.task.AnalysisTaskExecutionService;
 import com.example.healthreport.task.FileUploadService;
@@ -24,6 +25,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * 上传和建任务 HTTP 契约测试。
@@ -69,12 +71,14 @@ class HealthReportControllerTest {
 
 		mockMvc.perform(multipart("/api/health-report/file").file(file))
 			.andExpect(status().isOk())
-			.andExpect(jsonPath("$.fileId").value(FILE_ID));
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.SUCCESS_CODE))
+			.andExpect(jsonPath("$.data.fileId").value(FILE_ID));
 		mockMvc
 			.perform(post("/api/health-report/analyze").contentType(MediaType.APPLICATION_JSON)
 				.content(analyzeBody()))
 			.andExpect(status().isOk())
-			.andExpect(jsonPath("$.taskId").value(TASK_ID));
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.SUCCESS_CODE))
+			.andExpect(jsonPath("$.data.taskId").value(TASK_ID));
 		org.mockito.Mockito.verify(taskExecutionService).submit(TASK_ID);
 	}
 
@@ -83,23 +87,27 @@ class HealthReportControllerTest {
 		mockMvc
 			.perform(post("/api/health-report/analyze").contentType(MediaType.APPLICATION_JSON)
 				.content("{\"fileIds\":[\"" + FILE_ID + "\"]}"))
-			.andExpect(status().isBadRequest())
-			.andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.DEFAULT_ERROR_CODE))
+			.andExpect(jsonPath("$.retMsg").value("INVALID_REQUEST"))
+			.andExpect(jsonPath("$.data").value(nullValue()));
 		org.mockito.Mockito.verifyNoInteractions(taskCreateService, taskExecutionService);
 	}
 
 	@Test
 	void shouldReturnConflictCodeAndBoundTaskIdWithoutSensitiveMetadata() throws Exception {
-		org.mockito.Mockito.doThrow(new HealthReportException(FailCode.FILE_ALREADY_BOUND, 409, TASK_ID))
+		org.mockito.Mockito.doThrow(new BusinessException(FailCode.FILE_ALREADY_BOUND, TASK_ID))
 			.when(taskCreateService)
 			.precheck(anyList(), eq(USER_ID), eq(COMPANY_ID));
 
 		mockMvc
 			.perform(post("/api/health-report/analyze").contentType(MediaType.APPLICATION_JSON)
 				.content(analyzeBody()))
-			.andExpect(status().isConflict())
-			.andExpect(jsonPath("$.code").value(FailCode.FILE_ALREADY_BOUND.name()))
-			.andExpect(jsonPath("$.taskId").value(TASK_ID))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.DEFAULT_ERROR_CODE))
+			// data 恒为 null，已绑定 taskId 只能随 retMsg 下发，前端据此继续轮询。
+			.andExpect(jsonPath("$.retMsg").value(FailCode.FILE_ALREADY_BOUND.name() + ":" + TASK_ID))
+			.andExpect(jsonPath("$.data").value(nullValue()))
 			.andExpect(jsonPath("$.originName").doesNotExist());
 	}
 
@@ -111,9 +119,10 @@ class HealthReportControllerTest {
 			.thenThrow(new MaxUploadSizeExceededException(20L * 1024L * 1024L));
 
 		mockMvc.perform(multipart("/api/health-report/file").file(file))
-			.andExpect(status().isBadRequest())
-			.andExpect(jsonPath("$.code").value(FailCode.FILE_TOO_LARGE.name()))
-			.andExpect(jsonPath("$.taskId").doesNotExist())
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.DEFAULT_ERROR_CODE))
+			.andExpect(jsonPath("$.retMsg").value(FailCode.FILE_TOO_LARGE.name()))
+			.andExpect(jsonPath("$.data").value(nullValue()))
 			.andExpect(jsonPath("$.originName").doesNotExist());
 	}
 
@@ -133,10 +142,10 @@ class HealthReportControllerTest {
 		when(fileUploadService.upload(any(), eq(USER_ID), eq(COMPANY_ID))).thenThrow(new MultipartException("边界符损坏"));
 
 		mockMvc.perform(multipart("/api/health-report/file").file(file))
-			.andExpect(status().isBadRequest())
-			.andExpect(jsonPath("$.code").value(FailCode.MALFORMED_REQUEST.name()))
-			.andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(FailCode.FILE_TOO_LARGE.name())))
-			.andExpect(jsonPath("$.taskId").doesNotExist())
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.retMsg").value(FailCode.MALFORMED_REQUEST.name()))
+			.andExpect(jsonPath("$.retMsg").value(org.hamcrest.Matchers.not(FailCode.FILE_TOO_LARGE.name())))
+			.andExpect(jsonPath("$.data").value(nullValue()))
 			.andExpect(jsonPath("$.originName").doesNotExist());
 	}
 

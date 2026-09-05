@@ -4,7 +4,7 @@ import com.example.healthreport.infra.HealthReportAnalysisCallException;
 import com.example.healthreport.infra.HealthReportAnalysisModelClient;
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.llm.schema.ModelOutputSchemaRegistry;
 import com.example.healthreport.task.DegradeAccumulator;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -57,7 +57,7 @@ class ExtractionOrchestratorTest {
                 PROBLEMS_OK, DIET_ADVICE_OK);
 
         assertThatThrownBy(() -> orchestrator(client).extract(twoFileImages(), new DegradeAccumulator()))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode())
                                 .isEqualTo(FailCode.NOT_HEALTH_REPORT));
         assertThat(client.callOrder).containsExactly(ExtractionCall.INDICATORS);
@@ -73,7 +73,7 @@ class ExtractionOrchestratorTest {
         RecordingClient client = new RecordingClient(conflicting, PROBLEMS_OK, DIET_ADVICE_OK);
 
         assertThatThrownBy(() -> orchestrator(client).extract(twoFileImages(), new DegradeAccumulator()))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode())
                                 .isEqualTo(FailCode.IDENTITY_MISMATCH));
         assertThat(client.callOrder).containsExactly(ExtractionCall.INDICATORS);

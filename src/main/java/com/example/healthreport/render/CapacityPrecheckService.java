@@ -3,7 +3,7 @@ package com.example.healthreport.render;
 import com.example.healthreport.render.doc.DocToPdfConverter;
 import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.ofdrw.reader.OFDReader;
 import org.springframework.stereotype.Service;
@@ -66,12 +66,12 @@ public class CapacityPrecheckService {
                     checkImage(contentBytes);
                     return 1;
                 default:
-                    throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
+                    throw new BusinessException(FailCode.UNSUPPORTED_FORMAT);
             }
-        } catch (HealthReportException exception) {
+        } catch (BusinessException exception) {
             throw exception;
         } catch (IOException | RuntimeException exception) {
-            throw new HealthReportException(FailCode.FILE_UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.FILE_UNREADABLE, exception);
         }
     }
 
@@ -79,7 +79,7 @@ public class CapacityPrecheckService {
         try (PDDocument document = PDDocument.load(contentBytes)) {
             int pageCount = document.getNumberOfPages();
             if (pageCount < 1) {
-                throw new HealthReportException(FailCode.FILE_UNREADABLE, 400);
+                throw new BusinessException(FailCode.FILE_UNREADABLE);
             }
             return pageCount;
         }
@@ -89,7 +89,7 @@ public class CapacityPrecheckService {
         try (OFDReader reader = new OFDReader(new ByteArrayInputStream(contentBytes))) {
             int pageCount = reader.getNumberOfPages();
             if (pageCount < 1) {
-                throw new HealthReportException(FailCode.FILE_UNREADABLE, 400);
+                throw new BusinessException(FailCode.FILE_UNREADABLE);
             }
             return pageCount;
         }
@@ -98,10 +98,10 @@ public class CapacityPrecheckService {
     private void checkImage(byte[] contentBytes) throws IOException {
         ImageDimensions dimensions = imageContentInspector.readDimensions(contentBytes);
         if (dimensions.getWidth() < MIN_IMAGE_SIDE || dimensions.getHeight() < MIN_IMAGE_SIDE) {
-            throw new HealthReportException(FailCode.FILE_UNREADABLE, 400);
+            throw new BusinessException(FailCode.FILE_UNREADABLE);
         }
         if (dimensions.totalPixels() > MAX_IMAGE_PIXELS) {
-            throw new HealthReportException(FailCode.FILE_TOO_LARGE, 400);
+            throw new BusinessException(FailCode.FILE_TOO_LARGE);
         }
         imageContentInspector.assertActuallyDecodable(contentBytes);
     }

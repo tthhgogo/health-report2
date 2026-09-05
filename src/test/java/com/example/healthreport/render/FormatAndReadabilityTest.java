@@ -3,7 +3,7 @@ package com.example.healthreport.render;
 import com.example.healthreport.render.doc.DocToPdfConverter;
 import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -66,7 +66,7 @@ class FormatAndReadabilityTest {
         byte[] brokenDocx = SyntheticFileFactory.docx(1, 0);
         assertThat(formatDetector.detect(brokenDocx)).isEqualTo(ContentType.DOCX);
         assertThatThrownBy(() -> precheckService.precheckPages(brokenDocx, ContentType.DOCX))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_UNREADABLE));
     }
 
@@ -77,7 +77,7 @@ class FormatAndReadabilityTest {
         byte[] corruptPdf = "%PDF-corrupt".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
         assertThat(formatDetector.detect(corruptPdf)).isEqualTo(ContentType.PDF);
         assertThatThrownBy(() -> precheckService.precheckPages(corruptPdf, ContentType.PDF))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_UNREADABLE));
     }
 
@@ -90,14 +90,14 @@ class FormatAndReadabilityTest {
                 new DocxToPdfConverter(), new DocToPdfConverter());
 
         assertThatThrownBy(() -> checker.precheckPages(new byte[]{1}, ContentType.PNG))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_TOO_LARGE));
         verify(imageContentInspector, never()).assertActuallyDecodable(any(byte[].class));
     }
 
     private void assertRejectedAsUnsupported(byte[] contentBytes) {
         assertThatThrownBy(() -> formatDetector.detect(contentBytes))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode())
                                 .isEqualTo(FailCode.UNSUPPORTED_FORMAT));
     }

@@ -16,10 +16,9 @@ import com.example.healthreport.llm.extraction.IndicatorsResult;
 import com.example.healthreport.llm.extraction.ProblemsResult;
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
-import com.example.healthreport.render.ImageTooLargeException;
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -136,7 +135,7 @@ class AnalysisTaskWorkerTest {
 		ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
 		AnalysisExecutorProperties properties = new AnalysisExecutorProperties();
 		when(stateService.claim(taskId)).thenReturn(true);
-		when(renderService.renderFiles(taskId)).thenThrow(new HealthReportException(FailCode.UNREADABLE, 400));
+		when(renderService.renderFiles(taskId)).thenThrow(new BusinessException(FailCode.UNREADABLE));
 		AnalysisTaskWorker worker = new AnalysisTaskWorker(stateService, taskService(taskId), cleanupService,
 				renderService, orchestrator, assembleService, scheduler, properties);
 
@@ -181,8 +180,7 @@ class AnalysisTaskWorkerTest {
 		ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
 		when(stateService.claim(taskId)).thenReturn(true);
 		when(renderService.renderFiles(taskId))
-			.thenThrow(new HealthReportException(FailCode.IMAGE_TOO_LARGE, 400,
-					new ImageTooLargeException(11L, 10L)));
+			.thenThrow(new BusinessException(FailCode.IMAGE_TOO_LARGE));
 		AnalysisExecutorProperties properties = new AnalysisExecutorProperties();
 		AnalysisTaskWorker worker = new AnalysisTaskWorker(stateService, taskService(taskId), cleanupService,
 				renderService, orchestrator, assembleService, scheduler, properties);
@@ -297,7 +295,7 @@ class AnalysisTaskWorkerTest {
 		when(renderService.renderFiles(taskId)).thenReturn(images());
 		// 全部非报告、身份不一致等确定性失败都由抽取阶段抛出，Worker 只负责收敛。
 		when(orchestrator.extract(any(PageImageSequence.class), any(DegradeAccumulator.class)))
-			.thenThrow(new HealthReportException(FailCode.UNREADABLE, 400));
+			.thenThrow(new BusinessException(FailCode.UNREADABLE));
 		AnalysisTaskWorker worker = new AnalysisTaskWorker(stateService, taskService(taskId), cleanupService,
 				renderService, orchestrator, assembleService, scheduler,
 				new AnalysisExecutorProperties());

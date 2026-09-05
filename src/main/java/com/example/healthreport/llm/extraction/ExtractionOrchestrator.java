@@ -3,7 +3,7 @@ package com.example.healthreport.llm.extraction;
 import com.example.healthreport.infra.HealthReportAnalysisModelClient;
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.task.DegradeAccumulator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -103,7 +103,7 @@ public class ExtractionOrchestrator {
             // Schema 已通过仍映射失败说明 DTO 与契约漂移；异常消息可能含健康数据，不记原文。
             log.error("已校验输出映射失败，type={}，异常类型={}",
                     type.getSimpleName(), exception.getClass().getName());
-            throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+            throw new BusinessException(FailCode.SERVER_ERROR);
         }
     }
 
@@ -114,12 +114,12 @@ public class ExtractionOrchestrator {
         }
         log.info("阶段返回非 OK 状态，call={}，reportStatus={}", call, reportStatus);
         if ("NO_REPORT_FEATURE".equals(reportStatus)) {
-            throw new HealthReportException(FailCode.NOT_HEALTH_REPORT, 400);
+            throw new BusinessException(FailCode.NOT_HEALTH_REPORT);
         }
         if ("UNREADABLE".equals(reportStatus)) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400);
+            throw new BusinessException(FailCode.UNREADABLE);
         }
-        throw new HealthReportException(FailCode.SERVER_ERROR, 500);
+        throw new BusinessException(FailCode.SERVER_ERROR);
     }
 
     private void recordItemDrops(DegradeAccumulator accumulator, int droppedTotal) {

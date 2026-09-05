@@ -1,7 +1,7 @@
 package com.example.healthreport.render;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -30,7 +30,7 @@ class ZipBombGuardTest {
         }
 
         assertThatThrownBy(() -> new ZipBombGuard().inspect(output.toByteArray()))
-                .isInstanceOfSatisfying(HealthReportException.class,
+                .isInstanceOfSatisfying(BusinessException.class,
                         exception -> assertThat(exception.getFailCode()).isEqualTo(FailCode.FILE_UNREADABLE));
     }
 

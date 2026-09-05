@@ -2244,6 +2244,12 @@ task.setUpdateTime(new Date());
 | `GET  /api/health-report/result/{taskId}` | 取四模块结果，含 `partial` / `suppressDishRecommend` |
 | `DELETE /api/health-report/task/{taskId}` | 用户关闭页面时清除（§2.6） |
 
+**五个接口的成功与失败一律套 `CommonResponse` 信封**（2026-09-05 定）：`{retCode, retMsg, data}`，
+**HTTP 状态码恒为 200**，业务对象放 `data`；失败时 `retCode` 取 `DEFAULT_ERROR_CODE`、`data` 为 `null`、
+原失败码放 `retMsg`，`FILE_ALREADY_BOUND` 的已绑定 taskId 追加成 `FILE_ALREADY_BOUND:<taskId>`。
+业务失败一律抛 `BusinessException`（全链路只此一个异常类，自定义异常子类已全部删除），
+由全局处理器转成信封。DELETE 也返回 200 + 信封，不再是 204。
+
 **除上传接口外，全部接口必须校验 `taskId` 同时归属当前 `userId`、`companyId`，且
 `deleted_at IS NULL`。**
 taskId 难猜是混淆，不是鉴权。**上传接口虽无 taskId，但创建任务时必须校验文件归属**（§2.2）。

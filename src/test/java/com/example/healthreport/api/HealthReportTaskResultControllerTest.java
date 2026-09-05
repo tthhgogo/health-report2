@@ -3,9 +3,10 @@ package com.example.healthreport.api;
 import com.example.healthreport.api.dto.TaskStatusResponse;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.AnalysisResult;
+import com.example.healthreport.constants.ResponseCodes;
 import com.example.healthreport.infra.CurrentUserProvider;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.task.DegradeAccumulator;
 import com.example.healthreport.task.TaskDeleteService;
 import com.example.healthreport.task.TaskQueryService;
@@ -24,6 +25,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.hamcrest.Matchers.nullValue;
 
 /** 两个 GET 与 DELETE 的 HTTP 契约测试。 */
 class HealthReportTaskResultControllerTest {
@@ -61,10 +63,11 @@ class HealthReportTaskResultControllerTest {
 
 		mockMvc.perform(get("/api/health-report/task/{taskId}", TASK_ID))
 			.andExpect(status().isOk())
-			.andExpect(jsonPath("$.status").value("QUEUED"))
-			.andExpect(jsonPath("$.stage").value("UPLOADING"))
-			.andExpect(jsonPath("$.progress").value(0))
-			.andExpect(jsonPath("$.modules").doesNotExist());
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.SUCCESS_CODE))
+			.andExpect(jsonPath("$.data.status").value("QUEUED"))
+			.andExpect(jsonPath("$.data.stage").value("UPLOADING"))
+			.andExpect(jsonPath("$.data.progress").value(0))
+			.andExpect(jsonPath("$.data.modules").doesNotExist());
 	}
 
 	@Test
@@ -74,26 +77,33 @@ class HealthReportTaskResultControllerTest {
 
 		mockMvc.perform(get("/api/health-report/result/{taskId}", TASK_ID))
 			.andExpect(status().isOk())
-			.andExpect(jsonPath("$.partial").value(false))
-			.andExpect(jsonPath("$.partialReason").doesNotExist())
-			.andExpect(jsonPath("$.suppressDishRecommend").value(false))
-			.andExpect(jsonPath("$.processedPages").value(0))
-			.andExpect(jsonPath("$.totalPages").value(0));
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.SUCCESS_CODE))
+			.andExpect(jsonPath("$.data.partial").value(false))
+			.andExpect(jsonPath("$.data.partialReason").doesNotExist())
+			.andExpect(jsonPath("$.data.suppressDishRecommend").value(false))
+			.andExpect(jsonPath("$.data.processedPages").value(0))
+			.andExpect(jsonPath("$.data.totalPages").value(0));
 	}
 
 	@Test
 	void unfinishedResultShouldReturnConflictCode() throws Exception {
-		doThrow(new HealthReportException(FailCode.TASK_NOT_FINISHED, 409)).when(queryService)
+		doThrow(new BusinessException(FailCode.TASK_NOT_FINISHED)).when(queryService)
 			.getResult(TASK_ID, USER_ID, COMPANY_ID);
 
 		mockMvc.perform(get("/api/health-report/result/{taskId}", TASK_ID))
-			.andExpect(status().isConflict())
-			.andExpect(jsonPath("$.code").value("TASK_NOT_FINISHED"));
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.DEFAULT_ERROR_CODE))
+			.andExpect(jsonPath("$.retMsg").value("TASK_NOT_FINISHED"))
+			.andExpect(jsonPath("$.data").value(nullValue()));
 	}
 
+	/** 删除成功也走统一信封：200 + 成功码 + data 为 null，前端不再按 204 分支。 */
 	@Test
-	void deleteEndpointShouldReturnNoContent() throws Exception {
-		mockMvc.perform(delete("/api/health-report/task/{taskId}", TASK_ID)).andExpect(status().isNoContent());
+	void deleteEndpointShouldReturnSuccessEnvelopeWithNullData() throws Exception {
+		mockMvc.perform(delete("/api/health-report/task/{taskId}", TASK_ID))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.retCode").value(ResponseCodes.SUCCESS_CODE))
+			.andExpect(jsonPath("$.data").value(nullValue()));
 		verify(deleteService).delete(TASK_ID, USER_ID, COMPANY_ID);
 	}
 

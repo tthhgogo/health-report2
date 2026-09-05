@@ -2,7 +2,8 @@ package com.example.healthreport.task;
 
 import com.example.healthreport.persistence.CtHealthReportTaskEntity;
 import com.example.healthreport.persistence.CtHealthReportTaskService;
-import com.example.healthreport.support.OwnershipException;
+import com.example.healthreport.support.BusinessException;
+import com.example.healthreport.support.FailCode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -36,7 +37,7 @@ public class TaskDeleteService {
 		CtHealthReportTaskEntity ownedTask = ownershipGuard.assertOwned(taskId, currentUserId, currentCompanyId);
 		int affectedRows = taskService.markDeleted(ownedTask.getTaskId(), currentUserId, currentCompanyId);
 		if (affectedRows != 1) {
-			throw new OwnershipException();
+			throw new BusinessException(FailCode.RESULT_EXPIRED);
 		}
 
 		// 用户主动删除是数据生命周期里唯一由用户触发的终态，必须留痕：

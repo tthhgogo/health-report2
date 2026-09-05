@@ -1,5 +1,7 @@
 package com.example.healthreport.render;
 
+import com.example.healthreport.support.BusinessException;
+import com.example.healthreport.support.FailCode;
 import org.springframework.stereotype.Component;
 
 import java.awt.image.BufferedImage;
@@ -27,7 +29,7 @@ public class ExtractionImageCompressor {
         if ((long) fallback.sizeBytes() <= MAX_IMAGE_BYTES) {
             return fallback;
         }
-        throw new ImageTooLargeException(fallback.sizeBytes(), MAX_IMAGE_BYTES);
+        throw new BusinessException(FailCode.IMAGE_TOO_LARGE);
     }
 
     private CompressedPageImage compress(BufferedImage source, int maxLongEdge, float quality) {

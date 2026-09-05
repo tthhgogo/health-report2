@@ -1,7 +1,7 @@
 package com.example.healthreport.render;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
@@ -29,7 +29,7 @@ public class ZipBombGuard {
      *
      * @param contentBytes ZIP 原始字节
      * @return 不可修改的条目名集合
-     * @throws HealthReportException 容器损坏或命中任一防护上限
+     * @throws BusinessException 容器损坏或命中任一防护上限
      */
     public Set<String> inspect(byte[] contentBytes) {
         if (contentBytes == null || contentBytes.length == 0) {
@@ -62,7 +62,7 @@ public class ZipBombGuard {
                 }
                 zipInputStream.closeEntry();
             }
-        } catch (HealthReportException exception) {
+        } catch (BusinessException exception) {
             throw exception;
         } catch (IOException | RuntimeException exception) {
             throw unreadable(exception);
@@ -88,10 +88,10 @@ public class ZipBombGuard {
         return normalizedName;
     }
 
-    private HealthReportException unreadable(Throwable cause) {
+    private BusinessException unreadable(Throwable cause) {
         if (cause == null) {
-            return new HealthReportException(FailCode.FILE_UNREADABLE, 400);
+            return new BusinessException(FailCode.FILE_UNREADABLE);
         }
-        return new HealthReportException(FailCode.FILE_UNREADABLE, 400, cause);
+        return new BusinessException(FailCode.FILE_UNREADABLE, cause);
     }
 }

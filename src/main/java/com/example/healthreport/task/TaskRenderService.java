@@ -9,7 +9,7 @@ import com.example.healthreport.render.FileToImageService;
 import com.example.healthreport.render.FormatDetector;
 import com.example.healthreport.render.PageImageSequence;
 import com.example.healthreport.render.RenderableFile;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import com.example.healthreport.support.Sha256Hex;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -176,7 +176,7 @@ public class TaskRenderService {
         final ContentType detectedContentType;
         try {
             detectedContentType = formatDetector.detect(contentBytes);
-        } catch (HealthReportException exception) {
+        } catch (BusinessException exception) {
             throw integrityFailure(fileEntity, "对象内容未通过渲染前安全预检", exception);
         }
         if (detectedContentType != recordedContentType) {
@@ -190,7 +190,7 @@ public class TaskRenderService {
         final int detectedPages;
         try {
             detectedPages = capacityPrecheckService.precheckPages(contentBytes, detectedContentType);
-        } catch (HealthReportException exception) {
+        } catch (BusinessException exception) {
             throw integrityFailure(fileEntity, "对象内容未通过渲染前安全预检", exception);
         }
         if (detectedPages != fileEntity.getPrecheckPages().intValue()) {

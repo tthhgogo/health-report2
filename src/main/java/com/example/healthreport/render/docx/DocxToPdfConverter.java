@@ -1,7 +1,7 @@
 package com.example.healthreport.render.docx;
 
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.docx4j.Docx4J;
 import org.docx4j.convert.out.FOSettings;
@@ -147,7 +147,7 @@ public class DocxToPdfConverter {
 	 *
 	 * @throws IOException 文档损坏或排版失败；调用方按各自阶段映射为
 	 *             FILE_UNREADABLE（上传）或 UNREADABLE（Worker）
-	 * @throws HealthReportException SERVER_ERROR：本机无任何可用 CJK 物理字体（部署环境问题）
+	 * @throws BusinessException SERVER_ERROR：本机无任何可用 CJK 物理字体（部署环境问题）
 	 */
 	public byte[] toPdf(byte[] docxBytes) throws IOException {
 		if (docxBytes == null || docxBytes.length == 0) {
@@ -205,7 +205,7 @@ public class DocxToPdfConverter {
 			resolveCjkTargetFont();
 			return true;
 		}
-		catch (HealthReportException exception) {
+		catch (BusinessException exception) {
 			return false;
 		}
 	}
@@ -232,7 +232,7 @@ public class DocxToPdfConverter {
 					registerBundledFont();
 				}
 				catch (Exception exception) {
-					throw new HealthReportException(FailCode.SERVER_ERROR, 500, exception);
+					throw new BusinessException(FailCode.SERVER_ERROR, exception);
 				}
 				fontEnvironmentInitialized = true;
 			}
@@ -251,7 +251,7 @@ public class DocxToPdfConverter {
 					return candidate;
 				}
 			}
-			throw new HealthReportException(FailCode.SERVER_ERROR, 500,
+			throw new BusinessException(FailCode.SERVER_ERROR,
 					new IllegalStateException("内置字体加载失败且本机无任何可用 CJK 字体，DOCX 转换无法保真"));
 		}
 	}

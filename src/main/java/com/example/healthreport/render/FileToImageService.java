@@ -7,7 +7,7 @@ import com.example.healthreport.render.ofd.OfdPageRenderer;
 import com.example.healthreport.render.pdf.PdfImageStripper;
 import com.example.healthreport.render.pdf.PdfPageRenderer;
 import com.example.healthreport.support.FailCode;
-import com.example.healthreport.support.HealthReportException;
+import com.example.healthreport.support.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.stereotype.Service;
@@ -19,7 +19,7 @@ import java.util.List;
 /**
  * 文件转图入口：全部文件统一转成 JPEG 页面图，按 fileIndex 顺序拼成全局图序列。
  *
- * <p>这是链路里唯一的转图编排点，也是 {@link ImageTooLargeException} 到
+ * <p>这是链路里唯一的转图编排点，也是 {@code IMAGE_TOO_LARGE} 到
  * {@code IMAGE_TOO_LARGE} 的唯一映射点。逐页渲染、逐页压缩、逐页释放，
  * 渲染档位图绝不整份缓存；压缩档三次调用共用一份（设计方案 §3.3）。</p>
  *
@@ -62,11 +62,10 @@ public class FileToImageService {
      */
     public PageImageSequence render(List<RenderableFile> fileList) {
         if (fileList == null || fileList.isEmpty()) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400);
+            throw new BusinessException(FailCode.UNREADABLE);
         }
         long startMillis = System.currentTimeMillis();
-        // ImageTooLargeException 自身就是 IMAGE_TOO_LARGE/400 的 HealthReportException，
-        // 直接向上冒泡，不再二次包装。
+        // 压缩兜底失败抛的就是 IMAGE_TOO_LARGE 的 BusinessException，直接向上冒泡，不再二次包装。
         PageImageSequence.Builder builder = new PageImageSequence.Builder();
         for (RenderableFile file : fileList) {
             renderFile(file, builder);
@@ -102,7 +101,7 @@ public class FileToImageService {
                 return;
             default:
                 // 非 Word 的 OLE2 等在上传口已被拒（§5.4），走到这里说明数据被改过。
-                throw new HealthReportException(FailCode.UNSUPPORTED_FORMAT, 400);
+                throw new BusinessException(FailCode.UNSUPPORTED_FORMAT);
         }
     }
 
@@ -111,7 +110,7 @@ public class FileToImageService {
         try {
             return docxToPdfConverter.toPdf(contentBytes);
         } catch (IOException exception) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.UNREADABLE, exception);
         }
     }
 
@@ -120,7 +119,7 @@ public class FileToImageService {
         try {
             return docToPdfConverter.toPdf(contentBytes);
         } catch (IOException exception) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.UNREADABLE, exception);
         }
     }
 
@@ -129,12 +128,12 @@ public class FileToImageService {
         try {
             document = PDDocument.load(contentBytes);
         } catch (IOException | RuntimeException exception) {
-            throw new HealthReportException(FailCode.UNREADABLE, 400, exception);
+            throw new BusinessException(FailCode.UNREADABLE, exception);
         }
         try {
             int pageCount = document.getNumberOfPages();
             if (pageCount < 1) {
-                throw new HealthReportException(FailCode.UNREADABLE, 400);
+                throw new BusinessException(FailCode.UNREADABLE);
             }
             // 影像剔除只改内存文档；扫描版保护与失败兜底见 PdfImageStripper。
             pdfImageStripper.stripImages(document);
