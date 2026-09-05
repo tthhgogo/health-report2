@@ -1,5 +1,9 @@
 package com.example.healthreport.dish;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.healthreport.cache.DishRecommendSetCache;
 import com.example.healthreport.cache.DishSetMemberCodec;
 import com.example.healthreport.cache.DishTagSetCatalog;
@@ -16,6 +20,7 @@ import com.example.healthreport.persistence.CtDishTagEntity;
 import com.example.healthreport.persistence.CtDishTagService;
 import com.example.healthreport.safety.AllergenKeywordFallback;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -151,14 +156,14 @@ class DishTagServiceTest {
 	}
 
 	/**
-	 * 计数说 1 道、分页却返回 2 道：必须被完整性校验发现，不得被产能闸掩盖。
+	 * 计数说 1 道、分页却返回 2 道：告警必须发出来，快照照常发布（2026-09-05 由整企业作废改为告警）。
 	 *
 	 * <p>产能闸若由「处理数达到上限」反推，这里会被当成触发闸、期望值随之变成 2，
-	 * 恰好等于处理数而放行——那正是这条校验本该发现的 count/page 自相矛盾。</p>
+	 * 恰好等于处理数而静默放行——那样连告警都不会有，count/page 自相矛盾就再也看不见了。</p>
 	 */
 	@Test
 	@SuppressWarnings("unchecked")
-	void countAndPageDisagreementMustNotBeMaskedByTheCap() {
+	void countAndPageDisagreementShouldWarnAndStillPublish() {
 		LocalDate bizDate = LocalDate.of(2026, 8, 28);
 		DishQueryService queryService = mock(DishQueryService.class);
 		when(queryService.queryPreheatCompanyPage(bizDate, null, 1))
@@ -190,14 +195,36 @@ class DishTagServiceTest {
 				any(TagState.class)))
 			.thenReturn(TagValue.of(TagState.NEUTRAL));
 		DishRecommendSetCache setCache = mock(DishRecommendSetCache.class);
+		DishTagSetCatalog catalog = new DishTagSetCatalog();
 		DishTagService service = new DishTagService(queryService, hashCalculator, persistence,
 				mock(DishTagWriteService.class), mock(DishTagClient.class), properties, nutritionMatcher,
-				dietMatcher, mock(AllergenKeywordFallback.class), setCache, new DishTagSetCatalog(),
+				dietMatcher, mock(AllergenKeywordFallback.class), setCache, catalog,
 				new DishSetMemberCodec(), 1, 2);
+		Logger logger = (Logger) LoggerFactory.getLogger(DishTagService.class);
+		Level previousLevel = logger.getLevel();
+		ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>();
+		appender.start();
+		logger.addAppender(appender);
+		logger.setLevel(Level.WARN);
+		try {
+			service.run(bizDate);
+		}
+		finally {
+			logger.detachAppender(appender);
+			logger.setLevel(previousLevel);
+			appender.stop();
+		}
 
-		service.run(bizDate);
-
-		verify(setCache, never()).publish(anyString(), any(LocalDate.class), anyString(), anyList());
+		// 漂移不再是发布闸：已打标的两道菜照常发布，漏掉的菜当天对模块四不存在。
+		verify(setCache).publish(eq("company-a"), eq(bizDate), anyString(), eq(catalog.publishRefs()));
+		verify(setCache, never()).discard(anyString(), any(LocalDate.class), anyString(), anyList());
+		// 告警是 count/page 自相矛盾唯一的可见入口，丢了等于这条校验不存在；企业标识不得进日志。
+		StringBuilder renderedLog = new StringBuilder();
+		for (ILoggingEvent event : appender.list) {
+			renderedLog.append(event.getFormattedMessage()).append('\n');
+		}
+		assertThat(renderedLog.toString()).contains("企业菜品分页数量与前后计数不一致", "构建前在架数=1", "实际打标数=2")
+			.doesNotContain("company-a");
 	}
 
 	@Test

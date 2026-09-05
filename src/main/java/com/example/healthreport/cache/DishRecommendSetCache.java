@@ -1,11 +1,8 @@
 package com.example.healthreport.cache;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.connection.RedisConnection;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -38,6 +35,21 @@ public class DishRecommendSetCache {
 					+ "    redis.call('pexpire', formal, ARGV[1]) " + "  end " + "  processed = processed + 1 "
 					+ "end " + "return processed",
 			Long.class);
+
+	/**
+	 * 同 slot 方向集合的一次性读取脚本：一次 EVAL 取回全部方向成员。
+	 * <p>
+	 * <b>不能用 pipeline</b>：Redis Cluster + Jedis 驱动下 Spring Data Redis 的
+	 * {@code JedisClusterConnection.openPipeline} 直接抛 {@code UnsupportedOperationException}，
+	 * 读取每次都落到 read 的降级分支，模块四永远是空态且只有一行 WARN。
+	 * 全部 Key 共享 {@code companyId:bizDate} hash tag，同 slot，EVAL 在集群下合法（与 publish 同一路数）。
+	 * </p>
+	 */
+	@SuppressWarnings("rawtypes")
+	private static final DefaultRedisScript<List> READ_SCRIPT = new DefaultRedisScript<List>(
+			"local result = {} " + "for i = 1, #KEYS do " + "  result[i] = redis.call('smembers', KEYS[i]) " + "end "
+					+ "return result",
+			List.class);
 
 	private final StringRedisTemplate redisTemplate;
 
@@ -98,29 +110,25 @@ public class DishRecommendSetCache {
 	}
 
 	/**
-	 * 通过一次 pipeline 按标签维度批量读取相关集合，不按菜品逐个访问。Redis 不可用或响应格式异常时返回空集合，在线禁止回源数据库或重新计算。
+	 * 通过一次 EVAL 按标签维度批量读取相关集合，不按菜品逐个访问、也不按维度串行 RTT。
+	 * Redis 不可用或响应格式异常时返回空集合，在线禁止回源数据库或重新计算。
 	 */
 	public Map<DishTagSetRef, Set<String>> read(String companyId, LocalDate bizDate, List<DishTagSetRef> setRefList) {
 		if (setRefList == null || setRefList.isEmpty()) {
 			return Collections.emptyMap();
 		}
 		try {
-			final RedisSerializer<String> stringSerializer = redisTemplate.getStringSerializer();
-			List<Object> pipelineResultList = redisTemplate.executePipelined(new RedisCallback<Object>() {
-				@Override
-				public Object doInRedis(RedisConnection connection) {
-					for (DishTagSetRef setRef : setRefList) {
-						connection.sMembers(stringSerializer.serialize(keyFactory.formalKey(companyId, bizDate, setRef)));
-					}
-					return null;
-				}
-			}, stringSerializer);
-			if (pipelineResultList.size() != setRefList.size()) {
+			List<String> keyList = new ArrayList<String>(setRefList.size());
+			for (DishTagSetRef setRef : setRefList) {
+				keyList.add(keyFactory.formalKey(companyId, bizDate, setRef));
+			}
+			List<?> memberListPerDirection = redisTemplate.execute(READ_SCRIPT, keyList);
+			if (memberListPerDirection == null || memberListPerDirection.size() != setRefList.size()) {
 				throw new IllegalStateException("Redis批量读取响应数量与方向清单不一致");
 			}
 			Map<DishTagSetRef, Set<String>> resultMap = new LinkedHashMap<DishTagSetRef, Set<String>>(setRefList.size());
 			for (int index = 0; index < setRefList.size(); index++) {
-				resultMap.put(setRefList.get(index), toMemberSet(pipelineResultList.get(index)));
+				resultMap.put(setRefList.get(index), toMemberSet(memberListPerDirection.get(index)));
 			}
 			return resultMap;
 		}
@@ -131,17 +139,17 @@ public class DishRecommendSetCache {
 		}
 	}
 
-	/** 将 pipeline 的单条响应收窄为不可变字符串集合，异常类型由 read 统一降级为空态。 */
-	private Set<String> toMemberSet(Object pipelineResult) {
-		if (pipelineResult == null) {
+	/** 将脚本返回的单个方向成员数组收窄为不可变字符串集合，异常类型由 read 统一降级为空态。 */
+	private Set<String> toMemberSet(Object directionResult) {
+		if (directionResult == null) {
 			return Collections.emptySet();
 		}
-		if (!(pipelineResult instanceof Set)) {
+		if (!(directionResult instanceof Collection)) {
 			throw new IllegalStateException("Redis集合响应类型异常");
 		}
-		Set<?> rawMemberSet = (Set<?>) pipelineResult;
-		Set<String> memberSet = new LinkedHashSet<String>(rawMemberSet.size());
-		for (Object rawMember : rawMemberSet) {
+		Collection<?> rawMemberCollection = (Collection<?>) directionResult;
+		Set<String> memberSet = new LinkedHashSet<String>(rawMemberCollection.size());
+		for (Object rawMember : rawMemberCollection) {
 			if (!(rawMember instanceof String)) {
 				throw new IllegalStateException("Redis集合成员类型异常");
 			}

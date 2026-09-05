@@ -185,6 +185,60 @@ DishQueryService       查询当日在架菜品与食材
   LLM-B 链路，允许在自己的 DEBUG 日志中记录完整请求响应。任务与用户标识可用于普通日志关联，
   但不得进 URL 查询串或分享链接。
 
+### Redis SDK 使用约束
+
+**生产是 Redis Cluster + Jedis 驱动**（2026-09-05 线上确认）；本仓库编译期用的是 Spring Boot
+默认的 Lettuce，测试用的是单机 embedded-redis。**本地跑通不等于生产可用**——代码一律按
+「Jedis Cluster 下也成立」的最小公分母写。下面每一条都在 `spring-data-redis 2.7.x` +
+`jedis 3.8` 的字节码上逐条核对过，括号内是实际抛出的异常与原文。
+
+**① 直接不可用**——调用即抛，不是慢，是功能不存在：
+
+| 能力 | 触发点 | 抛什么 |
+|---|---|---|
+| pipeline | `RedisTemplate#executePipelined`、`RedisConnection#openPipeline/closePipeline` | `UnsupportedOperationException: Pipeline is currently not supported for JedisClusterConnection.` |
+| 事务 | `multi` / `exec` / `discard` / `watch` / `unwatch`，含 `SessionCallback` 里做事务 | `InvalidDataAccessApiUsageException: MULTI is currently not supported in cluster mode.`（其余四个同款文案） |
+| 切库 | `select(int)`、`spring.redis.database` 非 0 | `InvalidDataAccessApiUsageException: Cannot SELECT non zero index in cluster mode.` |
+| 全库 `SCAN` | 集群连接上的 `scan(ScanOptions)` | `InvalidDataAccessApiUsageException: Scan is not supported across multiple nodes within a cluster`（单键 `sScan` / `hScan` / `zScan` 不受影响） |
+| `SCRIPT EXISTS` | `scriptExists` | `InvalidDataAccessApiUsageException: ScriptExists is not supported in cluster environment.` |
+| `MOVE` | `move(key, db)` | `UnsupportedOperationException: Cluster mode does not allow moving keys.` |
+| 超 `int` 上限的过期时间 | `expire(key, 秒 > 2^31-1)`、`restore(..., 毫秒 > 2^31-1)` | `UnsupportedOperationException: Jedis does not support seconds exceeding Integer.MAX_VALUE.` |
+| 新命令族 | `GEOSEARCH` / `GEOSEARCHSTORE`、`XINFO` / `XPENDING` / `XCLAIM JUSTID` | `UnsupportedOperationException`；方案本来不用，不得引入 |
+
+> **不要自己做 EVALSHA 预检。** `RedisTemplate#execute(RedisScript, keys, args)` 本身就是
+> 「先 `EVALSHA`，收到 `NOSCRIPT` 再回退 `EVAL`」，而 `scriptExists` 在集群下不可用。
+
+**② 跨 slot 即失败**——必须靠 hash tag 保证同 slot 才能用：
+
+```
+RENAME / RENAMENX、SMOVE、SINTERSTORE / SUNIONSTORE / SDIFFSTORE、
+ZINTER* / ZUNION* / ZDIFF*、BITOP、PFMERGE / PFCOUNT、SORT ... STORE、
+EVAL / EVALSHA 的整个 KEYS 列表
+```
+
+本项目 33 个方向集合共享 `{companyId:bizDate}` hash tag，`publish` 的 `RENAME` 与 `read` 的
+`EVAL` 正因此才合法。**跨企业或跨业务日的键绝不能进同一条命令。**
+
+**③ 不报错但会悄悄退化**——最危险的一类：跨 slot 的 `DEL` / `UNLINK` / `EXISTS` / `MGET` /
+`MSET`，以及 `SINTER` / `SUNION` / `SDIFF`。Spring Data Redis 会拆成多节点多次往返（集合运算
+甚至改成读回本地再算），**不抛异常，但「一次调用 = 一次 RTT = 原子」三条同时不成立**。
+任何「一次网络往返」的性能承诺，只在同 hash tag 前提下成立。
+
+**④ 本项目的固定写法**：
+
+- 批量读多个方向集合：一次 `execute(RedisScript, keyList, args)`，`keyList` 全部同 hash tag
+  （`DishRecommendSetCache#read`）；**不得改回 pipeline**。
+- 原子替换当天集合：一次 Lua（`DishRecommendSetCache#publish`）。
+- 结果缓存：单键 `opsForValue`；多键删除只删同一 `taskId` 的历史版本键。
+- Lua 里访问的每个键都必须由 `KEYS` 传入，不得在脚本内拼键名——集群路由只看 `KEYS`。
+- 新增任何多键操作前先回答一句：**这些键共享 hash tag 吗？** 不共享就不要写成一条命令。
+- 仍然不写 `RedisConfig` / `RedisTemplate` Bean / 连接池配置（§5），
+  也不得为绕开上述限制去换驱动、加配置类或改集群拓扑；确有必要走方案评审。
+
+**⑤ 怎么验**：单机 embedded-redis 只能验脚本语法、TTL、键名与序列化往返，**验不出跨 slot 与
+集群限制**。集群相关约束靠两件事守住：代码注释写明同 slot 依据；单测断言同一条命令里的键
+共享同一个 hash tag（例见 `DishRecommendSetContractTest`）。
+
 ## 7. 测试要求
 
 每个实现任务：

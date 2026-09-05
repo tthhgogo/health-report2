@@ -99,6 +99,28 @@ class ExtractionSchemaValidatorTest {
                 .isInstanceOf(HealthReportException.class);
     }
 
+    /**
+     * 同一章节既整章违规、章内又有条目违规：整章已按该章指标数入账，
+     * 章内那条不得再重复计一次，否则 6 条里只该剔 1 条却被算成 2 条而超预算。
+     */
+    @Test
+    void wholeSectionDropMustNotDoubleCountItsOwnItemViolations() throws Exception {
+        String badItem = "{\"name\":\"白细胞\",\"value\":\"6.2\",\"unit\":null,\"refRange\":\"4.0~10.0\","
+                + "\"conclusionGenerated\":false}"; // 缺 status
+        String content = "{\"reportStatus\":\"OK\",\"patients\":[],\"overview\":null,"
+                + "\"sections\":["
+                + section("血脂检查", 1, 5)
+                + ",{\"section\":\"尿常规\",\"page\":0,\"indicators\":[" + badItem + "]}"
+                + "]}";
+
+        SchemaValidationOutcome outcome = validator.validate(ExtractionCall.INDICATORS, content);
+
+        JsonNode sections = outcome.getValidatedNode().path("sections");
+        assertThat(sections.size()).isEqualTo(1);
+        assertThat(sections.path(0).path("indicators").size()).isEqualTo(5);
+        assertThat(outcome.getDroppedItemCount()).isEqualTo(1);
+    }
+
     /** 第三阶段条目违规按条剔除并入账，供 DIET_TAG_DROPPED 抑制模块四。 */
     @Test
     void dietTagItemViolationShouldDropAndCount() throws Exception {

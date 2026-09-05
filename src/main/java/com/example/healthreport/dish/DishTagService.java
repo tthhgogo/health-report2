@@ -183,13 +183,18 @@ public class DishTagService {
 				lastDishesId = dishPage.getLastDishesId();
 			}
 			long countAfter = dishQueryService.countOnShelfDishes(companyId, bizDate);
-			// 【没触发闸时，完整性校验一字不改】——仍然要求分页取到的菜品数与前后计数三者相等，
-			// 这条能发现外部 count 与 page 两个接口自相矛盾。触发闸时无从校验总数，
-			// 只能要求恰好取满上限，否则超上限的企业永远发布不了。
+			// 双计数只用于【发现漂移】，不是发布闸（2026-09-05 定）：菜单在凌晨窗口内被正常增删，
+			// 或外部 count 与 page 两个接口互相不一致，都会让三者对不上。为此整企业当天不发布，
+			// 代价远大于收益——没被打标的菜当天既进不了推荐集合、也进不了拒绝集合，对模块四直接不存在，
+			// 与产能闸截断的语义完全一致，不会让未经校验的菜被推荐出去。
+			// 因此这里只告警并照常发布，但告警必须留着：它是 count/page 自相矛盾唯一的可见入口。
 			// countBefore 恰好等于上限时不算触发闸：一道都没被截断，期望值就是 countBefore。
 			long expectedDishCount = capReached ? maxDishesPerCompany : countBefore;
 			if (countBefore != countAfter || expectedDishCount != processedDishIdSet.size()) {
-				throw new IllegalStateException("企业菜品分页数量与前后计数不一致");
+				// 企业标识不进日志；三个计数都给出来，便于判断是菜单变动还是接口自相矛盾。
+				log.warn("企业菜品分页数量与前后计数不一致，按已打标菜品照常发布，"
+						+ "业务日={}，构建前在架数={}，构建后在架数={}，期望打标数={}，实际打标数={}", bizDate,
+						countBefore, countAfter, expectedDishCount, processedDishIdSet.size());
 			}
 			logDirectionSummary(bizDate, memberCountByRefMap);
 			setCache.publish(companyId, bizDate, buildId, setCatalog.publishRefs());

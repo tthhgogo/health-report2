@@ -934,7 +934,8 @@ HTTP/超时/finish_reason 检查
 零重试；服务端异常是 `reanalyzable=true`，输入或报告不可用是 `false`。
 
 可定位到单个条目的 Schema/结构问题可剔除该条目，但必须累计到同一个 20% 修复预算；
-超预算即该阶段失败。日志只记阶段、JSON 路径、关键字、条目数和耗时，
+超预算即该阶段失败。整章剔除按该章指标数入账，章内指标的违规若落在同一被整章剔除的章上不重复入账
+——同一条指标只占一份预算。日志只记阶段、JSON 路径、关键字、条目数和耗时，
 不记 `ValidationMessage` 正文、请求/响应体、页面图或健康数据。
 
 预算内剔除阶段 1/2 条目时标记 `partial=true / SCHEMA_ITEM_DROPPED`；
@@ -1078,6 +1079,10 @@ COUNTED   报告没印，由 LLM-A 按自己抽出的条目数出来
 | `sourceLabel` | Java 拼：`INDICATOR` → `section` + `–` + `indicatorName`；`SUMMARY` → `section` + `第` + `itemNo` + `条`，`itemNo` 为 null 时退化为 `section`。多文件加「报告N-」前缀 |
 | `rawText` | 直接用 `rawText`，供用户与纸质报告核对（需求 §6-3） |
 | `indicatorId` | 由 `indicatorName` 在模块一的指标里查表匹配得到；匹配不到则不下发跳转按钮 |
+
+影像与专科小结（外层 `8.【CT胸部扫描】小结` + 内层 `1./2./3.`）**按内层逐条拆成独立条目**：
+`itemNo` 取内层编号，`section` 取承载它的章节原文名，`name` 是该条的原文短表述（Schema 上限 60 字符），
+`rawText` 只放该条那一句。整段塞进 `name` 会因超限被整条剔除，用户直接少看到这几条（2026-09-05 线上复现）。
 
 **`name` 的校验是逐段做的，不是整体做的**（§4.4）：「甘油三酯 ↑偏高」的两段在原文行里
 中间隔着数值与参考范围，整体子串匹配必然失败，会把完全合规的条目判成改写。
@@ -1636,7 +1641,8 @@ staging Key 与正式 Key 使用相同的 `{companyId:bizDate}` hash tag，保�
 ```
 ① 从任务记录取得创建时由创建请求体固化的 companyId，从任务入口取得统一 bizDate
 ② 按第三次 LLM-A 已校验标签选择该企业当天的正向集合和排除集合 Key
-③ 把相关维度的 `SMEMBERS` 命令一次入 pipeline，以一次网络往返取回，禁止按维度串行 RTT
+③ 把相关维度的 `SMEMBERS` 放进一次 Lua 脚本（EVAL）取回，一次网络往返，禁止按维度串行 RTT
+   —— 不能用 pipeline：Redis Cluster + Jedis 下 `openPipeline` 抛 `UnsupportedOperationException`（2026-09-05 生产复现）
 ④ Java 对正向集合做并集，对过敏 reject 与饮食 reject 集合做并集
 ⑤ 推荐菜 = 正向并集 - 排除并集；不推荐菜 = 排除并集，并利用已取回的维度集合恢复标签归属
 ⑥ 解析复合成员得到 dishId / dishName；畸形成员只跳过并计数，不记录原文、不使整份任务失败
@@ -1991,8 +1997,9 @@ recommended    = P - R
 
 全部用户标签必须先通过阶段 3 Schema、枚举与方向校验，才能用于拼 Redis Key。
 五个非食入性过敏原和 `OTHER` 虽保留在模块三，但必须在 Key 映射前过滤掉。
-全部相关维度的 `SMEMBERS` 命令一次入 pipeline，取回后在 Java 做并集、差集和标签归属恢复；
-禁止为每道菜或每个标签发独立 Redis 请求。冲突时不推荐天然优先：进入 `R` 的菜必须从 `P` 剔除，
+全部相关维度的 `SMEMBERS` 命令放进一次 Lua 脚本（EVAL）取回，再在 Java 做并集、差集和标签归属恢复；
+禁止为每道菜或每个标签发独立 Redis 请求，也不得改用 pipeline——集群 + Jedis 下不支持，模块四会静默空态。
+冲突时不推荐天然优先：进入 `R` 的菜必须从 `P` 剔除，
 且返回时不得携带任何正向标签或推荐理由。
 
 正向 Key 列表为空时，Java 直接把 `P` 设为空集合，不调用零参数 `SUNION`；排除 Key 列表为空时

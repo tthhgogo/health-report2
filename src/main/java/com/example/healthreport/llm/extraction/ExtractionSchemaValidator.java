@@ -53,6 +53,9 @@ public class ExtractionSchemaValidator {
     /** 章节自身的违规（如 page 不满足最小值）：整章剔除，预算按该章条目数计（R20）。 */
     private static final Pattern SECTION_ITEM_PATTERN =
             Pattern.compile("^\\$\\.(sections)\\[(\\d+)\\]");
+    /** 章内指标容器路径：捕获组 1 = 所属章节下标，用于识别已被整章剔除覆盖的条目。 */
+    private static final Pattern INDICATOR_CONTAINER_PATTERN =
+            Pattern.compile("^sections\\[(\\d+)\\]\\.indicators$");
     private static final Pattern PROBLEM_ITEM_PATTERN =
             Pattern.compile("^\\$\\.(problems)\\[(\\d+)\\]");
     private static final Pattern DIET_TAG_ITEM_PATTERN =
@@ -103,18 +106,7 @@ public class ExtractionSchemaValidator {
         if (dropIndexByContainer == null) {
             throw fail();
         }
-        int droppedCount = 0;
-        for (Map.Entry<String, Set<Integer>> entry : dropIndexByContainer.entrySet()) {
-            if ("sections".equals(entry.getKey())) {
-                // 整章剔除按该章条目数入账，防止「一章 30 条按 1 条计」绕过预算。
-                for (Integer sectionIndex : entry.getValue()) {
-                    droppedCount += Math.max(1, rootNode.path("sections")
-                            .path(sectionIndex.intValue()).path("indicators").size());
-                }
-            } else {
-                droppedCount += entry.getValue().size();
-            }
-        }
+        int droppedCount = countDroppedItems(rootNode, dropIndexByContainer);
         if (exceedsDropBudget(call, rootNode, droppedCount)) {
             throw fail();
         }
@@ -196,6 +188,36 @@ public class ExtractionSchemaValidator {
             }
         }
         return null;
+    }
+
+    /**
+     * 整章剔除按该章指标数入账，防止「一章 30 条按 1 条计」绕过预算；
+     * 章内指标的违规若落在已整章剔除的章上，<b>不再重复计一次</b>——
+     * 同一条指标只被剔除一次，占两份修复预算会让本可救的响应误判成整阶段失败。
+     */
+    private int countDroppedItems(JsonNode rootNode, Map<String, Set<Integer>> dropIndexByContainer) {
+        Set<Integer> droppedSectionIndexSet = dropIndexByContainer.get("sections");
+        int droppedCount = 0;
+        for (Map.Entry<String, Set<Integer>> entry : dropIndexByContainer.entrySet()) {
+            if ("sections".equals(entry.getKey())) {
+                for (Integer sectionIndex : entry.getValue()) {
+                    droppedCount += Math.max(1, rootNode.path("sections")
+                            .path(sectionIndex.intValue()).path("indicators").size());
+                }
+            } else if (!coveredByDroppedSection(entry.getKey(), droppedSectionIndexSet)) {
+                droppedCount += entry.getValue().size();
+            }
+        }
+        return droppedCount;
+    }
+
+    /** 该指标容器所属章节是否已被整章剔除。 */
+    private boolean coveredByDroppedSection(String containerPath, Set<Integer> droppedSectionIndexSet) {
+        if (droppedSectionIndexSet == null || droppedSectionIndexSet.isEmpty()) {
+            return false;
+        }
+        Matcher matcher = INDICATOR_CONTAINER_PATTERN.matcher(containerPath);
+        return matcher.matches() && droppedSectionIndexSet.contains(Integer.valueOf(matcher.group(1)));
     }
 
     /** 分母是该阶段的全部可剔除条目数；条目总数为 0 却有条目违规不可能发生，防御性按失败处理。 */

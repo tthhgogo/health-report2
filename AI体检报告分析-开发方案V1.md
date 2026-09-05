@@ -1239,6 +1239,8 @@ llm.extraction.max-response-body-bytes
 每次固定执行：`HTTP/finish_reason → 内容提取 → JSON 解析 → Schema 校验 → 结构校验`。
 可定位条目的问题可剔除，但同一阶段共用 20% 修复预算（至少允许 1 条）；
 超预算、顶层错误或非 `OK` 状态即阶段失败。
+**整章剔除（R20）按该章指标数入账，但章内指标自身的违规若落在同一被整章剔除的章上，
+不再重复入账**——同一条指标只被剔一次，占两份预算会把本可救的响应误判成整阶段失败。
 阶段 1/2 剔条目与阶段 3 剔标签同时发生时，`partial_reason` 取 `DIET_TAG_DROPPED`
 （设计方案 §4.4：单值列，取携带模块四抑制后果的那个）。
 
@@ -1336,6 +1338,16 @@ public static final String DIET_TAGS = "diet-tags-1.1.0";
 ③ 分组边界校验
    全部 INDICATOR 必须排在全部 SUMMARY 之前，不满足时稳定重排（§6.4）
 ```
+
+> **嵌套编号的裁决（2026-09-05）。** 影像与专科小结常是「外层 `8.【CT胸部扫描】小结` +
+> 内层 `1./2./3.`」的形态。**内层每一条是一个独立 problem**：`itemNo` 填**内层**那条自己的编号，
+> `section` 填承载它的章节原文名（如「【CT胸部扫描】小结」），来源标注因此读作
+> 「【CT胸部扫描】小结第2条」；`rawText` 只抄该条那一句，没印内层编号的按句拆开、`itemNo` 给 `null`。
+> 拆分规则写在 `prompt/health-problems.md` 规则 3（`problems-1.0.2`）。
+>
+> **⛔ 不得把整段小结当成一条。** `name` 的 Schema 上限是 60 字符，整段一定超限，
+> 而超限是**整条剔除不是截断**——2026-09-05 线上就这样一次丢掉 3 条影像结论
+> （`$.problems[12|16|17].name` / `maxLength`），且剔除数正好用满 20% 修复预算。
 
 `displayName` 直接用 `name`，**Java 不拼「归一化结论词」**——不把 `status = HIGH`
 翻译成「偏高」再拼进问题名，那是拿模型的语义分类生成一句报告里没有的医疗表述。
@@ -1735,9 +1747,17 @@ JOIN 结果直接分页；禁止逐菜查食材。每页先取菜品，再用本
 当前页内存。第一页的 `lastDishesId` 传 `null`，查询实现不得生成 `dishes_id > null`；后续批次必须
 使用上一个非空批次返回的 `lastDishesId`。不同企业独立构建与发布，一个企业失败不能污染其他企业。
 
-每个企业分页前后各按相同条件执行一次 `COUNT(*)`，并维护去重后的 `processedDishCount`；
-`countBefore == processedDishCount == countAfter` 才能发布。菜品系统应在凌晨任务窗口冻结当天菜单；
-双计数用于发现明显漂移，不宣称能在持续写入的数据源上构造严格时间点快照。
+每个企业分页前后各按相同条件执行一次 `COUNT(*)`，并维护去重后的 `processedDishCount`。
+菜品系统应在凌晨任务窗口冻结当天菜单；双计数用于发现明显漂移，不宣称能在持续写入的数据源上
+构造严格时间点快照。
+
+> **双计数不是发布闸（2026-09-05 改）。** `countBefore`、`processedDishCount`、`countAfter`
+> 三者对不上时**只打 WARN 并按已打标菜品照常发布**，不再整企业作废。
+> 菜单在凌晨窗口内被正常增删、或外部 count 与 page 两个接口自相矛盾，都会触发它，
+> 而代价不对等：没被打标的菜当天既进不了推荐集合也进不了拒绝集合，对模块四直接不存在
+> ——与产能闸截断同一语义，不会让未经校验的菜被推荐出去；相反，为此丢掉整企业当天的快照，
+> 会让该企业所有用户都看不到模块四。告警本身必须保留：它是 count/page 自相矛盾唯一的可见入口。
+> 分页出现**重复菜品 ID** 仍然直接失败——那是数据源坏了，不是漂移。
 
 `DishQueryService` 是待接入食堂数据源的占位接口，只写接口和 `TODO` 空实现并抛
 `UnsupportedOperationException`，不得返回假数据。边界契约至少包含以下三个分页/批量能力，
@@ -1902,8 +1922,18 @@ recommended = positiveSet - rejectSet
 rejected    = rejectSet
 ```
 
-当前实现把全部相关方向的 `SMEMBERS` 命令一次入 pipeline，以一次网络往返取回后在 Java 做并集、差集和标签归属恢复；
+当前实现把全部相关方向的 `SMEMBERS` 放进**一次 Lua 脚本（EVAL）**，以一次网络往返取回后在 Java 做并集、差集和标签归属恢复；
 不得按维度串行往返，更不得逐菜访问 Redis。冲突裁决后按菜名拼音首字母排序，推荐与不推荐各取前 3。
+
+> **⛔ 这里不能用 pipeline**（2026-09-05 生产复现）。Redis Cluster + Jedis 驱动下
+> Spring Data Redis 的 `JedisClusterConnection.openPipeline` 直接抛
+> `UnsupportedOperationException`，`executePipelined` 每次都落到 `read` 的降级分支：
+> 模块四永远空态，线上只留一行 `企业菜品标签集合读取失败` 的 WARN，功能等于不存在。
+> 改用 EVAL 之后一次往返不变，且与 `publish` 走同一条集群安全路径——全部 Key 共享
+> `{companyId:bizDate}` hash tag，同 slot，集群下 EVAL 合法。**跨企业或跨业务日的 Key
+> 绝不能进同一次 EVAL**，那会直接因跨 slot 失败。
+> SDK 层面「哪些能力在集群下根本不可用」的完整清单见 `AGENTS.md` §6「Redis SDK 使用约束」。
+
 正向 Key 列表为空时直接使用空 `Set`，排除 Key 列表为空时同理；不得调用零参数
 `SUNION`，也不得为此引入 `all` 或占位 Key。
 

@@ -79,8 +79,9 @@ class PromptAndArchitectureContractTest {
 	@Test
 	void promptConstantsHeadersHistoryAndDigestsShouldStayAligned() throws Exception {
 		// 1.1.1/1.0.1：新增「影像剔除占位空白区域」输入解读说明（PDF 影像剔除 2026-09-05）。
+		// problems-1.0.2：name 补 60 字上限与小结逐条拆分规则（2026-09-05 线上 maxLength 剔除三条）。
 		assertThat(PromptVersions.INDICATORS).isEqualTo("indicators-1.1.1");
-		assertThat(PromptVersions.PROBLEMS).isEqualTo("problems-1.0.1");
+		assertThat(PromptVersions.PROBLEMS).isEqualTo("problems-1.0.2");
 		assertThat(PromptVersions.DIET_ADVICE).isEqualTo("diet-advice-1.1.1");
 		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.3");
 		assertPromptVersion("prompt/indicators.md", PromptVersions.INDICATORS);
