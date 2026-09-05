@@ -1,7 +1,7 @@
 -- 本文件是当前完整结构，可在空库重复执行；升级已有环境请走 sql/alter/。
 CREATE TABLE IF NOT EXISTS ct_health_report_task (
   task_id        VARCHAR(36)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务ID，UUID小写规范形式，由IdCanonicalizer生成',
-  company_id     VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属企业ID，创建任务时从可信认证上下文固化，模块四据此选择企业菜品集合',
+  company_id     VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属企业ID，创建任务时从创建请求体固化，模块四据此选择企业菜品集合',
   user_id        VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属用户ID，用于鉴权，值由上游用户系统提供',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务状态：QUEUED待执行/PARSING解析中/EXTRACTING抽取中/ASSEMBLING组装中/SUCCEEDED成功/FAILED失败',
   stage          VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '前端进度阶段，仅三个取值：UPLOADING上传中对应QUEUED/PARSING识别中对应PARSING与EXTRACTING/ASSEMBLING生成中对应ASSEMBLING',

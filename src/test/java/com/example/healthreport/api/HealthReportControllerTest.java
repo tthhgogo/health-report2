@@ -56,7 +56,7 @@ class HealthReportControllerTest {
 		when(userProvider.currentCompanyId()).thenReturn(COMPANY_ID);
 		mockMvc = MockMvcBuilders
 			.standaloneSetup(new HealthReportFileController(fileUploadService, userProvider),
-					new HealthReportAnalyzeController(taskCreateService, taskExecutionService, userProvider))
+					new HealthReportAnalyzeController(taskCreateService, taskExecutionService))
 			.setControllerAdvice(new HealthReportExceptionHandler())
 			.build();
 	}
@@ -72,10 +72,20 @@ class HealthReportControllerTest {
 			.andExpect(jsonPath("$.fileId").value(FILE_ID));
 		mockMvc
 			.perform(post("/api/health-report/analyze").contentType(MediaType.APPLICATION_JSON)
-				.content("{\"fileIds\":[\"" + FILE_ID + "\"]}"))
+				.content(analyzeBody()))
 			.andExpect(status().isOk())
 			.andExpect(jsonPath("$.taskId").value(TASK_ID));
 		org.mockito.Mockito.verify(taskExecutionService).submit(TASK_ID);
+	}
+
+	@Test
+	void analyzeWithoutOwnerFieldsShouldReturnInvalidRequest() throws Exception {
+		mockMvc
+			.perform(post("/api/health-report/analyze").contentType(MediaType.APPLICATION_JSON)
+				.content("{\"fileIds\":[\"" + FILE_ID + "\"]}"))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+		org.mockito.Mockito.verifyNoInteractions(taskCreateService, taskExecutionService);
 	}
 
 	@Test
@@ -86,7 +96,7 @@ class HealthReportControllerTest {
 
 		mockMvc
 			.perform(post("/api/health-report/analyze").contentType(MediaType.APPLICATION_JSON)
-				.content("{\"fileIds\":[\"" + FILE_ID + "\"]}"))
+				.content(analyzeBody()))
 			.andExpect(status().isConflict())
 			.andExpect(jsonPath("$.code").value(FailCode.FILE_ALREADY_BOUND.name()))
 			.andExpect(jsonPath("$.taskId").value(TASK_ID))
@@ -105,6 +115,12 @@ class HealthReportControllerTest {
 			.andExpect(jsonPath("$.code").value(FailCode.FILE_TOO_LARGE.name()))
 			.andExpect(jsonPath("$.taskId").doesNotExist())
 			.andExpect(jsonPath("$.originName").doesNotExist());
+	}
+
+	/** 归属标识随请求体传入，与 fileIds 同为 analyze 的入参。 */
+	private static String analyzeBody() {
+		return "{\"fileIds\":[\"" + FILE_ID + "\"],\"userId\":\"" + USER_ID + "\",\"companyId\":\"" + COMPANY_ID
+				+ "\"}";
 	}
 
 	/**

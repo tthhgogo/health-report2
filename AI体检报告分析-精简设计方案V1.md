@@ -114,14 +114,16 @@
 
 ```http
 POST /api/health-report/analyze
-{"fileIds": ["...", "..."]}
+{"fileIds": ["...", "..."], "userId": "...", "companyId": "..."}
 ```
+
+**归属标识随请求体传入**（2026-09-05 定，仅本接口如此；其余四个接口仍取自登录上下文）。
 
 **逐文件校验（缺一不可，§3.9）：**
 
 ```
-file.userId   == 当前已认证 userId     ← 不校验这条 = 拿到别人的 fileId 就能读到别人的报告
-file.companyId == 当前已认证 companyId ← 用户与文件必须同时属于当前企业
+file.userId   == 请求体 userId         ← 不校验这条 = 拿到别人的 fileId 就能读到别人的报告
+file.companyId == 请求体 companyId      ← 用户与文件必须同时属于同一企业
 file.status   == UPLOADED
 file.expireAt >  now
 file.taskId   IS NULL
@@ -216,7 +218,7 @@ deleted_at  正交标志，任何状态下都可置，一旦置上不可撤销
 CREATE TABLE ct_health_report_task (
   task_id        VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '任务ID，使用UUID',
   user_id        VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属用户ID，用于鉴权',
-  company_id  VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属企业ID，创建任务时从可信登录上下文固化，模块四据此选择企业菜品标签集合',
+  company_id  VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '归属企业ID，创建任务时从创建请求体固化，模块四据此选择企业菜品标签集合',
   status         VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NOT NULL COMMENT '任务状态：QUEUED/PARSING/EXTRACTING/ASSEMBLING/SUCCEEDED/FAILED',
   stage          VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci  NULL COMMENT '前端进度阶段，见§2.4',
   progress       TINYINT      NOT NULL DEFAULT 0 COMMENT '任务进度百分比，取值0至100',
@@ -1442,8 +1444,8 @@ ct_dish_ingredient  company_id、dishes_id、ingredient_name、weight_g
 > 实际表名接入时核对；企业与菜品 ID 列分别固定按 `company_id`、`dishes_id` 接入（§12-13）。
 
 用户与菜品都归属于企业。`company_id` 是菜品查询、Redis Key 和在线读取的强制隔离维度；
-任务创建时把可信登录上下文中的 `companyId` 固化到任务记录；在线组装只使用该字段，
-不得接受请求参数覆盖，也不得跨企业合并集合。
+任务创建时把创建请求体中的 `companyId` 固化到任务记录；在线组装只使用**任务记录上的**该字段，
+不得接受后续请求参数覆盖，也不得跨企业合并集合。
 
 菜品量可能很大，凌晨任务禁止一次性查询全企业菜品：先按企业分页读取菜品主表，
 再按当前页的菜品 ID 批量查询食材。不得用菜品与食材一对多 JOIN 后直接分页，
@@ -1550,7 +1552,8 @@ dishId + 标签维度 -> matchedIngredients Hash
 原因分别是：在线只读取当前 `bizDate`，不需要 active 指针；推荐候选从正向标签并集开始，
 不需要全部菜品集合；复合成员已经携带菜品名称；推荐理由直接使用报告原文，不使用命中食材。
 
-`companyId` 必须来自可信登录上下文，并在拼 Key 前由唯一 codec 做 UTF-8 Base64URL 无填充编码，
+`companyId` 必须取自任务记录上固化的值（创建时由请求体写入），并在拼 Key 前由唯一 codec
+做 UTF-8 Base64URL 无填充编码，
 避免企业标识中的冒号或花括号破坏 Key 分段与 Cluster hash tag。不同企业的集合绝不能参加
 同一条 `SUNION` / `SDIFF`。日期 Key TTL 为 3 天只用于清理，在线永远只读取当天 Key，
 当天构建失败不得回退读取前一天的数据。
@@ -1631,7 +1634,7 @@ staging Key 与正式 Key 使用相同的 `{companyId:bizDate}` hash tag，保�
 #### 8.3.4 在线读取路径
 
 ```
-① 从任务记录取得创建时由可信登录上下文固化的 companyId，从任务入口取得统一 bizDate
+① 从任务记录取得创建时由创建请求体固化的 companyId，从任务入口取得统一 bizDate
 ② 按第三次 LLM-A 已校验标签选择该企业当天的正向集合和排除集合 Key
 ③ 把相关维度的 `SMEMBERS` 命令一次入 pipeline，以一次网络往返取回，禁止按维度串行 RTT
 ④ Java 对正向集合做并集，对过敏 reject 与饮食 reject 集合做并集

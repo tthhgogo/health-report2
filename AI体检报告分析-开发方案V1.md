@@ -277,7 +277,7 @@ constants/*.md              内容常量说明（已存在）
 ```sql
 CREATE TABLE ct_health_report_task (
   task_id        VARCHAR(36)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务ID，UUID小写规范形式，由IdCanonicalizer生成',
-  company_id     VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属企业ID，创建任务时从可信认证上下文固化，模块四据此选择企业菜品集合',
+  company_id     VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属企业ID，创建任务时从创建请求体固化，模块四据此选择企业菜品集合',
   user_id        VARCHAR(64)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '归属用户ID，用于鉴权，值由上游用户系统提供',
   status         VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务状态：QUEUED待执行/PARSING解析中/EXTRACTING抽取中/ASSEMBLING组装中/SUCCEEDED成功/FAILED失败',
   stage          VARCHAR(16)  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '前端进度阶段，仅三个取值：UPLOADING上传中对应QUEUED/PARSING识别中对应PARSING与EXTRACTING/ASSEMBLING生成中对应ASSEMBLING',
@@ -465,8 +465,13 @@ Redis 整个挂掉时：正在跑的任务仍能跑完，只是写结果失败 �
 | 接口 | 校验什么 | 用什么 |
 |---|---|---|
 | `POST /file` | **无 taskId 也无 fileId**，只校验调用者已认证 | `CurrentUserProvider` |
-| `POST /analyze` | 每个 `fileId` 的 `user_id`、`company_id` 分别精确等于当前上下文 | `FileOwnershipGuard`（§4.2 的 ⓪ 与事务内各做一次） |
+| `POST /analyze` | 每个 `fileId` 的 `user_id`、`company_id` 分别精确等于**请求体里的** `userId`、`companyId` | `FileOwnershipGuard`（§4.2 的 ⓪ 与事务内各做一次） |
 | `GET /task/{id}`、`GET /result/{id}`、`DELETE /task/{id}` | `taskId` 同时归属当前 `userId`、`companyId` 且 `deleted_at IS NULL` | `TaskOwnershipGuard` |
+
+> **只有 `POST /analyze` 的归属标识来自请求体**（2026-09-05 定）：`userId` / `companyId` 是
+> `AnalyzeRequest` 的两个必填字段，缺失或空白由 Bean Validation 直接 400 `INVALID_REQUEST`，
+> 长度仍由 `OwnerContext` 按数据库列宽 64 在入口拒绝。其余四个接口不变，继续走
+> `CurrentUserProvider`。归属校验本身一个字不变——不校验就是越权，与标识从哪里来无关。
 
 **两个 Guard 都必须对 userId 和 companyId 在 Java 侧分别做精确 `equals`**，不能只靠 SQL
 ——`utf8mb4_general_ci` 大小写不敏感，`Abc` 和 `abc` 会被判成同一人（§3.1.3）。
@@ -566,7 +571,8 @@ analyze 创建时**同步**发生，不再是异步任务失败码。§4.1.1 的
 #### `POST /api/health-report/analyze` 创建任务
 
 ```
-入参   { "fileIds": ["...", "..."] }        顺序即 fileIndex（0 起）
+入参   { "fileIds": ["...", "..."],          顺序即 fileIndex（0 起）
+        "userId": "...", "companyId": "..." }   归属标识，必填、非空白
 出参   200 { "taskId": "..." }
       409 { "code": "FILE_ALREADY_BOUND", "taskId": "已绑定的那个" }
 ```
@@ -574,8 +580,8 @@ analyze 创建时**同步**发生，不再是异步任务失败码。§4.1.1 的
 **逐文件校验，缺一不可：**
 
 ```
-file.userId   == 当前已认证 userId     ← 不校验 = 拿到别人的 fileId 就能读别人的报告
-file.companyId == 当前已认证 companyId ← 不校验会跨企业绑定报告
+file.userId   == 请求体 userId         ← 不校验 = 拿到别人的 fileId 就能读别人的报告
+file.companyId == 请求体 companyId      ← 不校验会跨企业绑定报告
 file.status   == 'UPLOADED'
 file.expireAt >  now
 可绑定        = task_id IS NULL 或（原 task 为 FAILED 且 reanalyzable = 1）
@@ -2222,6 +2228,7 @@ infra.S3FileStorage          对象存储读写删
     因此它可以先写完并用 WireMock 跑通全部红线测试（R57~R65），
     只有【真实端到端联调】需要等接入方给出凭据（§6.4 的三个 ⛔ 项）
 infra.CurrentUserProvider    获取当前 userId 与 companyId；两者都来自可信登录上下文
+                             【POST /analyze 除外：该接口的归属标识来自请求体，见 §4.1】
 infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日在架菜品；每批返回最后一条
                              dishes_id 对应的 lastDishesId，下一批原样传回；并按当前批ID批量查询食材
 ```

@@ -2,7 +2,6 @@ package com.example.healthreport.api;
 
 import com.example.healthreport.api.dto.AnalyzeRequest;
 import com.example.healthreport.api.dto.AnalyzeResponse;
-import com.example.healthreport.infra.CurrentUserProvider;
 import com.example.healthreport.task.AnalysisTaskCreateService;
 import com.example.healthreport.task.AnalysisTaskExecutionService;
 import io.swagger.annotations.Api;
@@ -26,27 +25,25 @@ public class HealthReportAnalyzeController {
 
 	private final AnalysisTaskExecutionService taskExecutionService;
 
-	private final CurrentUserProvider currentUserProvider;
-
 	public HealthReportAnalyzeController(AnalysisTaskCreateService taskCreateService,
-			AnalysisTaskExecutionService taskExecutionService, CurrentUserProvider currentUserProvider) {
+			AnalysisTaskExecutionService taskExecutionService) {
 		this.taskCreateService = taskCreateService;
 		this.taskExecutionService = taskExecutionService;
-		this.currentUserProvider = currentUserProvider;
 	}
 
-	/** 事务外快速预检后，在事务内创建任务并原子绑定文件。 */
+	/** 事务外快速预检后，在事务内创建任务并原子绑定文件；归属标识取自请求体。 */
 	@ApiOperation(value = "创建体检报告分析任务", notes = "事务外快速预检后，在事务内创建任务并原子绑定已上传文件，"
 			+ "随后提交异步分析并立即返回 taskId；进度用任务状态接口轮询，结果用结果接口读取。",
 			httpMethod = "POST", response = AnalyzeResponse.class,
 			consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
 	@PostMapping("/analyze")
 	public AnalyzeResponse analyze(
-			@ApiParam(name = "request", value = "创建分析任务请求体；fileIds 为已上传文件 ID，顺序即展示与处理顺序",
+			@ApiParam(name = "request", value = "创建分析任务请求体；fileIds 为已上传文件 ID，顺序即展示与处理顺序，"
+					+ "userId 与 companyId 为归属标识",
 					required = true)
 			@Valid @RequestBody AnalyzeRequest request) {
-		String userId = currentUserProvider.currentUserId();
-		String companyId = currentUserProvider.currentCompanyId();
+		String userId = request.getUserId();
+		String companyId = request.getCompanyId();
 		taskCreateService.precheck(request.getFileIds(), userId, companyId);
 		String taskId = taskCreateService.createInTransaction(request.getFileIds(), userId, companyId);
 		// createInTransaction 返回即代表事务已提交；线程池提交必须严格发生在此后。

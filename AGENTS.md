@@ -114,7 +114,7 @@ Java 的价值在于确定性：能穷举、能单测、结果可复现，超出
 
 ```
 S3FileStorage          对象存储读写删
-CurrentUserProvider    获取当前 userId
+CurrentUserProvider    获取当前 userId（`POST /analyze` 除外，其归属标识来自请求体）
 DishQueryService       查询当日在架菜品与食材
 ```
 
