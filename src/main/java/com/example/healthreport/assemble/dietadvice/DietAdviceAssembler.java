@@ -14,7 +14,7 @@ import com.example.healthreport.constants.NutritionContents;
 import com.example.healthreport.constants.NutritionKey;
 import com.example.healthreport.constants.NutritionRule;
 import com.example.healthreport.constants.ReviewStatus;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.safety.HighRiskAdviceGate;
 import com.example.healthreport.support.text.TextNormalizer;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -64,7 +64,7 @@ public class DietAdviceAssembler {
     }
 
     /** 组装模块三；输入是第三次调用的已校验标签。 */
-    public Result assemble(DietTagsResult dietTags) {
+    public Result assemble(DietAdviceResult dietTags) {
         if (dietTags == null) {
             throw new IllegalArgumentException("模块三输入不能为空");
         }
@@ -78,12 +78,12 @@ public class DietAdviceAssembler {
         Set<String> suppressedCardKeySet = new HashSet<String>();
         List<Entry> entryList = new ArrayList<Entry>();
 
-        for (DietTagsResult.DietTag tag : dietTags.getReject()) {
+        for (DietAdviceResult.DietTag tag : dietTags.getReject()) {
             boolean suppressed = collect(tag, allergyCardMap, nutritionCardMap, dietCardMap,
                     suppressedCardKeySet, normalizedAllergenWordList);
             entryList.add(toEntry(tag, "REJECT", suppressed));
         }
-        for (DietTagsResult.DietTag tag : dietTags.getRecommend()) {
+        for (DietAdviceResult.DietTag tag : dietTags.getRecommend()) {
             boolean suppressed = collect(tag, allergyCardMap, nutritionCardMap, dietCardMap,
                     suppressedCardKeySet, normalizedAllergenWordList);
             entryList.add(toEntry(tag, "RECOMMEND", suppressed));
@@ -107,9 +107,9 @@ public class DietAdviceAssembler {
      * 一级红线差集的词源：食入性过敏原全部已审核词条的 matchWord（avoid 与 hidden 两桶都算），
      * 规范化后返回。非食入性与 {@code OTHER} 不产生词。
      */
-    private List<String> collectAllergenMatchWords(List<DietTagsResult.DietTag> rejectList) {
+    private List<String> collectAllergenMatchWords(List<DietAdviceResult.DietTag> rejectList) {
         List<String> normalizedWordList = new ArrayList<String>();
-        for (DietTagsResult.DietTag tag : rejectList) {
+        for (DietAdviceResult.DietTag tag : rejectList) {
             if (!"ALLERGEN".equals(tag.getDimension()) || "OTHER".equals(tag.getEnumKey())) {
                 continue;
             }
@@ -136,7 +136,7 @@ public class DietAdviceAssembler {
      *
      * @return 该条是否不产生食材（OTHER 路径 / 安全闸 / 未过审 / 非食入性）
      */
-    private boolean collect(DietTagsResult.DietTag tag,
+    private boolean collect(DietAdviceResult.DietTag tag,
                             Map<String, AllergyReminder> allergyCardMap,
                             Map<String, NutritionSupplement> nutritionCardMap,
                             Map<String, DietAttention> dietCardMap,
@@ -158,7 +158,7 @@ public class DietAdviceAssembler {
     /**
      * 过敏提醒卡片。过敏原不过安全闸：忌口本身就是要展示的安全信息，方向不能反。
      */
-    private boolean collectAllergy(DietTagsResult.DietTag tag,
+    private boolean collectAllergy(DietAdviceResult.DietTag tag,
                                    Map<String, AllergyReminder> cardMap) {
         if ("OTHER".equals(tag.getEnumKey())) {
             // 枚举外过敏原只展示原文与来源，Java 不猜其是否食入性（设计方案 §7.2）。
@@ -198,7 +198,7 @@ public class DietAdviceAssembler {
     }
 
     /** 营养补充卡片。 */
-    private boolean collectNutrition(DietTagsResult.DietTag tag,
+    private boolean collectNutrition(DietAdviceResult.DietTag tag,
                                      Map<String, NutritionSupplement> cardMap,
                                      Set<String> suppressedCardKeySet,
                                      List<String> normalizedAllergenWordList) {
@@ -227,7 +227,7 @@ public class DietAdviceAssembler {
     }
 
     /** 饮食注意卡片。无论条目来自 recommend 还是 reject 数组，卡片都同时带推荐与需避免两侧。 */
-    private boolean collectDiet(DietTagsResult.DietTag tag,
+    private boolean collectDiet(DietAdviceResult.DietTag tag,
                                 Map<String, DietAttention> cardMap,
                                 Set<String> suppressedCardKeySet,
                                 List<String> normalizedAllergenWordList) {
@@ -281,12 +281,12 @@ public class DietAdviceAssembler {
         return keptList;
     }
 
-    private NutritionSupplement sourceOnlyNutrition(String enumKey, DietTagsResult.DietTag tag) {
+    private NutritionSupplement sourceOnlyNutrition(String enumKey, DietAdviceResult.DietTag tag) {
         return new NutritionSupplement(enumKey, null, Collections.<String>emptyList(),
                 Collections.<String>emptyList(), Collections.<String>emptyList(), toSource(tag));
     }
 
-    private DietAttention sourceOnlyDiet(String enumKey, DietTagsResult.DietTag tag) {
+    private DietAttention sourceOnlyDiet(String enumKey, DietAdviceResult.DietTag tag) {
         return new DietAttention(enumKey, null, Collections.<String>emptyList(),
                 Collections.<String>emptyList(), Collections.<String>emptyList(), toSource(tag));
     }
@@ -313,7 +313,7 @@ public class DietAdviceAssembler {
     }
 
     /** 来源标注完全由字段拼出，Java 不做任何推断；itemNo 为 null 时不写条号，不拿数组下标顶替。 */
-    private Source toSource(DietTagsResult.DietTag tag) {
+    private Source toSource(DietAdviceResult.DietTag tag) {
         String section = tag.getSection();
         String displayText = (section == null || section.isEmpty())
                 ? "来源：" + tag.getQuote()
@@ -321,7 +321,7 @@ public class DietAdviceAssembler {
         return new Source(section, tag.getItemNo(), tag.getQuote(), displayText);
     }
 
-    private Entry toEntry(DietTagsResult.DietTag tag, String direction, boolean suppressed) {
+    private Entry toEntry(DietAdviceResult.DietTag tag, String direction, boolean suppressed) {
         return new Entry(tag.getDimension(), tag.getEnumKey(), direction, tag.getSection(),
                 tag.getItemNo(), tag.getQuote(), tag.getRawText(), suppressed);
     }

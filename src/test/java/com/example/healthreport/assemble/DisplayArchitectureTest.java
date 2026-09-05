@@ -2,7 +2,7 @@ package com.example.healthreport.assemble;
 
 import com.example.healthreport.assemble.dietadvice.DietAdviceAssembler;
 import com.example.healthreport.assemble.dishrecommend.DishNameSorter;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.safety.HighRiskAdviceGate;
 import org.junit.jupiter.api.Test;
 
@@ -43,7 +43,7 @@ class DisplayArchitectureTest {
 
     @Test
     void moduleThreeAssemblerShouldOnlyAcceptIsolatedInput() throws NoSuchMethodException {
-        assertThat(DietAdviceAssembler.class.getMethod("assemble", DietTagsResult.class)).isNotNull();
+        assertThat(DietAdviceAssembler.class.getMethod("assemble", DietAdviceResult.class)).isNotNull();
         assertThat(DietAdviceAssembler.class.getDeclaredFields())
                 .noneMatch(field -> field.getType().getName().contains("ValidatedExtractionOutput"));
         assertThat(HighRiskAdviceGate.class.getDeclaredMethods())

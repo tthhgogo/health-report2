@@ -32,18 +32,18 @@ class ExtractionOrchestratorTest {
 
     private static final String PROBLEMS_OK = "{\"reportStatus\":\"OK\",\"problems\":[]}";
 
-    private static final String DIET_TAGS_OK = "{\"reportStatus\":\"OK\",\"recommend\":[],\"reject\":[]}";
+    private static final String DIET_ADVICE_OK = "{\"reportStatus\":\"OK\",\"recommend\":[],\"reject\":[]}";
 
     /** 三次调用严格按 指标 → 问题 → 饮食标签 顺序；身份字段在结果中已被剥离。 */
     @Test
     void threeCallsMustRunInOrderAndPatientsMustBeStripped() {
-        RecordingClient client = new RecordingClient(INDICATORS_OK, PROBLEMS_OK, DIET_TAGS_OK);
+        RecordingClient client = new RecordingClient(INDICATORS_OK, PROBLEMS_OK, DIET_ADVICE_OK);
         DegradeAccumulator accumulator = new DegradeAccumulator();
 
         ExtractionOutcome outcome = orchestrator(client).extract(twoFileImages(), accumulator);
 
         assertThat(client.callOrder).containsExactly(ExtractionCall.INDICATORS,
-                ExtractionCall.PROBLEMS, ExtractionCall.DIET_TAGS);
+                ExtractionCall.PROBLEMS, ExtractionCall.DIET_ADVICE);
         // 「张三」与「张　三」（全角空格）规范化后同一人，不误报冲突；比对完即剥离。
         assertThat(outcome.getIndicators().getPatients()).isEmpty();
         assertThat(accumulator.partial()).isFalse();
@@ -54,7 +54,7 @@ class ExtractionOrchestratorTest {
     void firstStageFailureMustStopBeforeAnyLaterCall() {
         RecordingClient client = new RecordingClient(
                 "{\"reportStatus\":\"NO_REPORT_FEATURE\",\"patients\":[],\"overview\":null,\"sections\":[]}",
-                PROBLEMS_OK, DIET_TAGS_OK);
+                PROBLEMS_OK, DIET_ADVICE_OK);
 
         assertThatThrownBy(() -> orchestrator(client).extract(twoFileImages(), new DegradeAccumulator()))
                 .isInstanceOfSatisfying(HealthReportException.class,
@@ -70,7 +70,7 @@ class ExtractionOrchestratorTest {
                 + "\"patients\":[{\"page\":1,\"name\":\"张三\",\"gender\":null},"
                 + "{\"page\":2,\"name\":\"李四\",\"gender\":null}],"
                 + "\"overview\":null,\"sections\":[]}";
-        RecordingClient client = new RecordingClient(conflicting, PROBLEMS_OK, DIET_TAGS_OK);
+        RecordingClient client = new RecordingClient(conflicting, PROBLEMS_OK, DIET_ADVICE_OK);
 
         assertThatThrownBy(() -> orchestrator(client).extract(twoFileImages(), new DegradeAccumulator()))
                 .isInstanceOfSatisfying(HealthReportException.class,
@@ -82,7 +82,7 @@ class ExtractionOrchestratorTest {
     /** 阶段二模型调用失败：阶段三调用次数为 0（零重试，fail-fast）。 */
     @Test
     void secondStageClientFailureMustStopBeforeThirdCall() {
-        RecordingClient client = new RecordingClient(INDICATORS_OK, null, DIET_TAGS_OK) {
+        RecordingClient client = new RecordingClient(INDICATORS_OK, null, DIET_ADVICE_OK) {
             @Override
             public String call(ExtractionCallInput input) {
                 if (input.getCall() == ExtractionCall.PROBLEMS) {
@@ -139,7 +139,7 @@ class ExtractionOrchestratorTest {
                     return indicatorsContent;
                 case PROBLEMS:
                     return problemsContent;
-                case DIET_TAGS:
+                case DIET_ADVICE:
                 default:
                     return dietTagsContent;
             }

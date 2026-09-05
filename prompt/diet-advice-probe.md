@@ -1,8 +1,8 @@
 # 抽取提示词 — 饮食建议与菜品打标召回探针
 
 > **用途：只测一件事——只给整份报告的页面图，模型能不能把三类饮食来源归一化成我们制定好的枚举值。**
-> 版本：`diet-tags-probe-1.0.0`
-> 输出契约：`schema/diet_tags_probe.schema.json`
+> 版本：`diet-advice-probe-1.0.0`（2026-09-05 由 diet-tags-probe-1.0.0 更名，内容一致）
+> 输出契约：`schema/diet_advice_probe.schema.json`
 > 对应需求：§7 饮食建议（第 139~183 行）、§8 食堂菜品推荐（第 185~214 行）
 >
 > **不是生产提示词**，未登记进 `prompt/versions.tsv`。

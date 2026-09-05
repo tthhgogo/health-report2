@@ -77,11 +77,11 @@ class ContentConstantsReviewTest {
 		for (AllergenKey key : AllergenKey.values()) {
 			allergenKeySet.add(key.name());
 		}
-		JsonNode dietTagsSchema = objectMapper.readTree(Paths.get("schema/diet_tags.schema.json").toFile());
+		JsonNode dietTagsSchema = objectMapper.readTree(Paths.get("schema/diet_advice.schema.json").toFile());
 		// 新契约 enumKey 为开放串，枚举归属由 StructuralValidator 在 Java 侧校验（R21p）。
 		assertThat(dietTagsSchema.at("/properties/reject").isMissingNode()).isFalse();
 
-		String extractionPrompt = new String(Files.readAllBytes(Paths.get("prompt/diet-tags.md")),
+		String extractionPrompt = new String(Files.readAllBytes(Paths.get("prompt/diet-advice.md")),
 				StandardCharsets.UTF_8);
 		String dishTagPrompt = new String(Files.readAllBytes(Paths.get("prompt/dish_tag.md")), StandardCharsets.UTF_8);
 		assertThat(dishTagPrompt).contains("MOLLUSK", "SESAME");

@@ -71,9 +71,9 @@ public class ExtractionOrchestrator {
                 + problemsRaw.getProblems().size() - problems.getProblems().size());
 
         // 阶段三：饮食建议与标签。
-        SchemaValidationOutcome dietOutcome = callAndValidate(ExtractionCall.DIET_TAGS, images);
-        DietTagsResult dietRaw = map(dietOutcome.getValidatedNode(), DietTagsResult.class);
-        assertReportStatusOk(ExtractionCall.DIET_TAGS, dietRaw.getReportStatus());
+        SchemaValidationOutcome dietOutcome = callAndValidate(ExtractionCall.DIET_ADVICE, images);
+        DietAdviceResult dietRaw = map(dietOutcome.getValidatedNode(), DietAdviceResult.class);
+        assertReportStatusOk(ExtractionCall.DIET_ADVICE, dietRaw.getReportStatus());
         StructuralValidator.DietTagsValidationResult dietValidation =
                 structuralValidator.validateDietTags(dietRaw, images.size(),
                         dietOutcome.getDroppedItemCount());

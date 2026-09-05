@@ -9,7 +9,7 @@ import com.example.healthreport.assemble.AnalysisAssembleService;
 import com.example.healthreport.assemble.TestAnalysisModulesFactory;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.AnalysisResult;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.llm.extraction.ExtractionOrchestrator;
 import com.example.healthreport.llm.extraction.ExtractionOutcome;
 import com.example.healthreport.llm.extraction.IndicatorsResult;
@@ -322,8 +322,8 @@ class AnalysisTaskWorkerTest {
 		return new ExtractionOutcome(
 				new IndicatorsResult("OK", null, null, Collections.<IndicatorsResult.Section>emptyList()),
 				new ProblemsResult("OK", Collections.<ProblemsResult.Problem>emptyList()),
-				new DietTagsResult("OK", Collections.<DietTagsResult.DietTag>emptyList(),
-						Collections.<DietTagsResult.DietTag>emptyList()));
+				new DietAdviceResult("OK", Collections.<DietAdviceResult.DietTag>emptyList(),
+						Collections.<DietAdviceResult.DietTag>emptyList()));
 	}
 
 	private CtHealthReportTaskService taskService(String taskId) {

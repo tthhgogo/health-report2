@@ -78,13 +78,14 @@ class PromptAndArchitectureContractTest {
 
 	@Test
 	void promptConstantsHeadersHistoryAndDigestsShouldStayAligned() throws Exception {
-		assertThat(PromptVersions.INDICATORS).isEqualTo("indicators-1.1.0");
-		assertThat(PromptVersions.PROBLEMS).isEqualTo("problems-1.0.0");
-		assertThat(PromptVersions.DIET_TAGS).isEqualTo("diet-tags-1.1.0");
+		// 1.1.1/1.0.1：新增「影像剔除占位空白区域」输入解读说明（PDF 影像剔除 2026-09-05）。
+		assertThat(PromptVersions.INDICATORS).isEqualTo("indicators-1.1.1");
+		assertThat(PromptVersions.PROBLEMS).isEqualTo("problems-1.0.1");
+		assertThat(PromptVersions.DIET_ADVICE).isEqualTo("diet-advice-1.1.1");
 		assertThat(PromptVersions.DISH_TAG).isEqualTo("dishtag-2.2.3");
 		assertPromptVersion("prompt/indicators.md", PromptVersions.INDICATORS);
 		assertPromptVersion("prompt/health-problems.md", PromptVersions.PROBLEMS);
-		assertPromptVersion("prompt/diet-tags.md", PromptVersions.DIET_TAGS);
+		assertPromptVersion("prompt/diet-advice.md", PromptVersions.DIET_ADVICE);
 		assertPromptVersion("prompt/dish_tag.md", PromptVersions.DISH_TAG);
 		assertThat(read(Paths.get("src/main/resources/application.properties")))
 			.contains("llm.model-version-extraction=${EXTRACTION_MODEL:}")
@@ -109,7 +110,7 @@ class PromptAndArchitectureContractTest {
 				lastDigestMap);
 		assertHistoryEntry("problems", PromptVersions.PROBLEMS, "prompt/health-problems.md", lastVersionMap,
 				lastDigestMap);
-		assertHistoryEntry("diet-tags", PromptVersions.DIET_TAGS, "prompt/diet-tags.md", lastVersionMap,
+		assertHistoryEntry("diet-advice", PromptVersions.DIET_ADVICE, "prompt/diet-advice.md", lastVersionMap,
 				lastDigestMap);
 		assertHistoryEntry("dishtag", PromptVersions.DISH_TAG, "prompt/dish_tag.md", lastVersionMap, lastDigestMap);
 	}

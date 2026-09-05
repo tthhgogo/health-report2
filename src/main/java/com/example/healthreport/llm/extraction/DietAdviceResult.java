@@ -13,14 +13,14 @@ import java.util.List;
  * 是 Java 查询 Redis 方向集合的唯一输入（设计方案 §4.2.2）。</p>
  */
 @Getter
-public final class DietTagsResult {
+public final class DietAdviceResult {
 
     private final String reportStatus;
     private final List<DietTag> recommend;
     private final List<DietTag> reject;
 
     @JsonCreator
-    public DietTagsResult(@JsonProperty("reportStatus") String reportStatus,
+    public DietAdviceResult(@JsonProperty("reportStatus") String reportStatus,
                           @JsonProperty("recommend") List<DietTag> recommend,
                           @JsonProperty("reject") List<DietTag> reject) {
         this.reportStatus = reportStatus;

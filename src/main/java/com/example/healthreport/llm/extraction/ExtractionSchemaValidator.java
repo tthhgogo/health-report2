@@ -184,7 +184,7 @@ public class ExtractionSchemaValidator {
             case PROBLEMS:
                 patternList.add(PROBLEM_ITEM_PATTERN);
                 break;
-            case DIET_TAGS:
+            case DIET_ADVICE:
             default:
                 patternList.add(DIET_TAG_ITEM_PATTERN);
                 break;
@@ -224,7 +224,7 @@ public class ExtractionSchemaValidator {
             }
             case PROBLEMS:
                 return rootNode.path("problems").size();
-            case DIET_TAGS:
+            case DIET_ADVICE:
             default:
                 return rootNode.path("recommend").size() + rootNode.path("reject").size();
         }

@@ -204,9 +204,9 @@ text blocks / switch 表达式 / `Optional.isEmpty` / `String.isBlank` / `Stream
 >
 > | 资源 | 调用一 健康指标 | 调用二 健康问题 | 调用三 饮食建议与标签 | 离线菜品打标 |
 > |---|---|---|---|---|
-> | 提示词 | `prompt/indicators.md` | `prompt/health-problems.md` | `prompt/diet-tags.md` | `prompt/dish_tag.md` |
-> | 输出契约 | `schema/indicators.schema.json` | `schema/health_problems.schema.json` | `schema/diet_tags.schema.json` | `schema/dish_tag_output.schema.json` |
-> | `promptVersion` 前缀 | `indicators-` | `problems-` | `diet-tags-` | `dishtag-` |
+> | 提示词 | `prompt/indicators.md` | `prompt/health-problems.md` | `prompt/diet-advice.md` | `prompt/dish_tag.md` |
+> | 输出契约 | `schema/indicators.schema.json` | `schema/health_problems.schema.json` | `schema/diet_advice.schema.json` | `schema/dish_tag_output.schema.json` |
+> | `promptVersion` 前缀 | `indicators-` | `problems-` | `diet-advice-`（2026-09-05 由 diet-tags- 更名） | `dishtag-` |
 >
 > **体检报告分析模型固定调用三次**（设计方案 §4.1）。三份提示词与三份 Schema
 > 各自独立版本化，`prompt/versions.tsv` 里各占一行。
@@ -1252,7 +1252,7 @@ public static final String DIET_TAGS = "diet-tags-1.1.0";
 
 `indicators.schema.json` 以 probe 为基线并新增顶层必填 `patients`：元素只含
 `page / name / gender`，其中 `page` 有效且 `name`、`gender` 不得同时为空。
-`diet_tags.schema.json` 的 `ALLERGEN` 正式枚举列 13 个食入性组、
+`diet_advice.schema.json` 的 `ALLERGEN` 正式枚举列 13 个食入性组、
 `DUST_MITE / POLLEN / ANIMAL_DANDER / MOLD / COCKROACH` 五个非食入性组与 `OTHER`。
 五个非食入性组保留在模块三展示，但 `DishRecommendationSetService` 必须拒绝用它们拼 Redis Key。
 
@@ -2451,7 +2451,7 @@ infra.DishQueryService       仅供凌晨任务按企业游标分页查询当日
 ```
 schema/indicators.schema.json            与文档 §6、prompt/indicators.md 三方一致
 schema/health_problems.schema.json       与文档 §6、prompt/health-problems.md 三方一致
-schema/diet_tags.schema.json             与文档 §6/§7、prompt/diet-tags.md 三方一致，且不含菜品字段
+schema/diet_advice.schema.json             与文档 §6/§7、prompt/diet-advice.md 三方一致，且不含菜品字段
 schema/dish_tag_output.schema.json       与文档 §8.2、prompt/dish_tag.md 三方一致
 ```
 

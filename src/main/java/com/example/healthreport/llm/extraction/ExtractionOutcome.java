@@ -8,10 +8,10 @@ public final class ExtractionOutcome {
 
     private final IndicatorsResult indicators;
     private final ProblemsResult problems;
-    private final DietTagsResult dietTags;
+    private final DietAdviceResult dietTags;
 
     public ExtractionOutcome(IndicatorsResult indicators, ProblemsResult problems,
-                             DietTagsResult dietTags) {
+                             DietAdviceResult dietTags) {
         if (indicators == null || problems == null || dietTags == null) {
             throw new IllegalArgumentException("三阶段结果都不能为空");
         }
@@ -28,7 +28,7 @@ public final class ExtractionOutcome {
         return problems;
     }
 
-    public DietTagsResult getDietTags() {
+    public DietAdviceResult getDietTags() {
         return dietTags;
     }
 }

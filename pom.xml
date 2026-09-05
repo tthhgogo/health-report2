@@ -204,7 +204,7 @@
                 <includes>
                     <include>indicators.schema.json</include>
                     <include>health_problems.schema.json</include>
-                    <include>diet_tags.schema.json</include>
+                    <include>diet_advice.schema.json</include>
                     <include>dish_tag_output.schema.json</include>
                 </includes>
             </resource>

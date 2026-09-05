@@ -115,7 +115,7 @@ class ExtractionSchemaValidatorTest {
         logger.addAppender(appender);
         logger.setLevel(Level.WARN);
         try {
-            SchemaValidationOutcome outcome = validator.validate(ExtractionCall.DIET_TAGS, content);
+            SchemaValidationOutcome outcome = validator.validate(ExtractionCall.DIET_ADVICE, content);
 
             assertThat(outcome.getValidatedNode().path("reject").size()).isEqualTo(4);
             assertThat(outcome.getDroppedItemCount()).isEqualTo(1);

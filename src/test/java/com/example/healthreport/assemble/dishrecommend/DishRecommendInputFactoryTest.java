@@ -3,7 +3,7 @@ package com.example.healthreport.assemble.dishrecommend;
 import com.example.healthreport.cache.DishRecommendSetCache;
 import com.example.healthreport.cache.DishSetMemberCodec;
 import com.example.healthreport.cache.DishTagSetRef;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.safety.HighRiskAdviceGate;
 import com.example.healthreport.support.text.TextNormalizer;
 import org.junit.jupiter.api.Test;
@@ -39,8 +39,8 @@ class DishRecommendInputFactoryTest {
     void nonFoodAllergenAndOtherMustNotSelectAnyRedisSet() {
         when(setCache.read(eq("company-a"), eq(BIZ_DATE), anyList()))
                 .thenReturn(Collections.<DishTagSetRef, java.util.Set<String>>emptyMap());
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
                 Arrays.asList(
                         tag("ALLERGEN", "DUST_MITE", "尘螨 阳性(+)"),
                         tag("ALLERGEN", "OTHER", "芹菜 阳性(+)"),
@@ -63,9 +63,9 @@ class DishRecommendInputFactoryTest {
     /** quote 命中高危词的营养/饮食条目按 OTHER 路径处理：不选择任何集合。 */
     @Test
     void highRiskQuoteMustSuppressStructuredDimensions() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
                 Collections.singletonList(tag("NUTRITION", "PROTEIN", "建议优质低蛋白饮食")),
-                Collections.<DietTagsResult.DietTag>emptyList());
+                Collections.<DietAdviceResult.DietTag>emptyList());
 
         DishRecommendInput input = factory.create("company-a", BIZ_DATE, dietTags, false);
 
@@ -78,8 +78,8 @@ class DishRecommendInputFactoryTest {
     /** 抑制开关为真时不访问 Redis，也不产出候选。 */
     @Test
     void suppressedInputMustNotTouchRedis() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
                 Collections.singletonList(tag("ALLERGEN", "SHRIMP_CRAB", "虾蟹类 阳性(+)")));
 
         DishRecommendInput input = factory.create("company-a", BIZ_DATE, dietTags, true);
@@ -89,8 +89,8 @@ class DishRecommendInputFactoryTest {
         assertThat(input.getCandidateList()).isEmpty();
     }
 
-    private DietTagsResult.DietTag tag(String dimension, String enumKey, String quote) {
-        return new DietTagsResult.DietTag(dimension, enumKey, 1, "过敏原筛查", null,
+    private DietAdviceResult.DietTag tag(String dimension, String enumKey, String quote) {
+        return new DietAdviceResult.DietTag(dimension, enumKey, 1, "过敏原筛查", null,
                 quote, quote + " 参考值：阴性");
     }
 }

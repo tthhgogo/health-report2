@@ -71,7 +71,7 @@ class ColumnWidthContractTest {
 		}
 		assertThat(PromptVersions.INDICATORS.length()).isLessThanOrEqualTo(32);
 		assertThat(PromptVersions.PROBLEMS.length()).isLessThanOrEqualTo(32);
-		assertThat(PromptVersions.DIET_TAGS.length()).isLessThanOrEqualTo(32);
+		assertThat(PromptVersions.DIET_ADVICE.length()).isLessThanOrEqualTo(32);
 		assertThat(PromptVersions.DISH_TAG.length()).as("prompt_version VARCHAR(32)").isLessThanOrEqualTo(32);
 		assertThat(TagRuleVersion.VALUE.length()).as("tag_rule_version VARCHAR(32)").isLessThanOrEqualTo(32);
 		// 不落库，但进 Redis key：约束住避免 key 失控膨胀。

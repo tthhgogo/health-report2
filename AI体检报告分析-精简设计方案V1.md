@@ -664,7 +664,7 @@ DOCX / OFD 的格式识别只读条目名与目标条目，不做全量内容解
 
 | 格式 | 转图方式 | 状态 |
 |---|---|---|
-| PDF | PDFBox `PDFRenderer` 逐页渲染，300dpi，长边上限 3600px，Rotate 由 PDFBox 归一化 | 已实现 |
+| PDF | PDFBox `PDFRenderer` 逐页渲染，300dpi，长边上限 3600px，Rotate 由 PDFBox 归一化；渲染前逐页剔除医学影像（`PdfImageStripper`），仅当同时满足三条才剔：①页内容流文字显示字节 ≥50；②页上无「整页扫描量级」大图（像素面积 ≥ 页面积×100DPI²）；③页内图片实际绘制覆盖率（内容流 CTM 累计，XObject 与 BI…EI 内联图片都计入）< 50%——第三条挡分块扫描件（整页扫描拆成条带后每条都不大，画满整页的事实不变；内联图片不计入会低估覆盖率、误删同页 XObject 条带）。Form 资源递归受 30 层深度预算约束，超限该页整页保留（栈溢出是 Error，页级兜底接不住）。纯扫描页与双层扫描件（底图+OCR 文本层）整页保留——误删是数据丢失，漏删只是维持现状。剔除绝不原位改资源字典（可能被多页共享，会连带清空受保护页），而是沿路克隆 Resources/XObject/Form 后只改克隆。文字信号是内容流 token 机械计数，不抽取文本 | 已实现（影像剔除 2026-09-05） |
 | JPG / PNG | 解码 → EXIF Orientation 归一化 → 重编码 | 已实现 |
 | OFD | ofdrw 逐页转图 | 已实现 |
 | DOCX | 丢弃图片，docx4j 将文字与表格排版转 PDF（XSL-FO/FOP）后复用 PDF 渲染路径 | 已接入（2026-09-05）；图片处理安全验收见开发方案 §5.4 |
@@ -798,10 +798,10 @@ Worker 只转图一次，之后严格按下表顺序调用。任意时刻同一�
 |---|---|---|---|---|
 | 1 健康指标 | `prompt/indicators.md` | `schema/indicators.schema.json` | 无 | 模块一，以及仅供同一性校验的临时患者字段 |
 | 2 健康问题 | `prompt/health-problems.md` | `schema/health_problems.schema.json` | 无 | 模块二 |
-| 3 饮食建议与标签 | `prompt/diet-tags.md` | `schema/diet_tags.schema.json` | 不传阶段 1/2 结果，不传任何菜品数据 | 模块三，以及 Java 生成模块四所需的正式枚举标签 |
+| 3 饮食建议与标签 | `prompt/diet-advice.md`（2026-09-05 由 diet-tags 更名） | `schema/diet_advice.schema.json` | 不传阶段 1/2 结果，不传任何菜品数据 | 模块三，以及 Java 生成模块四所需的正式枚举标签 |
 
 **目前仓库状态不得冒充生产契约。** 现有
-`prompt/indicators-probe.md`、`prompt/health-problems-probe.md`、`prompt/diet-tags-probe.md`
+`prompt/indicators-probe.md`、`prompt/health-problems-probe.md`、`prompt/diet-advice-probe.md`
 及对应 `*_probe.schema.json` 只是探针，不登记 `prompt/versions.tsv`。
 上表三对生产文件是代码开发前置交付物；未落地、未通过契约测试前，不得认定主链路已完成。
 
@@ -831,7 +831,7 @@ additionalProperties  三份 Schema 的每个 object 都必须为 false
 ```
 
 阶段 1/2 的业务字段以对应 probe Schema 为基线。阶段 3 以
-`diet_tags_probe.schema.json` 为基线，只定义报告中的饮食建议、来源引用、方向与正式枚举标签。
+`diet_advice_probe.schema.json` 为基线，只定义报告中的饮食建议、来源引用、方向与正式枚举标签。
 菜品列表不属于阶段 3 Schema，也不得为它新增第四次 LLM-A 调用。
 
 阶段 3 的生产契约相对当前 probe 还有一项明确差异：过敏原枚举必须补回

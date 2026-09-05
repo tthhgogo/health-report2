@@ -10,7 +10,7 @@ import com.example.healthreport.constants.AllergenKey;
 import com.example.healthreport.constants.DietRequirementContents;
 import com.example.healthreport.constants.DietRequirementKey;
 import com.example.healthreport.constants.NutritionKey;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.safety.HighRiskAdviceGate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -48,7 +48,7 @@ public class DishRecommendInputFactory {
 	/**
 	 * 读取当前企业当天与报告相关的方向集合，先并集、再做正向减拒绝差集。 在线不查询菜品库、食材表或标签表，也不运行主料与关键词匹配。
 	 */
-	public DishRecommendInput create(String companyId, LocalDate bizDate, DietTagsResult dietTags,
+	public DishRecommendInput create(String companyId, LocalDate bizDate, DietAdviceResult dietTags,
 			boolean suppressDishRecommend) {
 		if (companyId == null || companyId.length() == 0 || bizDate == null || dietTags == null) {
 			throw new IllegalArgumentException("模块四输入工厂参数不能为空");
@@ -134,9 +134,9 @@ public class DishRecommendInputFactory {
 	 * 五个非食入性过敏原与 OTHER 在映射前过滤，只保留模块三展示；
 	 * 营养补充与饮食注意条目还要过高危表述安全闸（只扫 quote，命中按 OTHER 路径处理）。</p>
 	 */
-	private AdviceDimensions dimensions(DietTagsResult dietTags) {
+	private AdviceDimensions dimensions(DietAdviceResult dietTags) {
 		AdviceDimensions dimensions = new AdviceDimensions();
-		for (DietTagsResult.DietTag tag : dietTags.getReject()) {
+		for (DietAdviceResult.DietTag tag : dietTags.getReject()) {
 			if ("OTHER".equals(tag.getEnumKey())) {
 				// OTHER 没有稳定的离线集合；模块三展示原文，模块四不临时查库匹配。
 				continue;
@@ -156,7 +156,7 @@ public class DishRecommendInputFactory {
 				}
 			}
 		}
-		for (DietTagsResult.DietTag tag : dietTags.getRecommend()) {
+		for (DietAdviceResult.DietTag tag : dietTags.getRecommend()) {
 			if ("OTHER".equals(tag.getEnumKey())) {
 				continue;
 			}

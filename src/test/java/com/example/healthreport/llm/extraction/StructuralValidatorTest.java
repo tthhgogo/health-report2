@@ -22,12 +22,12 @@ class StructuralValidatorTest {
     @Test
     void dietOtherInRecommendMustBeDroppedAndFlagDietTagDropped() {
         // DIET 只有 LOW_PURINE、HIGH_FIBER 可进 recommend；OTHER 放进 recommend 是放反了方向。
-        DietTagsResult result = new DietTagsResult("OK",
+        DietAdviceResult result = new DietAdviceResult("OK",
                 Arrays.asList(
                         tag("DIET", "OTHER"),
                         tag("DIET", "LOW_PURINE"),
                         tag("NUTRITION", "IRON")),
-                Collections.<DietTagsResult.DietTag>emptyList());
+                Collections.<DietAdviceResult.DietTag>emptyList());
 
         StructuralValidator.DietTagsValidationResult validation =
                 validator.validateDietTags(result, 5, 0);
@@ -41,7 +41,7 @@ class StructuralValidatorTest {
     @Test
     void allergenInRecommendMustBeDroppedWithinBudget() {
         // 6 条中 1 条放反：在 20% 预算（至少 1 条）内剔除，其余保留。
-        DietTagsResult result = new DietTagsResult("OK",
+        DietAdviceResult result = new DietAdviceResult("OK",
                 Arrays.asList(tag("ALLERGEN", "SHRIMP_CRAB"), tag("NUTRITION", "IRON"),
                         tag("DIET", "HIGH_FIBER")),
                 Arrays.asList(tag("ALLERGEN", "DUST_MITE"), tag("DIET", "LOW_SODIUM"),
@@ -61,7 +61,7 @@ class StructuralValidatorTest {
     @Test
     void tooManyDirectionViolationsMustFailTheWholeStage() {
         // 8 条中 3 条放反：超出 20% 修复预算，整阶段失败而不是残缺放行。
-        DietTagsResult result = new DietTagsResult("OK",
+        DietAdviceResult result = new DietAdviceResult("OK",
                 Arrays.asList(tag("ALLERGEN", "SHRIMP_CRAB"), tag("NUTRITION", "IRON"),
                         tag("DIET", "HIGH_FIBER"), tag("DIET", "LOW_FAT")),
                 Arrays.asList(tag("NUTRITION", "CALCIUM"), tag("ALLERGEN", "DUST_MITE"),
@@ -94,7 +94,7 @@ class StructuralValidatorTest {
     @Test
     void rejectWinsOverRecommendWithoutConsumingBudget() {
         // 同一正式枚举同时出现正反方向：reject 优先，确定性归一化不算剔除。
-        DietTagsResult result = new DietTagsResult("OK",
+        DietAdviceResult result = new DietAdviceResult("OK",
                 Collections.singletonList(tag("DIET", "LOW_PURINE")),
                 Collections.singletonList(tag("DIET", "LOW_PURINE")));
 
@@ -109,7 +109,7 @@ class StructuralValidatorTest {
     @Test
     void schemaDropsAndStructuralDropsMustShareTheSameBudget() {
         // Schema 层已剔 1 条 + 结构层再剔 1 条，条目总数 6（含已剔）：2/6 > 20%，整阶段失败。
-        DietTagsResult result = new DietTagsResult("OK",
+        DietAdviceResult result = new DietAdviceResult("OK",
                 Collections.singletonList(tag("ALLERGEN", "SHRIMP_CRAB")),
                 Arrays.asList(tag("ALLERGEN", "DUST_MITE"), tag("DIET", "LOW_SODIUM"),
                         tag("ALLERGEN", "FISH"), tag("NUTRITION", "IRON")));
@@ -119,14 +119,14 @@ class StructuralValidatorTest {
                 .isInstanceOf(com.example.healthreport.support.HealthReportException.class);
     }
 
-    private DietTagsResult.DietTag tag(String dimension, String enumKey) {
-        return new DietTagsResult.DietTag(dimension, enumKey, 1, "总检结论", null,
+    private DietAdviceResult.DietTag tag(String dimension, String enumKey) {
+        return new DietAdviceResult.DietTag(dimension, enumKey, 1, "总检结论", null,
                 "建议内容原文一句", "承载该建议的整条原文");
     }
 
-    private List<String> keys(List<DietTagsResult.DietTag> tagList) {
+    private List<String> keys(List<DietAdviceResult.DietTag> tagList) {
         List<String> keyList = new ArrayList<String>(tagList.size());
-        for (DietTagsResult.DietTag tag : tagList) {
+        for (DietAdviceResult.DietTag tag : tagList) {
             keyList.add(tag.getEnumKey());
         }
         return keyList;

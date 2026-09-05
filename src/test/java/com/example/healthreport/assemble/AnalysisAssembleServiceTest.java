@@ -9,7 +9,7 @@ import com.example.healthreport.assemble.problem.ProblemAssembler;
 import com.example.healthreport.cache.AnalysisModules;
 import com.example.healthreport.cache.DishRecommendSetCache;
 import com.example.healthreport.cache.DishSetMemberCodec;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.llm.extraction.ExtractionOutcome;
 import com.example.healthreport.llm.extraction.IndicatorStatus;
 import com.example.healthreport.llm.extraction.IndicatorsResult;
@@ -87,9 +87,9 @@ class AnalysisAssembleServiceTest {
 				Collections.singletonList(new ProblemsResult.Problem(
 						"INDICATOR", 1, "血脂检查", null, "甘油三酯", "甘油三酯 偏高",
 						"甘油三酯 2.8 mmol/L 0.56~1.70 偏高")));
-		DietTagsResult dietTags = new DietTagsResult("OK",
-				Collections.<DietTagsResult.DietTag>emptyList(),
-				Arrays.asList(new DietTagsResult.DietTag("ALLERGEN", "SHRIMP_CRAB", 1,
+		DietAdviceResult dietTags = new DietAdviceResult("OK",
+				Collections.<DietAdviceResult.DietTag>emptyList(),
+				Arrays.asList(new DietAdviceResult.DietTag("ALLERGEN", "SHRIMP_CRAB", 1,
 						"过敏原筛查", null, "虾蟹类 阳性(+)", "虾蟹类 阳性(+) 参考值：阴性")));
 		return new ExtractionOutcome(indicators, problems, dietTags);
 	}

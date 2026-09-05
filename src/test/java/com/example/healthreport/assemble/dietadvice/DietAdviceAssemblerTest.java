@@ -2,7 +2,7 @@ package com.example.healthreport.assemble.dietadvice;
 
 import com.example.healthreport.constants.DisclaimerConstants;
 import com.example.healthreport.constants.EmptyStateConstants;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.safety.HighRiskAdviceGate;
 import com.example.healthreport.support.text.TextNormalizer;
 import org.junit.jupiter.api.Test;
@@ -20,7 +20,7 @@ class DietAdviceAssemblerTest {
 
     @Test
     void shouldBuildThreeDimensionCardsWithSource() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
                 Arrays.asList(tag("NUTRITION", "IRON", "总检结论", 2, "建议补充铁剂")),
                 Arrays.asList(
                         tag("ALLERGEN", "SHRIMP_CRAB", "过敏原筛查", null, "虾蟹类 阳性(+)"),
@@ -63,7 +63,7 @@ class DietAdviceAssemblerTest {
     @Test
     void allergenRedLineShouldRemoveConflictingRecommendFoods() {
         // 牛肉过敏 + 补铁：铁卡片的推荐食材里凡含过敏 matchWord「牛肉」的一律移除，其余保留。
-        DietTagsResult dietTags = new DietTagsResult("OK",
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
                 Arrays.asList(tag("NUTRITION", "IRON", "总检结论", null, "建议补充铁剂")),
                 Arrays.asList(tag("ALLERGEN", "BEEF", "过敏原筛查", null, "牛肉 IgE 阳性(+)")));
 
@@ -79,7 +79,7 @@ class DietAdviceAssemblerTest {
     void allergenRedLineShouldAlsoRemoveConflictingNoteAndTipLines() {
         // 牛奶过敏 + 补钙：食材被移除后，摄入量说明「每天300~500ml液态奶」这类说明文案
         // 同样是把过敏原推给用户，含过敏 matchWord 的说明整条移除，不含的保留。
-        DietTagsResult dietTags = new DietTagsResult("OK",
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
                 Arrays.asList(tag("NUTRITION", "CALCIUM", "总检结论", null, "建议补钙")),
                 Arrays.asList(tag("ALLERGEN", "MILK", "过敏原筛查", null, "牛奶 IgE 阳性(+)")));
 
@@ -98,7 +98,7 @@ class DietAdviceAssemblerTest {
     @Test
     void dimensionsShouldStayIndependentWithoutCrossSubtraction() {
         // §7-5：补铁推荐与低嘌呤忌口各自独立成卡，猪肝不因另一维度存在忌口而被移除。
-        DietTagsResult dietTags = new DietTagsResult("OK",
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
                 Arrays.asList(tag("NUTRITION", "IRON", "总检结论", null, "建议补充铁剂")),
                 Arrays.asList(tag("DIET", "LOW_PURINE", "总检结论", null, "限制嘌呤摄入")));
 
@@ -111,8 +111,8 @@ class DietAdviceAssemblerTest {
 
     @Test
     void nonFoodAllergenShouldShowNameAndSourceWithoutFoods() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
                 Arrays.asList(tag("ALLERGEN", "DUST_MITE", "过敏原筛查", null, "尘螨 阳性(++)")));
 
         DietAdviceAssembler.Result result = assembler.assemble(dietTags);
@@ -127,8 +127,8 @@ class DietAdviceAssemblerTest {
 
     @Test
     void otherAndGateSuppressedShouldRenderSourceOnlyCards() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
                 Arrays.asList(
                         tag("DIET", "OTHER", "总检结论", null, "建议优质低蛋白饮食"),
                         tag("DIET", "LIGHT_DIET", "总检结论", null, "低碘清淡饮食")));
@@ -149,8 +149,8 @@ class DietAdviceAssemblerTest {
 
     @Test
     void fullCardShouldReplaceEarlierSourceOnlyCardOfSameEnum() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
                 Arrays.asList(
                         tag("DIET", "LIGHT_DIET", "总检结论", null, "低碘清淡饮食"),
                         tag("DIET", "LIGHT_DIET", "科室意见", null, "清淡饮食")));
@@ -165,8 +165,8 @@ class DietAdviceAssemblerTest {
 
     @Test
     void duplicateEnumKeyShouldKeepFirstCardOnly() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
                 Arrays.asList(
                         tag("ALLERGEN", "SHRIMP_CRAB", "过敏原筛查", 1, "虾蟹类 阳性(+)"),
                         tag("ALLERGEN", "SHRIMP_CRAB", "总检结论", 5, "对虾蟹过敏")));
@@ -180,9 +180,9 @@ class DietAdviceAssemblerTest {
 
     @Test
     void emptyInputShouldProducePerDimensionEmptyStates() {
-        DietTagsResult dietTags = new DietTagsResult("OK",
-                Collections.<DietTagsResult.DietTag>emptyList(),
-                Collections.<DietTagsResult.DietTag>emptyList());
+        DietAdviceResult dietTags = new DietAdviceResult("OK",
+                Collections.<DietAdviceResult.DietTag>emptyList(),
+                Collections.<DietAdviceResult.DietTag>emptyList());
 
         DietAdviceAssembler.Result result = assembler.assemble(dietTags);
 
@@ -195,8 +195,8 @@ class DietAdviceAssemblerTest {
                 .isEqualTo(EmptyStateConstants.MODULE_THREE_DIET);
     }
 
-    private DietTagsResult.DietTag tag(String dimension, String enumKey, String section,
+    private DietAdviceResult.DietTag tag(String dimension, String enumKey, String section,
                                        Integer itemNo, String quote) {
-        return new DietTagsResult.DietTag(dimension, enumKey, 1, section, itemNo, quote, quote);
+        return new DietAdviceResult.DietTag(dimension, enumKey, 1, section, itemNo, quote, quote);
     }
 }

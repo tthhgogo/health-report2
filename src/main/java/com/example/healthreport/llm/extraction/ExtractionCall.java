@@ -16,7 +16,7 @@ public enum ExtractionCall {
     PROBLEMS("prompt/health-problems.md", "schema/health_problems.schema.json", PromptVersions.PROBLEMS),
 
     /** 调用三：饮食建议与正式枚举标签（模块三，及模块四的标签输入）。 */
-    DIET_TAGS("prompt/diet-tags.md", "schema/diet_tags.schema.json", PromptVersions.DIET_TAGS);
+    DIET_ADVICE("prompt/diet-advice.md", "schema/diet_advice.schema.json", PromptVersions.DIET_ADVICE);
 
     private final String promptResource;
     private final String schemaResource;

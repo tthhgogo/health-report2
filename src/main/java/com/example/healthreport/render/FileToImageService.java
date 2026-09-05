@@ -3,6 +3,7 @@ package com.example.healthreport.render;
 import com.example.healthreport.render.docx.DocxToPdfConverter;
 import com.example.healthreport.render.image.UploadedImageAdapter;
 import com.example.healthreport.render.ofd.OfdPageRenderer;
+import com.example.healthreport.render.pdf.PdfImageStripper;
 import com.example.healthreport.render.pdf.PdfPageRenderer;
 import com.example.healthreport.support.FailCode;
 import com.example.healthreport.support.HealthReportException;
@@ -30,17 +31,20 @@ import java.util.List;
 public class FileToImageService {
 
     private final PdfPageRenderer pdfPageRenderer;
+    private final PdfImageStripper pdfImageStripper;
     private final OfdPageRenderer ofdPageRenderer;
     private final UploadedImageAdapter uploadedImageAdapter;
     private final ExtractionImageCompressor extractionImageCompressor;
     private final DocxToPdfConverter docxToPdfConverter;
 
     public FileToImageService(PdfPageRenderer pdfPageRenderer,
+                              PdfImageStripper pdfImageStripper,
                               OfdPageRenderer ofdPageRenderer,
                               UploadedImageAdapter uploadedImageAdapter,
                               ExtractionImageCompressor extractionImageCompressor,
                               DocxToPdfConverter docxToPdfConverter) {
         this.pdfPageRenderer = pdfPageRenderer;
+        this.pdfImageStripper = pdfImageStripper;
         this.ofdPageRenderer = ofdPageRenderer;
         this.uploadedImageAdapter = uploadedImageAdapter;
         this.extractionImageCompressor = extractionImageCompressor;
@@ -116,6 +120,8 @@ public class FileToImageService {
             if (pageCount < 1) {
                 throw new HealthReportException(FailCode.UNREADABLE, 400);
             }
+            // 影像剔除只改内存文档；扫描版保护与失败兜底见 PdfImageStripper。
+            pdfImageStripper.stripImages(document);
             for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
                 BufferedImage renderedImage = pdfPageRenderer.render(document, pageIndex);
                 try {

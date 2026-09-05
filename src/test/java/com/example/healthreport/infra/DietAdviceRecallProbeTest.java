@@ -41,10 +41,10 @@ import java.util.Set;
  * export EXTRACTION_API_KEY=sk-xxx
  *
  * # 第一次跑：没有真值，只看模型归一化出什么
- * mvn -P image-probe test -Dtest=DietTagRecallProbeTest -Dprobe.pdf=/abs/report.pdf
+ * mvn -P image-probe test -Dtest=DietAdviceRecallProbeTest -Dprobe.pdf=/abs/report.pdf
  *
- * # 把 target/diet-tag-recall/diet-tags.tsv 对着报告改成真值，然后
- * mvn -P image-probe test -Dtest=DietTagRecallProbeTest \
+ * # 把 target/diet-tag-recall/diet-advice.tsv 对着报告改成真值，然后
+ * mvn -P image-probe test -Dtest=DietAdviceRecallProbeTest \
  *     -Dprobe.pdf=/abs/report.pdf -Dprobe.truth=/abs/truth.tsv -Dprobe.minRecall=0.95
  * </pre>
  *
@@ -52,10 +52,10 @@ import java.util.Set;
  * 只写一列时只按枚举值匹配。{@code #} 开头是注释，空行忽略。</p>
  */
 @Tag("image-probe")
-class DietTagRecallProbeTest {
+class DietAdviceRecallProbeTest {
 
-    private static final String PROMPT_DEFAULT = "prompt/diet-tags.md";
-    private static final String SCHEMA_DEFAULT = "schema/diet_tags_probe.schema.json";
+    private static final String PROMPT_DEFAULT = "prompt/diet-advice.md";
+    private static final String SCHEMA_DEFAULT = "schema/diet_advice_probe.schema.json";
     private static final String OUTPUT_DIR_DEFAULT = "target/diet-tag-recall";
     private static final Set<String> TOP_FIELDS = fields("reportStatus", "recommend", "reject");
     private static final Set<String> ITEM_FIELDS = fields("dimension", "enumKey",
@@ -123,19 +123,19 @@ class DietTagRecallProbeTest {
         String content = new OpenAiCompatibleHealthReportAnalysisModelClient(objectMapper, properties(baseUrl, model, apiKey))
                 .extractContent(result.envelope, "PROBE");
         JsonNode root = objectMapper.readTree(content);
-        Files.write(outputDir.resolve("diet-tags.json"),
+        Files.write(outputDir.resolve("diet-advice.json"),
                 objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
 
         validateAgainstSchema(root, outputDir);
         validateShape(root, pageImageList.size());
         List<Tag> extracted = readTags(root);
-        Files.write(outputDir.resolve("diet-tags.tsv"), toTsv(extracted).getBytes(StandardCharsets.UTF_8));
+        Files.write(outputDir.resolve("diet-advice.tsv"), toTsv(extracted).getBytes(StandardCharsets.UTF_8));
 
         String report = buildRecallReport(extracted, pageImageList.size());
         Files.write(outputDir.resolve("recall-report.txt"), report.getBytes(StandardCharsets.UTF_8));
         System.out.println(report);
         System.out.println("[probe] extracted list written to "
-                + outputDir.resolve("diet-tags.tsv").toAbsolutePath());
+                + outputDir.resolve("diet-advice.tsv").toAbsolutePath());
         softly.assertAll();
     }
 
@@ -199,7 +199,7 @@ class DietTagRecallProbeTest {
 
             // quote 与 rawText 之间不做包含性校验：模型会把「减少酒精和高果糖饮料」
             // 压缩成「减少高果糖饮料」——语义没错但不是逐字子串，卡这个只会得到假警报。
-            // 代价是没有任何机制能发现编造的建议原文，只能靠人工看 diet-tags.tsv。
+            // 代价是没有任何机制能发现编造的建议原文，只能靠人工看 diet-advice.tsv。
             softly.assertThat(item.path("quote").asText("").isEmpty())
                     .as(label + ".quote must not be empty").isFalse();
         }
@@ -248,7 +248,7 @@ class DietTagRecallProbeTest {
         String truthPath = ProbeModelCall.setting("probe.truth", "PROBE_TRUTH", "");
         if (truthPath.isEmpty()) {
             builder.append("\n  NO TRUTH FILE (-Dprobe.truth) -> recall not computed.\n");
-            builder.append("  Fix diet-tags.tsv against the paper report and pass it back as the truth file.\n");
+            builder.append("  Fix diet-advice.tsv against the paper report and pass it back as the truth file.\n");
             return builder.toString();
         }
 

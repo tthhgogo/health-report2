@@ -6,7 +6,7 @@ import com.example.healthreport.assemble.dietadvice.DietAdviceAssembler;
 import com.example.healthreport.assemble.dishrecommend.DishNameSorter;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendAssembler;
 import com.example.healthreport.assemble.dishrecommend.DishRecommendInput;
-import com.example.healthreport.llm.extraction.DietTagsResult;
+import com.example.healthreport.llm.extraction.DietAdviceResult;
 import com.example.healthreport.llm.extraction.IndicatorStatus;
 import com.example.healthreport.llm.extraction.IndicatorsResult;
 import com.example.healthreport.llm.extraction.ProblemsResult;
@@ -64,8 +64,8 @@ class TaskResultCacheTest {
                 images, 1, moduleOne);
         DietAdviceAssembler.Result moduleThree = new DietAdviceAssembler(
                 new HighRiskAdviceGate(new TextNormalizer()))
-                .assemble(new DietTagsResult("OK", Collections.<DietTagsResult.DietTag>emptyList(),
-                        Collections.<DietTagsResult.DietTag>emptyList()));
+                .assemble(new DietAdviceResult("OK", Collections.<DietAdviceResult.DietTag>emptyList(),
+                        Collections.<DietAdviceResult.DietTag>emptyList()));
         DishRecommendAssembler.Result moduleFour = new DishRecommendAssembler(new DishNameSorter()).assemble(new DishRecommendInput(false, false,
                 Collections.<DishRecommendInput.Candidate>emptyList()));
         AnalysisModules modules = new AnalysisModules(moduleOne, moduleTwo, moduleThree, moduleFour);
